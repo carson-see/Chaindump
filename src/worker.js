@@ -1792,6 +1792,28 @@ app.get('/.well-known/agent-skills/index.json', async () => {
   return new Response(JSON.stringify(index, null, 2), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
 });
 
+// MCP Server Card (SEP-1649) — now that the chaindump-mcp server is hosted at a
+// resolving URL (Cloud Run), advertise it so MCP clients can discover it.
+const MCP_ENDPOINT = 'https://chaindump-mcp-270018525501.us-central1.run.app/mcp';
+app.get('/.well-known/mcp/server-card.json', () => {
+  const card = {
+    serverInfo: { name: 'chaindump-chain-intel', version: '0.1.0' },
+    description: "Chaindump's differentiated blockchain intelligence — OFAC screening, chain forensics, live signals, power rankings — as MCP tools. Every response sourced.",
+    transport: { type: 'streamable-http', endpoint: MCP_ENDPOINT },
+    capabilities: { tools: {} },
+    tools: [
+      { name: 'screen_address', description: 'OFAC SDN sanctions screening for a crypto address (+ scam matches, risk).' },
+      { name: 'chain_intel', description: 'Composite profile + analyst take + risk for one chain.' },
+      { name: 'chain_forensics', description: 'Tier verdict (thriving/mid/dying/dead) + why it is stuck + outlook + sources.' },
+      { name: 'power_ranking', description: 'Country crypto power ranking.' },
+      { name: 'rwa_depin', description: 'RWA protocols by TVL + DePIN networks by market cap.' },
+      { name: 'scam_cases', description: 'Traced scam/exploit cases with fund-flow and sources.' },
+    ],
+    documentation: `${ORIGIN}/api`,
+  };
+  return new Response(JSON.stringify(card, null, 2), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+});
+
 // RFC 8288 Link header advertising the API catalog + service docs. Applied to
 // the homepage (run_worker_first: ["/"]) and every Worker-served HTML view.
 const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", <${ORIGIN}/api>; rel="service-doc", <${ORIGIN}/api/agent/manifest>; rel="service-desc"`;
