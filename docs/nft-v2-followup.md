@@ -1,30 +1,27 @@
 # NFT / Ordinals v2 — follow-up spec
 
-Queued to pick up **after** the current data workflow (scam forensics →
-policy/power reconcile → deep-links) is done. Requested by Carson 2026-07-13.
+Requested by Carson 2026-07-13. Restructure shipped same day; "more case
+studies" (content) deferred by Carson to a separate effort.
 
 ## What to change
 
-1. **Make everything searchable** — not just the live catalog. The curated
-   case-study deep-dives need to be searchable too (single search across both
-   curated case studies and the full catalog, or clearly-scoped search on each).
+1. ✅ **DONE — Make everything searchable** — the curated case-study deep-dives
+   are now searchable (by name / chain / status), alongside the existing
+   cross-chain catalog search.
 
-2. **More case studies** — expand the ~16 hand-curated lifecycle deep-dives
-   (currently in the `nft_collections` table). Keep the depth/detail of the
-   existing cards (mint economics, holder/founder engagement, royalties,
-   lifespan, community history) — that detail is explicitly liked. Add more
-   collections across more chains, successful and failed.
+2. ⏳ **TODO — More case studies** (content, not code) — expand the ~16
+   hand-curated lifecycle deep-dives (in the `nft_collections` table). Keep the
+   depth/detail of the existing cards (mint economics, holder/founder
+   engagement, royalties, lifespan, community history) — that detail is
+   explicitly liked. Add more collections across more chains, successful and
+   failed. This is research/content generation (likely a multi-agent pass with
+   sourcing), not a UI change.
 
-3. **Group by chain instead of one flat list** — the catalog is currently a
-   flat paginated list of ~2000 collections. Restructure so **chain is a
-   collapsible folder**, and the collections live inside their chain's group:
-   - Ethereum (802) ▸ … collections
-   - Solana (356) ▸ … collections
-   - Ordinals (171) ▸ …
-   - Avalanche (160) ▸ …
-   - etc.
-   Expand a chain to see its collections; the per-collection live detail
-   (floor/mcap/volume/holders/thumbnail) stays on card expand as it is now.
+3. ✅ **DONE — Group by chain instead of one flat list** — the catalog is now
+   collapsible chain folders (Ethereum 802 ▸, Solana 356 ▸, Ordinals 171 ▸,
+   Avalanche 160 ▸, … 17 chains). Open a chain to lazy-load its collections
+   (30 at a time, "load more" within the folder); per-collection live detail
+   stays on card expand.
 
 ## Implementation notes (from the current build)
 
