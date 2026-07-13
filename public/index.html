@@ -835,13 +835,12 @@ function renderMid(data){
     <div><div class="dsec">What they're missing — common gaps</div><div class="taglist">${gapBars||'<span class="muted">—</span>'}</div></div>
     <div>${fw?accordion('Why chains succeed vs fail', fw.text, true):'<div class="gnar muted">Framework compiling…</div>'}</div>
   </div></div>`;
-  const cards = data.chains.map(c => {
+  const midCard = (c) => {
     const p = c.profile || {};
     const open = state.midExpanded === c.chain;
     const td = tokenDrop(p);
     const tags = (p.success_factors_missing||[]).map(t=>`<span class="ctag">${esc(t.replace(/_/g,' '))}</span>`).join('');
-    let sources = '';
-    sources = srcHtml(c.sources);
+    const sources = srcHtml(c.sources);
     const tokenLine = p.token_symbol ? `${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)}${p.token_ath_date?` (${esc(p.token_ath_date)})`:''} → $${fmtTok(p.token_current)}${td!=null?` <span class="tdrop">-${td}%</span>`:''}` : 'No token';
     const body = open ? `<div class="gexp">
       ${(p.founded||p.founders)?`<div class="gfield"><span class="gfl">Founded</span> ${esc(p.founded||'—')}${p.founders?` · ${esc(p.founders)}`:''}</div>`:''}
@@ -866,8 +865,20 @@ function renderMid(data){
       ${body}
       <div class="gexpand">${open?'Hide details ▲':'Full profile ▾'}</div>
     </div>`;
-  }).join('');
-  el.innerHTML = `<div class="gvintro">Alive but adrift — chains with real tech or history that lack a killer app, a live narrative, or a token that captures value. ${data.chains.length} profiled.</div>${panel}<div class="dsec" style="margin:20px 0 10px">The drifting — ${data.chains.length} chains</div><div class="gwrap">${cards}</div>`;
+  };
+  // group into collapsible folders by verdict
+  const MID_LABEL = { stalling:'Stalling — momentum lost', drifting:'Drifting — no clear direction', pivoting:'Pivoting — mid-transition', quietly_building:'Quietly building', other:'Other' };
+  const mgroups = {};
+  data.chains.forEach(c => { const k=(c.verdict||'other').toLowerCase(); (mgroups[k]=mgroups[k]||[]).push(c); });
+  const mkeys = Object.keys(mgroups).sort((a,b)=>mgroups[b].length-mgroups[a].length);
+  if (!state.midOpenGroups) state.midOpenGroups = mkeys.length ? { [mkeys[0]]: true } : {};
+  const cards = `<div class="chainfolders">` + mkeys.map(k => {
+    const open = (state.midOpenGroups||{})[k];
+    const chs = mgroups[k].sort((a,b)=>(b.tvl||0)-(a.tvl||0));
+    const inner = open ? `<div class="folderbody"><div class="gwrap">${chs.map(midCard).join('')}</div></div>` : '';
+    return `<div class="chainfolder ${open?'open':''}"><div class="folderhead" data-midgroup="${esc(k)}"><span class="foldercaret">${open?'▾':'▸'}</span><span class="foldername">${esc(MID_LABEL[k]||k.replace(/_/g,' '))}</span><span class="foldercount">${chs.length}</span></div>${inner}</div>`;
+  }).join('') + `</div>`;
+  el.innerHTML = `<div class="gvintro">Alive but adrift — chains with real tech or history that lack a killer app, a live narrative, or a token that captures value. ${data.chains.length} profiled.</div>${panel}<div class="dsec" style="margin:20px 0 10px">Grouped by where they stand — ${data.chains.length} chains</div>${cards}`;
 }
 async function loadMid(){
   midLoaded = true;
@@ -877,6 +888,8 @@ async function loadMid(){
 }
 document.getElementById('midview').addEventListener('click', (e) => {
   if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const fh = e.target.closest('.folderhead');
+  if (fh && state.midData) { const k=fh.dataset.midgroup; state.midOpenGroups = state.midOpenGroups||{}; if (state.midOpenGroups[k]) delete state.midOpenGroups[k]; else state.midOpenGroups[k]=true; renderMid(state.midData); return; }
   const card = e.target.closest('.gcard');
   if (!card || !state.midData) return;
   const name = card.dataset.chain;
@@ -1809,14 +1822,13 @@ function renderGraveyard(data){
     <span class="gvf${gf==='dead'?' on':''}" data-gf="dead">☠ Dead (${nDead})</span>
     <span class="gvf${gf==='dying'?' on':''}" data-gf="dying">🩸 Dying / declining (${nDying})</span>
   </div>`;
-  const cards = filtered.map(c => {
+  const graveCard = (c) => {
     const p = c.profile || {};
     const open = state.graveExpanded === c.chain;
     const dd = c.drawdown_pct != null ? `-${Math.abs(c.drawdown_pct).toFixed(0)}%` : '—';
     const td = tokenDrop(p);
     const tags = (p.cause_tags||[]).map(tg=>`<span class="ctag">${esc(tagLabel(data,tg))}</span>`).join('');
-    let sources = '';
-    sources = srcHtml(c.sources);
+    const sources = srcHtml(c.sources);
     const tokenLine = p.token_symbol ? `${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)}${p.token_ath_date?` (${esc(p.token_ath_date)})`:''} → $${fmtTok(p.token_current)}${td!=null?` <span class="tdrop">-${td}%</span>`:''}` : 'No live token';
     const body = open ? `<div class="gexp">
       ${(p.founded||p.founders)?`<div class="gfield"><span class="gfl">Founded</span> ${esc(p.founded||'—')}${p.founders?` · ${esc(p.founders)}`:''}</div>`:''}
@@ -1842,10 +1854,23 @@ function renderGraveyard(data){
       ${body}
       <div class="gexpand">${open?'Hide details ▲':'Full postmortem ▾'}</div>
     </div>`;
-  }).join('');
+  };
+  // group into collapsible folders by primary death cause (the "why chains die" thesis)
+  const CAUSE_LABEL = { mercenary_tvl:'Mercenary / incentivized TVL exit', mercenary_liquidity:'Mercenary liquidity exit', points_collapse:'Points-farming collapse', airdrop_farming:'Airdrop-farming exodus', token_unlock_dump:'Token unlock dump', vc_dump:'VC / insider dump', exploit_hack:'Hack / exploit', bridge_hack:'Bridge hack', team_abandonment:'Team abandonment', soft_rug:'Soft rug', unsustainable_yield:'Unsustainable yield', narrative_death:'Narrative death', no_real_users:'No real users', no_product_market_fit:'No product-market fit', wash_trading:'Wash-traded volume', competition:'Out-competed', lost_competition:'Out-competed', misallocated_treasury:'Misallocated treasury', regulatory:'Regulatory', other:'Other / mixed causes' };
+  const causeLabel = (k) => CAUSE_LABEL[k] || k.replace(/_/g,' ').replace(/\b\w/g, m=>m.toUpperCase());
+  const groups = {};
+  filtered.forEach(c => { const t=(c.profile&&c.profile.cause_tags)||[]; const k=t[0]||'other'; (groups[k]=groups[k]||[]).push(c); });
+  const groupKeys = Object.keys(groups).sort((a,b)=>groups[b].length-groups[a].length);
+  if (!state.graveOpenGroups) state.graveOpenGroups = groupKeys.length ? { [groupKeys[0]]: true } : {};
+  const cards = `<div class="chainfolders">` + groupKeys.map(k => {
+    const open = (state.graveOpenGroups||{})[k];
+    const chs = groups[k].sort((a,b)=>(b.peak_tvl||0)-(a.peak_tvl||0));
+    const inner = open ? `<div class="folderbody"><div class="gwrap">${chs.map(graveCard).join('')}</div></div>` : '';
+    return `<div class="chainfolder ${open?'open':''}"><div class="folderhead" data-gravegroup="${esc(k)}"><span class="foldercaret">${open?'▾':'▸'}</span><span class="foldername">${esc(causeLabel(k))}</span><span class="foldercount">${chs.length}</span></div>${inner}</div>`;
+  }).join('') + `</div>`;
   const dq = data.declining || [];
   const watch = dq.length ? `<div class="gpanel"><div class="dsec">🩸 Live dying watch — steepest 90-day decliners, auto-updating from live TVL (${dq.length})</div><div class="watchgrid">${dq.map(w=>`<div class="watchrow"><span class="wn">${esc(w.chain)}</span><span class="w90">${w.change_90d}%<span class="wl">90d</span></span><span class="wdd">-${Math.abs(w.drawdown_pct||0).toFixed(0)}%<span class="wl">peak</span></span>${w.research?'<span class="wtag">profiled ↓</span>':''}</div>`).join('')}</div><div class="gnar muted" style="margin-top:8px">Live from the classifier — chains bleeding out now, before they hit the graveyard. Refreshes automatically.</div></div>` : '';
-  el.innerHTML = `<div class="gvintro">Dead &amp; dying chains — a live decliner watch plus full researched postmortems (founding, funding, token, what went wrong) and an aggregator that extracts the patterns.</div>${watch}${trendsPanel}${chips}<div class="dsec" style="margin:14px 0 10px">${gf==='all'?'Researched postmortems':gf==='dying'?'Dying / declining':'Dead'} — ${filtered.length} chains, biggest first</div><div class="gwrap">${cards||'<div class="skel">None in this filter.</div>'}</div>`;
+  el.innerHTML = `<div class="gvintro">Dead &amp; dying chains — a live decliner watch plus full researched postmortems (founding, funding, token, what went wrong) and an aggregator that extracts the patterns.</div>${watch}${trendsPanel}${chips}<div class="dsec" style="margin:14px 0 10px">${gf==='all'?'Researched postmortems':gf==='dying'?'Dying / declining':'Dead'} — ${filtered.length} chains, grouped by cause of death</div>${filtered.length?cards:'<div class="skel">None in this filter.</div>'}`;
 }
 
 async function loadGraveyard(){
@@ -1867,6 +1892,8 @@ document.getElementById('graveview').addEventListener('click', (e) => {
   if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
   const f = e.target.closest('.gvf');
   if (f && state.graveData) { state.graveFilter = f.dataset.gf; renderGraveyard(state.graveData); return; }
+  const fh = e.target.closest('.folderhead');
+  if (fh && state.graveData) { const k=fh.dataset.gravegroup; state.graveOpenGroups = state.graveOpenGroups||{}; if (state.graveOpenGroups[k]) delete state.graveOpenGroups[k]; else state.graveOpenGroups[k]=true; renderGraveyard(state.graveData); return; }
   const card = e.target.closest('.gcard');
   if (!card || !state.graveData) return;
   const name = card.dataset.chain;
