@@ -141,20 +141,14 @@ let cache = { ts: 0, data: null };
 let rebuilding = false;
 const TTL = 60 * 1000;              // upstream refresh cadence (stale-while-revalidate)
 
-// ---- Dashboard DB access (server-side only) for analyst takes ----
-// Not deployed anywhere reachable yet — short-circuit instead of letting Workers'
-// SSRF protection 403 a fetch to the unset/localhost default on every call.
-function DASH() { return ENV.DASHBOARD_BASE || ''; }
-function DTOKEN() { return ENV.DASHBOARD_TOKEN; }
-function GROUP() { return ENV.ARTIFACT_GROUP || 'main'; }
-const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
-async function dbQuery(sql) {
-  if (!DASH()) return [];
-  const r = await fetch(`${DASH()}/api/db/${GROUP()}/database/query?sql=${encodeURIComponent(sql)}`, {
-    headers: { Authorization: `Bearer ${DTOKEN()}` },
-  });
-  if (!r.ok) throw new Error('db ' + r.status);
-  return (await r.json()).rows || [];
+// ---- D1-backed analyst takes / research data (bound directly, no HTTP hop) ----
+// Pass `params` + `?` placeholders for anything derived from a request (route
+// params, query strings) — never interpolate request-derived values into `sql`.
+async function dbQuery(sql, params = []) {
+  if (!ENV.DB) return [];
+  const stmt = params.length ? ENV.DB.prepare(sql).bind(...params) : ENV.DB.prepare(sql);
+  const { results } = await stmt.all();
+  return results || [];
 }
 let masterCache = { ts: 0, data: null };
 const MASTER_TTL = 6 * 60 * 60 * 1000;
@@ -594,7 +588,7 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
 
     let analysis = null;
     try {
-      const rows = await dbQuery(`SELECT take, sentiment, trend, sources, profile, updated_at FROM chain_analysis WHERE chain = ${sqlStr(row.name)} LIMIT 1`);
+      const rows = await dbQuery(`SELECT take, sentiment, trend, sources, profile, updated_at FROM chain_analysis WHERE chain = ? LIMIT 1`, [row.name]);
       if (rows[0]) { analysis = rows[0]; try { analysis.profile = rows[0].profile ? JSON.parse(rows[0].profile) : null; } catch (e) { analysis.profile = null; } }
     } catch (e) { /* analysis is best-effort */ }
 
@@ -606,7 +600,7 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
     try { topTokens = await chainTopTokens(row); } catch (e) { /* non-fatal */ }
 
     let risk = null;
-    try { const rr = await dbQuery(`SELECT level, summary, evidence, sources FROM risk_flags WHERE entity_type='chain' AND entity_name = ${sqlStr(row.name)} LIMIT 1`); if (rr[0]) risk = rr[0]; } catch (e) {}
+    try { const rr = await dbQuery(`SELECT level, summary, evidence, sources FROM risk_flags WHERE entity_type='chain' AND entity_name = ? LIMIT 1`, [row.name]); if (rr[0]) risk = rr[0]; } catch (e) {}
 
     res.json({ chain: row, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk });
   } catch (e) {
@@ -1092,7 +1086,7 @@ app.get('/api/agent/chain/:key', wrap(async (req, res) => {
   const row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === String(req.params.key).toLowerCase());
   if (!row) return res.status(404).json({ error: 'unknown_chain' });
   let analysis = null;
-  try { const r = await dbQuery(`SELECT take, sentiment, sources, profile FROM chain_analysis WHERE chain=${sqlStr(row.name)} LIMIT 1`); if (r[0]) analysis = r[0]; } catch (e) {}
+  try { const r = await dbQuery(`SELECT take, sentiment, sources, profile FROM chain_analysis WHERE chain=? LIMIT 1`, [row.name]); if (r[0]) analysis = r[0]; } catch (e) {}
   res.json({ schema_version: '1.0.0', data_as_of: cache.data.updatedAt, chain: row, analysis, provenance: { sources: ['defillama', 'growthepie', 'coingecko'] } });
 }));
 app.get('/api/agent/signals', wrap(async (req, res) => {
@@ -1116,7 +1110,7 @@ app.get('/api/agent/risk/:entity', wrap(async (req, res) => {
   if (!x402Gate(req, res, '/api/agent/risk', AGENT_ENDPOINTS['/api/agent/risk'].price, AGENT_ENDPOINTS['/api/agent/risk'].desc)) return;
   const name = String(req.params.entity);
   let rows = [];
-  try { rows = await dbQuery(`SELECT entity_type, entity_name, level, summary, evidence, sources FROM risk_flags WHERE lower(entity_name)=lower(${sqlStr(name)})`); } catch (e) {}
+  try { rows = await dbQuery(`SELECT entity_type, entity_name, level, summary, evidence, sources FROM risk_flags WHERE lower(entity_name)=lower(?)`, [name]); } catch (e) {}
   res.json({ schema_version: '1.0.0', entity: name, flagged: rows.length > 0, risk: rows[0] || { level: 'clean', summary: 'No credible scam/bad-actor concerns found in our dataset.' }, all_matches: rows });
 }));
 
@@ -1142,7 +1136,7 @@ app.get('/api/trace-lookup', wrap(async (req, res) => {
       if (hits.length || nameHit) matches.push({ slug: r.slug, name: r.name, category: r.category, amount_usd: r.amount_usd, nameHit, hits: hits.slice(0, 8) });
     }
     let risk = [];
-    try { risk = await dbQuery(`SELECT entity_type, entity_name, level, summary FROM risk_flags WHERE lower(entity_name) LIKE ${sqlStr('%' + q + '%')} LIMIT 8`); } catch (e) {}
+    try { risk = await dbQuery(`SELECT entity_type, entity_name, level, summary FROM risk_flags WHERE lower(entity_name) LIKE ? LIMIT 8`, ['%' + q + '%']); } catch (e) {}
     res.json({ query: q, matches, risk });
   } catch (e) {
     res.json({ query: q, matches: [], risk: [], error: e.message });
