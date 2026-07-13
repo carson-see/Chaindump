@@ -836,14 +836,16 @@ app.post('/api/desk/propose', wrap(async (req, res) => {
   if (!deskAuth(req, res)) return;
   if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
   let b;
-  try { b = await req.raw.json(); } catch (e) { return res.status(400).json({ error: 'invalid JSON body' }); }
+  try { b = await req.raw.json(); } catch (e) { return res.status(400).json({ error: 'invalid JSON body: ' + (e && e.message || e) }); }
   const dataset = String(b.dataset || '').trim();
   const slug = String(b.slug || '').trim();
   if (!dataset || !slug) return res.status(400).json({ error: 'dataset and slug are required' });
   const namesIndividuals = b.names_individuals ? 1 : 0;
   const confidence = Number(b.confidence);
-  // Force human review for individual-naming/fraud claims or low confidence.
-  const needsReview = (namesIndividuals || !(confidence >= 0.75)) ? 1 : 0;
+  // Force human review for individual-naming/fraud claims or low/invalid confidence
+  // (NaN counts as low — force review, the safe default).
+  const highConfidence = Number.isFinite(confidence) && confidence >= 0.75;
+  const needsReview = (namesIndividuals || !highConfidence) ? 1 : 0;
   try {
     await ENV.DB.prepare(
       `INSERT INTO desk_proposals (dataset, slug, title, summary, payload, sources, names_individuals, confidence, needs_human_review, status, queued_at)
