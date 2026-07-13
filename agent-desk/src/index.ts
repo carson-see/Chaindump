@@ -27,20 +27,24 @@ const DESK_TOKEN = process.env.DESK_TOKEN;
 // authenticated write path (/api/desk/propose). Falls back to a local file when
 // DESK_TOKEN isn't set (offline/dev) or on a transient POST failure. Returns
 // where it landed, for the tool's confirmation text.
-async function persistProposal(dataset: string, slug: string, record: unknown): Promise<string> {
-  if (DESK_TOKEN) {
-    try {
-      const r = await fetch(`${CHAINDUMP_BASE}/api/desk/propose`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${DESK_TOKEN}` },
-        body: JSON.stringify(record),
-      });
-      if (r.ok) return "the review queue (/api/desk/propose)";
-      console.error(`[desk] propose ${r.status}; falling back to local file`);
-    } catch (e) {
-      console.error("[desk] propose failed; falling back to local file:", e instanceof Error ? e.message : e);
-    }
+async function tryPostProposal(record: unknown): Promise<boolean> {
+  if (!DESK_TOKEN) return false;
+  try {
+    const r = await fetch(`${CHAINDUMP_BASE}/api/desk/propose`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${DESK_TOKEN}` },
+      body: JSON.stringify(record),
+    });
+    if (r.ok) return true;
+    console.error(`[desk] propose ${r.status}; falling back to local file`);
+  } catch (e) {
+    console.error("[desk] propose failed; falling back to local file:", e instanceof Error ? e.message : e);
   }
+  return false;
+}
+
+async function persistProposal(dataset: string, slug: string, record: unknown): Promise<string> {
+  if (await tryPostProposal(record)) return "the review queue (/api/desk/propose)";
   await mkdir(QUEUE_DIR, { recursive: true });
   const safeSlug = slug.replace(/[^a-z0-9-]/gi, "-").slice(0, 80);
   await writeFile(join(QUEUE_DIR, `${dataset}.${safeSlug}.json`), JSON.stringify(record, null, 2), "utf8");
