@@ -66,7 +66,7 @@ function srcLine(sources?: Source[]): string {
 
 function fmt(n: unknown): string {
   const v = Number(n);
-  if (!isFinite(v) || v === 0) return "0";
+  if (!Number.isFinite(v) || v === 0) return "0";
   if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
   if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
   if (v >= 1e3) return (v / 1e3).toFixed(1) + "K";
@@ -309,6 +309,7 @@ function powerForCountry(countries: Country[], country: string): ToolResult {
 
 async function main(): Promise<void> {
   const app = express();
+  app.disable("x-powered-by"); // don't advertise the framework/version
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/health", (_req: Request, res: Response) => {
@@ -346,7 +347,9 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((e) => {
+try {
+  await main();
+} catch (e) {
   console.error("fatal:", e);
   process.exit(1);
-});
+}
