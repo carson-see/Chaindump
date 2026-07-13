@@ -77,14 +77,34 @@ across the library sections, and grow case-study coverage.
 - Content generation is a **verified research pass** (cite resolving sources, no
   fabricated figures; adversarial fact-check before publish).
 
-## Phase B — Cron / freshness audit
+## Phase B — Cron / freshness audit  *(audit ✅ done session 2; remediation pending)*
 Verify **every** scheduled job fires and writes fresh data:
-- 5-min snapshot (`chain_snapshots` + `snapshot_cache`) + delta computation.
-- 90-day snapshot prune (1-in-48 ticks).
-- Hourly RWA/DePIN refresh (1-in-12 ticks).
-- growthepie DAA/master live-retry (CF-blocked → D1 last-good).
-- NFT catalog re-index (seed-only now — decide cadence + wire it).
-Confirm via Cloudflare cron logs + D1 `updated_at` freshness per table.
+- ✅ **5-min snapshot** (`chain_snapshots` + `snapshot_cache:chains`) + delta —
+  firing cleanly. Cadence check over the live window: avg 5.0 min, min 4.7 / max
+  5.3, **0 gaps >7 min**. `snapshot_cache:chains` stamped current each tick.
+- ✅ **90-day prune** (1-in-48 ticks) — logic verified correct: `DELETE ... WHERE
+  ts < now_ms − 90d_ms` (units right, ts is ms). NOT over-deleting. (The table
+  only spans ~4.7h because snapshots were reseeded ~15:31 on 2026-07-13, not data
+  loss; the tier classifier uses DefiLlama's own history, so young snapshots don't
+  break `change_90d`.)
+- ✅ **Hourly RWA/DePIN** (1-in-12 ticks) — fresh (124 RWA + 50 DePIN, stamped
+  within the hour).
+- ✅ **growthepie DAA/master** live-retry → D1 last-good — both keys present and
+  recent; fallback path working.
+- ⚠️ **NFT catalog re-index** — **seed-only, NOT wired into cron** (`nft_catalog`,
+  1,972 rows, `indexed_at` frozen at seed time). Source is CoinGecko `/nfts/list`.
+  **Remediation:** add `refreshNftCatalog(env)` gated ~weekly (e.g. 1-in-2016
+  ticks) and upsert; keep `indexed_at`.
+- 🔴 **OFAC `sanctioned_addresses`** — **seed-only, NOT wired (newly-found gap).**
+  925 addrs frozen at seed time. This backs live wallet screening in the Scam
+  Tracker, so a stale SDN snapshot = **missed sanctioned wallets = compliance
+  risk**. Source: 0xB10C OFAC mirror (per-chain text files). **Remediation:** add
+  `refreshSanctioned(env)` gated daily (1-in-288 ticks), fetch + upsert, stamp
+  `updated_at`. Highest-priority Phase B fix.
+- **TDD note:** these two refreshers are the natural moment to stand up the Vitest
+  harness (CLAUDE.md §1.1 gap) — the parse/upsert-shape functions are pure and
+  testable; write the failing test first.
+Confirmed via D1 `updated_at`/`indexed_at`/`ts` freshness per table (2026-07-13).
 
 ## Phase C — Build & deploy the redesign
 Migrate the live app into the committed design system (`design/`): adopt the
