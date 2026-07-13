@@ -1640,7 +1640,7 @@ async function spaShell(env, req) {
     return await r.text();
   } catch (e) { console.error('[spaShell] failed:', e && e.message); throw e; }
 }
-function sendHtml(res, html) { res.status(200).html(html); }
+function sendHtml(res, html) { res.setHeader('Link', DISCOVERY_LINK); res.status(200).html(html); }
 
 // Views that are valid single-segment deep-links → their share copy.
 const VIEW_OG = {
@@ -1690,6 +1690,116 @@ app.get('/collection/:id', wrap(async (req, res) => {
   const title = row ? `${row.name} — Chaindump` : 'NFT Collection — Chaindump';
   const desc = row ? `${row.name} (${row.chain}) — live floor, market cap, 24h volume and holders on Chaindump.` : OG_DESC_FALLBACK;
   sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/collection/${encodeURIComponent(id)}` }));
+}));
+
+// ---------------------------------------------------------------------------
+// Phase D — agent-readiness / AI-discovery surface (robots, sitemap, Link
+// headers, api-catalog). Content policy (Carson 2026-07-13): AI may read for
+// search + answers, but NOT train — Content-Signal ai-train=no, search=yes,
+// ai-input=yes. See docs/agent-readiness.md.
+// ---------------------------------------------------------------------------
+const ORIGIN = 'https://chaindump.xyz';
+const AI_CRAWLERS = ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-Web', 'anthropic-ai', 'Google-Extended', 'PerplexityBot', 'CCBot', 'Applebot-Extended', 'meta-externalagent'];
+const ROBOTS_TXT = [
+  '# Chaindump — real-time blockchain intelligence',
+  '# Content usage (contentsignals.org): index for search and let AI assistants',
+  '# cite/answer with our analysis, but do NOT train models on it.',
+  '',
+  'User-agent: *',
+  'Content-Signal: ai-train=no, search=yes, ai-input=yes',
+  'Allow: /',
+  'Disallow: /api/agent/',
+  '',
+  ...AI_CRAWLERS.flatMap((ua) => [`User-agent: ${ua}`, 'Content-Signal: ai-train=no, search=yes, ai-input=yes', 'Allow: /', 'Disallow: /api/agent/', '']),
+  `Sitemap: ${ORIGIN}/sitemap.xml`,
+  '',
+].join('\n');
+
+app.get('/robots.txt', (c) => c.text(ROBOTS_TXT, 200, { 'cache-control': 'public, max-age=3600' }));
+
+app.get('/sitemap.xml', async (c) => {
+  const urls = [`${ORIGIN}/`, ...Object.keys(VIEW_OG).map((v) => `${ORIGIN}/${v}`)];
+  try { // include the live top chains as entity deep-links when the snapshot is warm
+    if (!cache.data) cache = await loadSnapshot();
+    for (const ch of (cache.data.chains || []).slice(0, 50)) urls.push(`${ORIGIN}/chain/${encodeURIComponent(ch.name)}`);
+  } catch (e) { console.error('[sitemap] entity deep-links skipped:', e instanceof Error ? e.message : e); }
+  const body = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    + urls.map((u) => `  <url><loc>${u.replaceAll('&', '&amp;')}</loc></url>`).join('\n')
+    + '\n</urlset>\n';
+  return new Response(body, { headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+});
+
+// RFC 9727 API catalog — points agents at the x402 agent API, its manifest and health.
+app.get('/.well-known/api-catalog', (c) => {
+  const linkset = { linkset: [{
+    anchor: `${ORIGIN}/api/agent`,
+    'service-desc': [{ href: `${ORIGIN}/api/agent/manifest`, type: 'application/json' }],
+    'service-doc': [{ href: `${ORIGIN}/api`, type: 'text/html' }],
+    status: [{ href: `${ORIGIN}/api/health`, type: 'application/json' }],
+  }] };
+  return new Response(JSON.stringify(linkset), { headers: { 'content-type': 'application/linkset+json', 'cache-control': 'public, max-age=3600' } });
+});
+
+// Agent Skills Discovery (RFC v0.2.0) — advertises Chaindump's differentiated
+// agent capability, pointing at the LIVE x402 agent API (verified 200/402). The
+// skill resource is served below; the index digests it so agents can integrity-
+// check. (The MCP server-card is intentionally deferred until the chaindump-mcp
+// server is hosted at a resolving URL — see docs/agent-readiness.md.)
+const AGENT_SKILL_DOC = `# Chaindump — chain-intel (agent skill)
+
+Differentiated blockchain intelligence for AI agents: OFAC sanctions screening,
+chain forensics (why chains die/stall), live capital-flow & anomaly signals, and
+country crypto power rankings. **Every response carries its sources; signals carry
+a confidence score.** This is analysis + provenance — not raw TVL or spot prices
+(get those free from DefiLlama/CoinGecko).
+
+## Access
+Query via the x402-payable agent API (USDC on Base): a free monthly quota, then
+per-call payment. Discover prices, schemas and payment terms at
+\`/api/agent/manifest\` and \`/.well-known/api-catalog\`.
+
+## Entrypoints
+- \`GET /api/agent/summary\` — market posture + top signals across all chains
+- \`GET /api/agent/chain/{key}\` — full sourced profile + metrics + signals for one chain
+- \`GET /api/agent/signals\` — live signal feed (momentum, capital rotation, anomalies)
+- \`GET /api/agent/risk/{entity}\` — scam / bad-actor risk assessment with cited evidence
+
+## Auth
+x402 (HTTP 402 Payment Required on metered calls). Provenance is the product:
+sources on every response, confidence (0–1) on every signal.
+`;
+
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+app.get('/.well-known/agent-skills/chaindump-chain-intel.md', () =>
+  new Response(AGENT_SKILL_DOC, { headers: { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=3600' } }));
+
+app.get('/.well-known/agent-skills/index.json', async () => {
+  const index = {
+    $schema: 'https://agentskills.io/schema/v0.2.0/index.json',
+    skills: [{
+      name: 'chaindump-chain-intel',
+      type: 'api',
+      description: 'Differentiated blockchain intelligence — OFAC screening, chain forensics, live signals, country power rankings — via the x402 agent API. Sourced.',
+      url: `${ORIGIN}/.well-known/agent-skills/chaindump-chain-intel.md`,
+      sha256: await sha256Hex(AGENT_SKILL_DOC),
+    }],
+  };
+  return new Response(JSON.stringify(index, null, 2), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+});
+
+// RFC 8288 Link header advertising the API catalog + service docs. Applied to
+// the homepage (run_worker_first: ["/"]) and every Worker-served HTML view.
+const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", <${ORIGIN}/api>; rel="service-doc", <${ORIGIN}/api/agent/manifest>; rel="service-desc"`;
+
+// Homepage: Worker-served (run_worker_first: ["/"]) so we can attach the Link
+// header (sendHtml sets it) and proper homepage OG tags.
+app.get('/', wrap(async (req, res) => {
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: `${ORIGIN}/` }));
 }));
 
 // ---------------------------------------------------------------------------

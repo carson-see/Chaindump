@@ -50,12 +50,19 @@ content-type before UAT.
    - Skill: https://isitagentready.com/.well-known/agent-skills/markdown-negotiation/SKILL.md
    - https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/
 
-8. **`/.well-known/mcp/server-card.json`** (SEP-1649) — serverInfo (name,
-   version), transport endpoint, capabilities. Ties into Phase F (the MCP server).
+8. ⏸ **`/.well-known/mcp/server-card.json`** (SEP-1649) — DEFERRED until the
+   Phase F `chaindump-mcp` server is HOSTED at a resolving URL (CTO decision:
+   **Google Cloud Run in `arkova1`**). The MCP server code exists (PR #2) but
+   isn't hosted yet; publishing a server-card at a dead endpoint would break the
+   accuracy bar. Publish this the moment the Cloud Run URL resolves.
    - Skill: https://isitagentready.com/.well-known/agent-skills/mcp-server-card/SKILL.md
 
-9. **`/.well-known/agent-skills/index.json`** (Agent Skills Discovery RFC v0.2.0)
-   — `$schema` + `skills[]` (name, type, description, url, sha256).
+9. ✅ **`/.well-known/agent-skills/index.json`** (Agent Skills Discovery RFC
+   v0.2.0) — DONE. `$schema` + one `chaindump-chain-intel` skill pointing at the
+   served skill doc (`/.well-known/agent-skills/chaindump-chain-intel.md`), with a
+   **request-time SHA-256** so the digest always matches the doc (verified live:
+   both 200, `digestMatches: true`). The skill advertises the LIVE x402 agent API
+   (`/api/agent/*`, verified 200/402 before publishing).
    - Skill: https://isitagentready.com/.well-known/agent-skills/agent-skills/SKILL.md
    - https://github.com/cloudflare/agent-skills-discovery-rfc
 
