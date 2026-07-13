@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chaindump — Onchain Intelligence</title>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<style>
+  :root {
+    --bg:#080a0e; --surface:#0f1117; --surface2:#161922; --surface3:#1e2230;
+    --border:rgba(255,255,255,0.07); --border2:rgba(255,255,255,0.12);
+    --text:#dde4f0; --muted:#5a6478; --muted2:#8491a8;
+    --accent:#22d3ee; --accent2:#60a5fa;
+    --green:#22c55e; --red:#f87171; --yellow:#fbbf24; --purple:#a78bfa;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Inter',system-ui,-apple-system,sans-serif; font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1280px; margin:0 auto; padding:28px 18px 80px; }
+  header { display:flex; align-items:flex-end; justify-content:space-between; flex-wrap:wrap; gap:16px; }
+  h1 { font-size:23px; font-weight:700; letter-spacing:-0.02em; }
+  h1 .dot { color:var(--accent); }
+  .sub { color:var(--muted2); font-size:13px; margin-top:4px; max-width:660px; }
+  .status { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); white-space:nowrap; }
+  .pulse { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(34,197,94,.5)} 70%{box-shadow:0 0 0 7px rgba(34,197,94,0)} 100%{box-shadow:0 0 0 0 rgba(34,197,94,0)} }
+
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:20px 0 16px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
+  .card .label { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
+  .card .val { font-size:21px; font-weight:700; margin-top:5px; font-variant-numeric:tabular-nums; }
+  .card .val.v{color:var(--accent)} .card .val.t{color:var(--accent2)} .card .val.f{color:var(--purple)} .card .val.u{color:var(--green)}
+
+  .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  .search { flex:1; min-width:180px; max-width:280px; background:var(--surface); border:1px solid var(--border2); border-radius:9px; padding:8px 12px; color:var(--text); font-size:13px; outline:none; }
+  .search:focus { border-color:var(--accent); }
+  .legend { color:var(--muted); font-size:12px; margin-left:auto; }
+  .legend b { color:var(--muted2); font-weight:600; }
+
+  html, body { max-width:100%; overflow-x:clip; }
+  body { padding-left:212px; }
+  @media(max-width:900px){ body { padding-left:0; } }
+  .tablewrap { background:var(--surface); border:1px solid var(--border); border-radius:14px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
+  th[data-k="rank"], td.rank { width:44px; }
+  td.rank { overflow:visible; text-overflow:clip; padding-right:4px; }
+  th[data-k="name"], td.chain { width:auto; }
+  th[data-k="activeAddresses"], th[data-k="volume24h"], th[data-k="tvl"], th[data-k="score"] { width:13%; }
+  th[data-k="_spark"] { width:88px; }
+  th[data-k="_links"] { width:118px; }
+  thead th { position:sticky; top:0; z-index:2; background:var(--surface); text-align:right; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; padding:13px 14px; border-bottom:1px solid var(--border2); cursor:pointer; user-select:none; white-space:nowrap; }
+  thead th.left { text-align:left; }
+  thead th:hover { color:var(--text); }
+  thead th.sorted { color:var(--accent); }
+  thead th .arrow { font-size:8px; }
+  tbody td { padding:11px 14px; border-bottom:1px solid var(--border); text-align:right; font-variant-numeric:tabular-nums; white-space:normal; overflow:hidden; text-overflow:ellipsis; }
+  td.chain .cname { white-space:nowrap; }
+  tbody tr:last-child td { border-bottom:none; }
+  tbody tr:hover { background:var(--surface2); }
+  td.rank { color:var(--muted); font-weight:600; text-align:left; width:38px; }
+  td.chain { text-align:left; }
+  .chaincell { display:flex; align-items:center; gap:9px; }
+  .logo { width:22px; height:22px; border-radius:50%; flex-shrink:0; position:relative; overflow:hidden; display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#05070b; }
+  .logo img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .cname { font-weight:600; }
+  .csym { color:var(--muted); font-size:11.5px; margin-left:5px; font-weight:500; }
+  .cprice { display:block; font-size:11px; color:var(--muted2); font-variant-numeric:tabular-nums; margin-top:1px; }
+  .delta { display:inline-block; font-size:11px; font-weight:600; margin-left:6px; padding:1px 5px; border-radius:5px; font-variant-numeric:tabular-nums; }
+  .delta.up { color:var(--green); background:rgba(34,197,94,.10); }
+  .delta.dn { color:var(--red); background:rgba(248,113,113,.10); }
+  .muted { color:var(--muted); }
+  .num { font-weight:500; }
+  .subnum { display:block; font-size:11px; color:var(--muted); margin-top:1px; }
+  .scorecell { display:flex; align-items:center; gap:8px; justify-content:flex-end; }
+  .scorebar { height:6px; border-radius:3px; background:linear-gradient(90deg,var(--accent2),var(--accent)); }
+  tr.crow { cursor:pointer; }
+  tr.crow.open { background:var(--surface2); }
+  tr.crow.open td { border-bottom-color:transparent; }
+  .chev { color:var(--muted); font-size:10px; width:10px; display:inline-block; margin-right:2px; transition:color .15s; }
+  tr.crow:hover .chev { color:var(--accent); }
+  tr.detailrow td { padding:0; background:var(--surface2); border-bottom:1px solid var(--border2); text-align:left; }
+  .detail { padding:18px 22px 22px; }
+  .verdictstrip { display:flex; align-items:center; gap:16px; background:var(--surface); border:1px solid var(--border2); border-radius:12px; padding:14px 18px; margin-bottom:14px; }
+  .vscore { font-size:30px; font-weight:800; color:var(--accent); font-variant-numeric:tabular-nums; line-height:1; }
+  .vscore span { font-size:13px; color:var(--muted); font-weight:600; }
+  .vmeta { display:flex; flex-direction:column; gap:5px; }
+  .vline { font-size:12.5px; color:var(--muted2); }
+  .dtitle { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+  .dname { font-size:16px; font-weight:700; }
+  .ddesc { color:var(--muted2); font-size:12.5px; margin-top:3px; max-width:760px; line-height:1.55; }
+  .logo.big { width:38px; height:38px; font-size:17px; }
+  .hprice { font-size:13px; font-weight:700; color:var(--accent); margin-left:10px; font-variant-numeric:tabular-nums; }
+  .riskbanner { border-radius:9px; padding:10px 13px; margin-bottom:14px; font-size:12.5px; line-height:1.55; }
+  .riskbanner.rk-high { background:rgba(248,113,113,.12); border:1px solid rgba(248,113,113,.4); color:#fecaca; }
+  .riskbanner.rk-caution { background:rgba(251,191,36,.1); border:1px solid rgba(251,191,36,.35); color:#fde68a; }
+  .riskbanner b { font-weight:700; }
+  .riskbanner .rkev { color:var(--muted2); display:block; margin-top:4px; }
+  .riskbanner a { color:inherit; text-decoration:underline; }
+  .uslegend { display:flex; gap:16px; flex-wrap:wrap; margin:14px 0 10px; font-size:12px; color:var(--muted2); }
+  .uslegend span { display:flex; align-items:center; gap:6px; }
+  .uslegend i { width:12px; height:12px; border-radius:3px; display:inline-block; }
+  .usmap { display:grid; grid-template-columns:repeat(11, 1fr); gap:5px; max-width:720px; }
+  .ustile { aspect-ratio:1; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; border-radius:6px; cursor:pointer; color:#0a0c10; transition:transform .1s, outline .1s; user-select:none; }
+  .ustile:hover { transform:scale(1.08); outline:2px solid var(--text); z-index:2; }
+  .ustile.sel { outline:2px solid var(--accent); }
+  .st-pro, .ustile.st-pro { background:#22c55e; }
+  .st-mix, .ustile.st-mix { background:#fbbf24; }
+  .st-anti, .ustile.st-anti { background:#f87171; }
+  .st-unk, .ustile.st-unk { background:#2a3040; color:var(--muted); }
+  .usmapwrap { max-width:860px; margin:6px 0; }
+  #usmapsvg { width:100%; height:auto; display:block; }
+  #usmapsvg path { fill:#242b38; stroke:#0a0c10; stroke-width:0.8; cursor:pointer; transition:fill .1s, filter .1s, stroke .1s; }
+  #usmapsvg path.st-pro { fill:#22c55e; color:#22c55e; }
+  #usmapsvg path.st-mix { fill:#fbbf24; color:#fbbf24; }
+  #usmapsvg path.st-anti { fill:#f87171; color:#f87171; }
+  #usmapsvg path.st-unk { fill:#242b38; color:#5a6478; }
+  #usmapsvg path:hover { filter:brightness(1.45) drop-shadow(0 0 7px currentColor); stroke:#fff; stroke-width:1.2; }
+  #usmapsvg path.sel { stroke:var(--accent); stroke-width:2; filter:drop-shadow(0 0 6px var(--accent)); }
+  .uspreview { min-height:20px; margin:12px 0 0; font-size:13px; color:var(--text); }
+  .uspreview .up { color:var(--green); } .uspreview .dn { color:var(--red); }
+  @media(max-width:560px){ .usmap{gap:3px} .ustile{font-size:9px} }
+  .nfilters { display:flex; gap:7px; flex-wrap:wrap; margin:14px 0 12px; }
+  .nfilter { font-size:12px; padding:5px 12px; border-radius:20px; border:1px solid var(--border2); color:var(--muted2); cursor:pointer; }
+  .nfilter:hover { color:var(--text); }
+  .nfilter.on { background:var(--accent); color:#05070b; border-color:var(--accent); font-weight:600; }
+  .newslist { display:flex; flex-direction:column; }
+  .newsitem { display:flex; align-items:baseline; gap:12px; padding:12px 4px; border-bottom:1px solid var(--border); text-decoration:none; color:var(--text); }
+  .newsitem:hover { background:var(--surface2); }
+  .nsrc { flex-shrink:0; width:120px; font-size:11px; color:var(--accent2); font-weight:600; }
+  .ntitle { flex:1; font-size:13.5px; line-height:1.45; }
+  .newsitem:hover .ntitle { color:var(--accent); }
+  .nage { flex-shrink:0; font-size:11px; color:var(--muted); white-space:nowrap; }
+  .pwbar { display:flex; align-items:center; gap:10px; margin-bottom:6px; font-size:12px; }
+  .pwl { width:96px; flex-shrink:0; color:var(--muted2); }
+  .pwtrack { flex:1; height:7px; background:var(--surface3); border-radius:4px; overflow:hidden; }
+  .pwfill { display:block; height:100%; background:linear-gradient(90deg,var(--accent2),var(--accent)); border-radius:4px; }
+  .pwv { width:26px; text-align:right; font-variant-numeric:tabular-nums; color:var(--text); font-weight:600; }
+  .hoptrail { display:flex; flex-direction:column; gap:2px; }
+  .hop { padding:2px 0; }
+  .hopfrom, .hopto { font-size:13px; font-weight:600; color:var(--text); padding:6px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px; display:inline-block; }
+  .hoparrow { color:var(--muted); font-size:12px; padding:4px 0 4px 16px; display:flex; align-items:center; gap:8px; }
+  .hopmeta { color:var(--accent2); font-variant-numeric:tabular-nums; }
+  .hopmeta a { color:var(--accent); text-decoration:none; }
+  .hopnote { font-size:12px; color:var(--muted2); padding:4px 0 8px 16px; border-left:2px solid var(--border); margin:2px 0 6px 6px; }
+  .tl { display:flex; flex-direction:column; gap:0; }
+  .tlrow { display:flex; gap:12px; padding:6px 0; border-bottom:1px solid var(--border); font-size:12.5px; }
+  .tld { flex-shrink:0; width:88px; color:var(--accent2); font-weight:600; font-variant-numeric:tabular-nums; }
+  .tle { color:var(--muted2); }
+  .entlist { display:flex; flex-direction:column; gap:5px; }
+  .entrow { display:flex; gap:10px; align-items:baseline; font-size:12.5px; }
+  .entrole { flex-shrink:0; width:96px; font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); font-weight:700; }
+  .entname { color:var(--text); }
+  .ent-addr { font-family:ui-monospace,monospace; font-size:10.5px; color:var(--muted2); background:var(--surface3); padding:1px 5px; border-radius:4px; word-break:break-all; }
+  .tracesearch { margin:14px 0 0; }
+  .tracesearch input { width:100%; max-width:520px; background:var(--surface); border:1px solid var(--border2); border-radius:10px; padding:11px 14px; color:var(--text); font-size:14px; outline:none; }
+  .tracesearch input:focus { border-color:var(--accent); }
+  .tracepanel { background:var(--surface); border:1px solid var(--border2); border-radius:12px; padding:14px 16px; margin:12px 0; }
+  .traceres { font-size:13px; line-height:1.5; padding:8px 0; border-bottom:1px solid var(--border); }
+  .traceres[data-goto] { cursor:pointer; }
+  .traceres[data-goto]:hover { background:var(--surface2); }
+  .traceres.muted { color:var(--muted); border:none; }
+  .tracehits { margin-top:5px; }
+  .tracehit { font-size:12px; color:var(--muted2); padding:2px 0 2px 10px; }
+  .tracehit a { color:var(--accent); text-decoration:none; }
+  .tracegoto { font-size:11px; color:var(--accent2); margin-top:4px; }
+  .tracemode { display:flex; gap:4px; margin:12px 0; }
+  .tm { font-size:12.5px; padding:6px 14px; border-radius:8px; border:1px solid var(--border2); color:var(--muted2); cursor:pointer; }
+  .tm.on { background:var(--accent); color:#05070b; border-color:var(--accent); font-weight:600; }
+  .weblegend { display:flex; gap:16px; flex-wrap:wrap; font-size:11.5px; color:var(--muted2); margin:6px 0 10px; }
+  .weblegend i { display:inline-block; width:10px; height:10px; border-radius:50%; vertical-align:middle; margin-right:5px; }
+  .weblegend .lg-sus { background:#f87171; } .weblegend .lg-infra { background:#a78bfa; } .weblegend .lg-shared { background:#fbbf24; } .weblegend .lg-norm { background:#3a4560; }
+  .scamweb { width:100%; height:560px; background:var(--surface); border:1px solid var(--border2); border-radius:12px; }
+  .webinfo { font-size:12.5px; color:var(--muted2); margin-top:10px; min-height:20px; padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:9px; }
+  .webinfo a { color:var(--accent); text-decoration:none; }
+  .entlinks { margin-top:3px; font-size:11px; }
+  .entlinks a { color:var(--accent2); text-decoration:none; margin-right:8px; }
+  @media(max-width:600px){ .newsitem{flex-wrap:wrap; gap:4px} .nsrc{width:auto} .nage{width:100%} }
+  .statgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:18px; }
+  .stat { background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:9px 11px; }
+  .stat .sl { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .stat .sv { font-size:14px; font-weight:600; margin-top:3px; font-variant-numeric:tabular-nums; }
+  .dsec { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:600; margin-bottom:9px; }
+  .projgrid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .proj { background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:10px 12px; }
+  .proj .pn { font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .proj .pc { color:var(--muted); font-size:11px; margin:2px 0 6px; }
+  .proj .pt { color:var(--accent2); font-weight:600; font-variant-numeric:tabular-nums; }
+  .applist { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .app { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .apphead { display:flex; align-items:center; gap:8px; }
+  .applogo { width:20px; height:20px; border-radius:5px; object-fit:cover; flex-shrink:0; background:var(--surface3); }
+  .app .pn { font-weight:600; font-size:13px; }
+  .app .pc { color:var(--muted); font-size:11px; }
+  .app .pt { color:var(--accent2); font-weight:600; font-size:12.5px; margin-left:auto; font-variant-numeric:tabular-nums; }
+  .appdesc { color:var(--muted2); font-size:11.5px; line-height:1.5; margin-top:7px; }
+  .applinks { margin-top:7px; font-size:11px; }
+  .applinks a { color:var(--accent2); text-decoration:none; }
+  .applinks a:hover { text-decoration:underline; }
+  @media(max-width:820px){ .applist{grid-template-columns:1fr} }
+  .mkts { display:flex; flex-direction:column; gap:3px; }
+  .mchip { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; color:var(--accent2); text-decoration:none; white-space:nowrap; }
+  .mchip:hover { color:var(--accent); text-decoration:underline; }
+  .mchip .mk { font-size:8.5px; font-weight:700; color:var(--muted); background:var(--surface3); border-radius:4px; padding:1px 4px; letter-spacing:.03em; }
+  .mktbtns { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; }
+  .mktbtn { display:inline-flex; align-items:center; gap:7px; background:var(--surface); border:1px solid var(--border2); border-radius:9px; padding:9px 13px; color:var(--text); text-decoration:none; font-size:13px; font-weight:600; }
+  .mktbtn:hover { border-color:var(--accent); }
+  .mktbtn .mk { font-size:9px; color:var(--muted); }
+  .trendwrap { display:flex; gap:14px; align-items:stretch; margin-bottom:12px; flex-wrap:wrap; }
+  .trendchart { background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:12px 14px; display:flex; flex-direction:column; gap:6px; justify-content:center; }
+  .tlabel { color:var(--muted); font-size:10.5px; }
+  .trendstats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; flex:1; min-width:260px; }
+  .momentum { background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; padding:11px 14px; font-size:13px; color:var(--muted2); line-height:1.55; margin-bottom:18px; }
+  .momentum b { color:var(--text); font-weight:600; }
+  .anbox { background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:12px 15px; font-size:13px; line-height:1.6; color:var(--text); margin-bottom:18px; }
+  .anbox.muted { color:var(--muted); }
+  .sent { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:2px 7px; border-radius:5px; margin-left:8px; vertical-align:middle; }
+  .sent.bullish { color:var(--green); background:rgba(34,197,94,.12); }
+  .sent.bearish { color:var(--red); background:rgba(248,113,113,.12); }
+  .sent.neutral, .sent.mixed { color:var(--yellow); background:rgba(251,191,36,.12); }
+  .anwhen { font-size:10px; color:var(--muted); font-weight:500; text-transform:none; letter-spacing:0; margin-left:8px; }
+  .asrc { margin-top:10px; padding-top:9px; border-top:1px solid var(--border); font-size:11.5px; color:var(--muted); }
+  .asrc a { color:var(--accent2); text-decoration:none; }
+  .asrc a:hover { text-decoration:underline; }
+  .qm { display:inline-block; width:12px; height:12px; line-height:12px; text-align:center; border-radius:50%; background:var(--surface3); color:var(--muted2); font-size:8px; font-weight:700; cursor:help; }
+  .reflink { margin-top:6px; font-size:11.5px; }
+  .reflink a { color:var(--accent2); text-decoration:none; }
+  .reflink a:hover { text-decoration:underline; }
+  .notable { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:0 0 14px; }
+  .notable:empty { display:none; }
+  .nlabel { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--yellow); margin-right:2px; }
+  .nchip { font-size:11px; padding:2px 8px; border-radius:14px; border:1px solid var(--border2); cursor:pointer; white-space:nowrap; transition:border-color .15s; }
+  .nchip b { font-weight:600; }
+  .nchip.up { color:var(--green); background:rgba(34,197,94,.07); border-color:rgba(34,197,94,.25); }
+  .nchip.down { color:var(--red); background:rgba(248,113,113,.07); border-color:rgba(248,113,113,.25); }
+  .nchip:hover { border-color:var(--accent); }
+  .tabs { position:fixed; left:0; top:0; bottom:0; width:212px; display:flex; flex-direction:column; align-items:stretch; gap:1px; padding:16px 12px; border-right:1px solid var(--border); background:var(--surface); overflow-y:auto; z-index:30; scrollbar-width:thin; }
+  .navbrand { font-size:15px; font-weight:800; letter-spacing:-.02em; padding:4px 8px 2px; color:var(--text); }
+  .navtag { font-size:10px; color:var(--muted); padding:0 8px 12px; letter-spacing:.02em; }
+  .navgroup-h { font-size:9.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:700; padding:13px 8px 4px; }
+  .tab { text-align:left; background:none; border:none; color:var(--muted2); font-size:13px; font-weight:500; padding:7px 9px; cursor:pointer; border-radius:7px; white-space:nowrap; letter-spacing:-.01em; transition:background .1s,color .1s; }
+  .tab:hover { color:var(--text); background:var(--surface2); }
+  .tab.active { color:var(--text); background:var(--surface3); font-weight:600; box-shadow:inset 2px 0 0 var(--accent); }
+  @media(max-width:900px){
+    .tabs { position:static; width:auto; flex-direction:row; flex-wrap:wrap; gap:4px; border-right:none; border-bottom:1px solid var(--border); padding:12px 0; margin:0 0 10px; background:none; }
+    .navbrand { width:100%; padding:0 0 8px; }
+    .navgroup-h { display:none; }
+    .tab { border:1px solid var(--border); border-radius:8px; padding:6px 11px; font-size:12px; }
+    .tab.active { box-shadow:none; background:var(--accent); color:#05070b; }
+  }
+  .gvintro { color:var(--muted2); font-size:13px; margin:16px 0 14px; max-width:760px; line-height:1.55; }
+  .gwrap { display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
+  .gcard { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+  .ghead { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .gname { font-size:16px; font-weight:700; }
+  .gverdict { font-size:9.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; padding:2px 7px; border-radius:5px; margin-left:6px; vertical-align:middle; }
+  .gverdict.dead { color:var(--red); background:rgba(248,113,113,.12); }
+  .gverdict.declining { color:var(--yellow); background:rgba(251,191,36,.12); }
+  .gverdict.spec { color:var(--purple); background:rgba(167,139,250,.12); }
+  .gverdict.recover { color:var(--green); background:rgba(34,197,94,.12); }
+  .gdd { text-align:right; font-size:18px; font-weight:700; color:var(--red); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .gddl { display:block; font-size:9.5px; color:var(--muted); font-weight:500; text-transform:uppercase; letter-spacing:.04em; }
+  .gmeta { color:var(--muted); font-size:11.5px; margin:6px 0 12px; font-variant-numeric:tabular-nums; }
+  .gsec { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); font-weight:600; margin:10px 0 5px; }
+  .gbody { font-size:12.5px; line-height:1.6; color:var(--text); }
+  .gpanel { background:var(--surface); border:1px solid var(--border2); border-radius:14px; padding:18px 20px; margin-bottom:8px; }
+  .gstats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:18px; }
+  .gsx { background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .gsv { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .gsl { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; margin-top:4px; }
+  .gcols { display:grid; grid-template-columns:1fr 1.3fr; gap:22px; }
+  .taglist { display:flex; flex-direction:column; gap:7px; }
+  .tagrow { display:flex; align-items:center; gap:8px; font-size:12px; }
+  .tagn { width:110px; flex-shrink:0; color:var(--muted2); }
+  .tagbarwrap { flex:1; background:var(--surface3); border-radius:4px; height:8px; overflow:hidden; }
+  .tagbar { display:block; height:100%; background:linear-gradient(90deg,var(--red),#fb923c); border-radius:4px; }
+  .tagc { width:20px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .gnar { font-size:12.5px; line-height:1.65; color:var(--muted2); }
+  .gnar.muted { color:var(--muted); }
+  .prose, .accbody, .proseclamp { font-size:12.5px; line-height:1.65; color:var(--muted2); }
+  .prose p, .accbody p, .proseclamp p { margin:0 0 8px; }
+  .proselist { margin:4px 0 0; padding-left:18px; }
+  .proselist li { margin-bottom:7px; }
+  .prosebox { position:relative; }
+  .proseclamp { max-height:112px; overflow:hidden; position:relative; -webkit-mask-image:linear-gradient(180deg,#000 60%,transparent); mask-image:linear-gradient(180deg,#000 60%,transparent); }
+  .prosebox.open .proseclamp { max-height:none; -webkit-mask-image:none; mask-image:none; }
+  .prosetoggle { background:none; border:none; color:var(--accent2); font-size:11.5px; font-weight:600; cursor:pointer; padding:4px 0 0; }
+  .prosetoggle:hover { color:var(--accent); }
+  .stampline { font-size:10.5px; color:var(--muted); margin-top:10px; padding-top:8px; border-top:1px solid var(--border); }
+  .gvfilters { display:flex; gap:7px; flex-wrap:wrap; margin:14px 0 4px; }
+  .gvf { font-size:12px; padding:5px 12px; border-radius:20px; border:1px solid var(--border2); color:var(--muted2); cursor:pointer; }
+  .gvf:hover { color:var(--text); }
+  .gvf.on { background:var(--accent); color:#05070b; border-color:var(--accent); font-weight:600; }
+  .watchgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px; }
+  .watchrow { display:flex; align-items:baseline; gap:8px; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:9px 11px; }
+  .watchrow .wn { font-weight:600; font-size:13px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .watchrow .w90 { color:var(--red); font-weight:700; font-size:13px; font-variant-numeric:tabular-nums; }
+  .watchrow .wdd { color:var(--muted2); font-size:11px; font-variant-numeric:tabular-nums; }
+  .watchrow .wl { display:block; font-size:8.5px; color:var(--muted); text-transform:uppercase; }
+  .watchrow .wtag { font-size:9px; color:var(--accent2); }
+  .acc { border:1px solid var(--border); border-radius:9px; margin-bottom:8px; overflow:hidden; background:var(--surface2); }
+  .acchead { width:100%; display:flex; justify-content:space-between; align-items:center; background:none; border:none; color:var(--text); font-size:12.5px; font-weight:600; padding:11px 13px; cursor:pointer; text-align:left; }
+  .acchead:hover { color:var(--accent); }
+  .accchev { color:var(--muted); transition:transform .18s; }
+  .acc.open .accchev { transform:rotate(180deg); }
+  .accbody { display:none; padding:0 13px 13px; }
+  .acc.open .accbody { display:block; }
+  .gcard { cursor:pointer; transition:border-color .15s; }
+  .gcard:hover { border-color:var(--border2); }
+  .gcard.open { border-color:var(--accent); }
+  .gexpand { color:var(--accent2); font-size:11.5px; font-weight:600; margin-top:10px; }
+  .gexp { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
+  .gfield { font-size:12.5px; margin-bottom:7px; color:var(--text); }
+  .gfl { display:inline-block; min-width:64px; color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; margin-right:4px; }
+  .tdrop { color:var(--red); font-weight:600; }
+  .ctags { display:flex; flex-wrap:wrap; gap:5px; margin-top:10px; }
+  .ctag { font-size:10.5px; font-weight:600; color:var(--muted2); background:var(--surface3); border-radius:5px; padding:2px 7px; }
+  @media(max-width:760px){ .gwrap{grid-template-columns:1fr} .gstats{grid-template-columns:1fr 1fr} .gcols{grid-template-columns:1fr} }
+  @media(max-width:820px){ .trendstats{grid-template-columns:repeat(2,1fr)} }
+  @media(max-width:820px){ .statgrid{grid-template-columns:repeat(2,1fr)} .projgrid{grid-template-columns:repeat(2,1fr)} }
+  footer { margin-top:18px; color:var(--muted); font-size:12px; text-align:center; line-height:1.7; }
+  .err { background:rgba(248,113,113,.1); border:1px solid rgba(248,113,113,.3); color:var(--red); padding:11px 15px; border-radius:10px; margin:14px 0; font-size:13px; }
+  .skel { color:var(--muted); padding:40px; text-align:center; }
+  @media(max-width:1000px){ .hide-md{display:none} }
+  @media(max-width:720px){ .hide-sm{display:none} }
+  @media(max-width:680px){
+    .tablewrap{ overflow-x:visible; border:none; background:none; border-radius:0; }
+    thead{ display:none; }
+    table, tbody, tr, td{ display:block; width:100% !important; }
+    tr.crow{ background:var(--surface); border:1px solid var(--border); border-radius:12px; margin-bottom:10px; padding:4px 2px; }
+    tr.crow:hover{ background:var(--surface); }
+    tr.crow td{ display:flex; justify-content:flex-start; align-items:baseline; gap:10px; text-align:left; border:none; padding:6px 14px; }
+    tr.crow td::before{ content:attr(data-label); color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; text-align:left; min-width:92px; font-weight:600; }
+    td.rank{ position:absolute; opacity:.5; padding:6px 10px; }
+    td.chain{ justify-content:flex-start; padding-left:44px; }
+    td.chain::before{ content:none; }
+    tr.detailrow td{ display:block; padding:0; }
+    tr.detailrow td::before{ content:none; }
+    .statgrid, .projgrid, .trendstats{ grid-template-columns:1fr 1fr; }
+  }
+  @media(max-width:640px){ .cards{grid-template-columns:1fr 1fr} h1{font-size:20px} .legend{display:none} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Chaindump<span class="dot">.</span></h1>
+      <div class="sub">Onchain intelligence across chains, assets, markets, policy &amp; forensics — every claim sourced. <span class="muted">chaindump.xyz</span></div>
+    </div>
+    <div class="status"><span class="pulse"></span><span id="status">loading…</span></div>
+  </header>
+
+  <div id="err"></div>
+
+  <aside class="tabs" id="sidebar">
+    <div class="navbrand">Chaindump<span class="dot">.</span></div>
+    <div class="navtag">Live chain intelligence + onchain forensics</div>
+    <div class="navgroup-h">Chains</div>
+    <button class="tab active" data-view="live">Live · Top 50</button>
+    <div class="navgroup-h">🔬 Forensics</div>
+    <button class="tab" data-view="traces">Scam Tracker</button>
+    <button class="tab" data-view="grave">Dead &amp; Dying</button>
+    <button class="tab" data-view="mid">Stuck / Mid</button>
+    <div class="navgroup-h">Markets &amp; assets</div>
+    <button class="tab" data-view="stables">Stablecoins</button>
+    <button class="tab" data-view="nft">NFTs &amp; Ordinals</button>
+    <button class="tab" data-view="rwa">RWA · DePIN</button>
+    <button class="tab" data-view="infra">Storage / Verify</button>
+    <button class="tab" data-view="markets">Treasuries · Miners · ETFs</button>
+    <div class="navgroup-h">World</div>
+    <button class="tab" data-view="geo">Global Adoption</button>
+    <button class="tab" data-view="uspolicy">US Policy Map</button>
+    <button class="tab" data-view="power">Power Rankings</button>
+    <div class="navgroup-h">Signal</div>
+    <button class="tab" data-view="news">News</button>
+    <div class="navgroup-h">🤖 For agents</div>
+    <button class="tab" data-view="api">Agent API · x402</button>
+  </aside>
+
+  <div id="midview" style="display:none"></div>
+  <div id="apiview" style="display:none"></div>
+  <div id="graveview" style="display:none"></div>
+  <div id="nftview" style="display:none"></div>
+  <div id="infraview" style="display:none"></div>
+  <div id="marketsview" style="display:none"></div>
+  <div id="stablesview" style="display:none"></div>
+  <div id="rwaview" style="display:none"></div>
+  <div id="geoview" style="display:none"></div>
+  <div id="uspolicyview" style="display:none"></div>
+  <div id="powerview" style="display:none"></div>
+  <div id="newsview" style="display:none"></div>
+  <div id="tracesview" style="display:none"></div>
+
+  <div class="cards liveonly">
+    <div class="card"><div class="label">Active Addresses 24h</div><div class="val u" id="c-usr">—</div></div>
+    <div class="card"><div class="label">24h DEX Volume</div><div class="val v" id="c-vol">—</div></div>
+    <div class="card"><div class="label">Total TVL</div><div class="val t" id="c-tvl">—</div></div>
+    <div class="card"><div class="label">Stablecoin Mcap</div><div class="val f" id="c-stbl">—</div></div>
+  </div>
+
+  <div id="notable" class="notable liveonly"></div>
+
+  <div class="toolbar liveonly">
+    <input class="search" id="search" placeholder="Search chains…" />
+    <div class="legend"><b>Ranked by</b> composite activity (50% volume · 30% TVL · 20% fees). Click any column to re-sort.</div>
+  </div>
+
+  <div class="tablewrap liveonly">
+    <table>
+      <thead>
+        <tr>
+          <th class="left" data-k="rank" data-label="#" data-hint="Composite activity rank (1 = most active). Blends 24h DEX volume, TVL and 24h fees.">#</th>
+          <th class="left" data-k="name" data-label="Chain">Chain</th>
+          <th data-k="activeAddresses" data-label="Active Addr 24h" data-hint="Daily active addresses (growthepie). A proxy for real users. Only available for EVM chains — others show —.">Active Addr 24h</th>
+          <th data-k="volume24h" data-label="24h Volume" data-hint="24h decentralized exchange (DEX) trading volume on the chain, from DefiLlama. Excludes centralized exchanges.">24h Volume</th>
+          <th data-k="tvl" data-label="TVL" data-hint="Total Value Locked — total assets deposited in the chain's DeFi protocols. A measure of on-chain capital.">TVL</th>
+          <th class="left hide-md" data-k="_spark" data-label="7d TVL" data-hint="TVL trend over the last 7 days. Green = rising, red = falling.">7d TVL</th>
+          <th class="left hide-sm" data-k="_links" data-label="Markets" data-hint="Links to the chain's leading DEX and NFT marketplace.">Markets</th>
+          <th data-k="score" data-label="Activity" data-hint="Activity index scaled 1–100 across the top 25 (100 = most active). Composite of 24h volume (50%), TVL (30%) and fees (20%).">Activity</th>
+        </tr>
+      </thead>
+      <tbody id="rows"><tr><td colspan="8" class="skel">Fetching live chain data…</td></tr></tbody>
+    </table>
+  </div>
+
+  <footer class="liveonly">
+    Active addresses from <b>growthepie</b> (EVM chains; non-EVM shown as “—”). Volume/fees/TVL/stablecoins from <b>DefiLlama</b>; native-token 24h from <b>CoinGecko</b>.<br/>
+    <span id="cov"></span>
+  </footer>
+</div>
+
+<script>
+let state = { chains: [], sortKey: 'rank', dir: 1, q: '', expanded: null, details: {}, graveExpanded: null, graveData: null, midExpanded: null, midData: null, nftExpanded: null, nftData: null, infraExpanded: null, infraData: null, graveFilter: 'all', marketsExpanded: null, marketsData: null, stablesExpanded: null, stablesData: null, geoExpanded: null, geoData: null, rwaExpanded: null, rwaData: null, usData: null, usSelected: null, newsData: null, powerData: null, powerExpanded: null, tracesData: null, tracesExpanded: null, activeView: 'live', traceQuery: '', traceResults: null, tracesMode: 'cases', scamGraph: null };
+
+const fmtUsd = (n) => n == null ? '—' : (n < 0 ? '-' : '') + '$' + Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(Math.abs(n));
+const fmtNum = (n) => n == null ? '—' : Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+// Robust source renderer — handles both plain URL strings ["https://…"] and
+// {title,url} objects, dedups, and derives a clean domain label when no title.
+function srcHtml(sources, label) {
+  if (!sources) return '';
+  let arr; try { arr = typeof sources === 'string' ? JSON.parse(sources) : sources; } catch (e) { return ''; }
+  if (!Array.isArray(arr) || !arr.length) return '';
+  const seen = new Set();
+  const links = arr.map((s) => {
+    const u = typeof s === 'string' ? s : (s && s.url);
+    if (!u || seen.has(u)) return ''; seen.add(u);
+    const t = (s && typeof s === 'object' && s.title) || String(u).replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+    return `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(t)} ↗</a>`;
+  }).filter(Boolean);
+  if (!links.length) return '';
+  return `<div class="asrc">${label || 'Sources: '}${links.join(' · ')}</div>`;
+}
+
+function delta(v) {
+  if (v == null || isNaN(v)) return '';
+  const up = v >= 0;
+  return `<span class="delta ${up?'up':'dn'}">${up?'▲':'▼'} ${Math.abs(v).toFixed(1)}%</span>`;
+}
+
+function sparkline(values, w = 78, h = 22, pad = 3) {
+  if (!values || values.length < 2) return '<span class="muted">—</span>';
+  const min = Math.min(...values); let max = Math.max(...values);
+  if (min === max) max = min + 1;
+  const nx = i => pad + (i/(values.length-1))*(w-2*pad);
+  const ny = v => h - pad - ((v-min)/(max-min))*(h-2*pad);
+  const pts = values.map((v,i)=>[nx(i),ny(v)]);
+  const line = pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const up = values[values.length-1] >= values[0];
+  const col = up ? 'var(--green)' : 'var(--red)';
+  const [ex,ey] = pts[pts.length-1];
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="7 day TVL trend ${up?'up':'down'}">
+    <path d="${line} L${w-pad} ${h} L${pad} ${h} Z" fill="${col}" fill-opacity="0.12"/>
+    <path d="${line}" fill="none" stroke="${col}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${ex}" cy="${ey}" r="1.8" fill="${col}"/></svg>`;
+}
+
+const HUES = ['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#ef4444','#a3e635'];
+function hueFor(name){ return HUES[Math.abs([...name].reduce((a,ch)=>a+ch.charCodeAt(0),0)) % HUES.length]; }
+function logo(c) {
+  const slug = c.name.toLowerCase().trim().replace(/\s+/g,'-');
+  // Monogram tile is the reliable base; the real icon layers on top and removes itself if it 404s.
+  return `<span class="logo" style="background:${hueFor(c.name)}">${esc(c.name[0].toUpperCase())}<img src="https://icons.llamao.fi/icons/chains/rsz_${encodeURIComponent(slug)}.jpg" alt="" loading="lazy" onerror="this.remove()"></span>`;
+}
+
+function riskBanner(risk){
+  if (!risk || !risk.level || risk.level==='clean') return '';
+  const cls = risk.level==='high' ? 'rk-high' : 'rk-caution';
+  let src = '';
+  if (risk.sources) { try { const arr = typeof risk.sources==='string'?JSON.parse(risk.sources):risk.sources; if (Array.isArray(arr)&&arr.length) src = ' · ' + arr.map(x=>{const u=typeof x==='string'?x:(x&&x.url);return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">source ↗</a>`:'';}).filter(Boolean).join(' · '); } catch(e){} }
+  return `<div class="riskbanner ${cls}"><b>⚠ ${risk.level==='high'?'High risk / bad-actor concerns':'Caution'}</b> — ${esc(risk.summary||'')}${risk.evidence?` <span class="rkev">${esc(risk.evidence)}</span>`:''}${src}</div>`;
+}
+function actScore(c){
+  const scores = state.chains.map(x=>x.score||0);
+  const mn = Math.min(...scores), mx = Math.max(...scores);
+  return (mx > mn) ? Math.round(1 + (((c.score||0) - mn)/(mx - mn)) * 99) : 100;
+}
+
+function marketChips(c){
+  const L = c.links;
+  if (!L || (!L.dex && !L.nft)) return '<span class="muted">—</span>';
+  const a = (x,kind) => x && x.url ? `<a class="mchip" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer"><span class="mk">${kind}</span>${esc(x.name)} ↗</a>` : '';
+  return `<div class="mkts">${a(L.dex,'DEX')}${a(L.nft,'NFT')}</div>`;
+}
+
+function render() {
+  let rows = state.chains.filter(c => !state.q || c.name.toLowerCase().includes(state.q));
+  rows.sort((a,b) => {
+    if (state.sortKey === 'name') return state.dir * a.name.localeCompare(b.name);
+    if (state.sortKey === 'rank') return state.dir * (a.rank - b.rank);
+    if (state.sortKey === '_spark') return state.dir * ((a.tvlChange7d||0) - (b.tvlChange7d||0));
+    if (state.sortKey === '_links') return 0;
+    const av = a[state.sortKey], bv = b[state.sortKey];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1; if (bv == null) return -1;
+    return state.dir * (av - bv);
+  });
+  const actIndex = actScore;
+  const rankMap = (key) => { const s=[...state.chains].sort((a,b)=>(b[key]||0)-(a[key]||0)); const m=new Map(); s.forEach((c,i)=>m.set(c.name,i+1)); return m; };
+  const volR = rankMap('volume24h'), tvlR = rankMap('tvl'), feeR = rankMap('fees24h');
+  const N = state.chains.length;
+  const tb = document.getElementById('rows');
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="8" class="skel">No chains match.</td></tr>'; return; }
+  tb.innerHTML = rows.map((c,i) => {
+    const open = state.expanded === c.name;
+    const row = `
+    <tr class="crow${open?' open':''}" data-name="${esc(c.name)}">
+      <td class="rank">${c.rank}</td>
+      <td class="chain"><div class="chaincell"><span class="chev">${open?'▾':'▸'}</span>${logo(c)}<span><span class="cname">${esc(c.name)}</span>${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${c.tokenPrice!=null?`<span class="cprice">$${fmtTok(c.tokenPrice)}${c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''}</span>`:''}</span></div></td>
+      <td class="num" data-label="Active">${fmtNum(c.activeAddresses)}</td>
+      <td class="num" data-label="24h Volume">${fmtUsd(c.volume24h)}${delta(c.volChange1d)}</td>
+      <td class="num" data-label="TVL">${fmtUsd(c.tvl)}${c.tvlChange7d!=null?delta(c.tvlChange7d):''}</td>
+      <td class="left hide-md" data-label="7d TVL">${sparkline(c.tvlSpark)}</td>
+      <td class="left hide-sm" data-label="Markets">${marketChips(c)}</td>
+      <td data-label="Activity" title="Activity index ${actIndex(c)}/100 — driven by: Volume #${volR.get(c.name)} · TVL #${tvlR.get(c.name)} · Fees #${feeR.get(c.name)} (of ${N})"><div class="scorecell"><span>${actIndex(c)}</span><span class="scorebar" style="width:${Math.max(5, actIndex(c)*0.5)}px"></span></div></td>
+    </tr>`;
+    const detail = open ? `<tr class="detailrow"><td colspan="8">${detailHtml(c)}</td></tr>` : '';
+    return row + detail;
+  }).join('');
+
+  document.querySelectorAll('thead th').forEach(th => {
+    const k = th.dataset.k, sorted = k === state.sortKey;
+    th.classList.toggle('sorted', sorted);
+    const label = th.dataset.label || th.textContent.replace(/[▼▲?]/g,'').trim();
+    const hint = th.dataset.hint;
+    if (hint) th.title = hint;
+    const q = hint ? ' <span class="qm">?</span>' : '';
+    const arrow = sorted ? ` <span class="arrow">${state.dir===-1?'▼':'▲'}</span>` : '';
+    th.innerHTML = label + q + arrow;
+  });
+}
+
+function stat(label, val){ return `<div class="stat"><div class="sl">${label}</div><div class="sv">${val}</div></div>`; }
+function statH(label, val, hint){ return `<div class="stat" title="${esc(hint)}"><div class="sl">${label} <span class="qm">?</span></div><div class="sv">${val}</div></div>`; }
+
+function renderNotable(){
+  const el = document.getElementById('notable');
+  if (!el) return;
+  const items = [];
+  state.chains.forEach(c => (c.flags||[]).forEach(f => items.push({ name:c.name, label:f.label, sev:f.sev })));
+  if (!items.length) { el.innerHTML = ''; return; }
+  items.sort((a,b)=> (a.sev==='down'?-1:1) - (b.sev==='down'?-1:1));
+  el.innerHTML = `<span class="nlabel">⚡ Notable moves</span>` +
+    items.map(it => `<span class="nchip ${it.sev}" data-name="${esc(it.name)}"><b>${esc(it.name)}</b> ${esc(it.label)}</span>`).join('');
+}
+
+function momentumText(c){
+  const v = c.volChange30d, t = c.tvlChange30d;
+  if (v == null && t == null) return '';
+  const cls = (x) => x == null ? null : x >= 25 ? 'surging' : x >= 5 ? 'rising' : x > -5 ? 'flat' : x > -25 ? 'cooling' : 'sliding';
+  const vc = cls(v), tc = cls(t);
+  const pct = (x) => (x >= 0 ? '+' : '') + x.toFixed(0) + '%';
+  let read = '';
+  const up = (x) => x != null && x >= 5, dn = (x) => x != null && x <= -5, flat = (x) => x != null && x > -5 && x < 5;
+  if (up(v) && up(t)) read = 'Broad-based expansion — trading activity and locked capital are both growing, a healthy sign of real inflows.';
+  else if (up(v) && (dn(t) || flat(t))) read = 'Trading is heating up while liquidity is flat-to-down — momentum driven by activity more than sticky capital.';
+  else if ((dn(v) || flat(v)) && up(t)) read = 'Capital is accumulating even as trading cools — liquidity building ahead of activity.';
+  else if (dn(v) && dn(t)) read = 'Both activity and liquidity are contracting over the month — the chain is losing momentum.';
+  else read = 'Largely range-bound over the past month with no decisive trend.';
+  const bits = [];
+  if (v != null) bits.push(`30d DEX volume ${vc} (${pct(v)})`);
+  if (t != null) bits.push(`TVL ${tc} (${pct(t)})`);
+  return `<b>${bits.join(' · ')}.</b> ${read}`;
+}
+
+function momentumHtml(c){
+  const spark = c.tvlSpark30 && c.tvlSpark30.length > 2 ? sparkline(c.tvlSpark30, 240, 50, 5) : '<span class="muted">No history</span>';
+  const chips = [['30d Volume', c.volChange30d], ['30d TVL', c.tvlChange30d], ['7d Volume', c.volChange7d], ['7d TVL', c.tvlChange7d]]
+    .map(([l, v]) => `<div class="stat"><div class="sl">${l}</div><div class="sv">${v != null ? delta(v) : '—'}</div></div>`).join('');
+  const txt = momentumText(c);
+  return `<div class="dsec">30-day trend</div>
+    <div class="trendwrap">
+      <div class="trendchart">${spark}<div class="tlabel">TVL · last 30 days</div></div>
+      <div class="trendstats">${chips}</div>
+    </div>
+    ${txt ? `<div class="momentum">${txt}</div>` : ''}`;
+}
+
+function fundamentalsHtml(c){
+  return `<div class="dsec">Fundamentals</div><div class="statgrid">
+    ${statH('P / F ratio', c.pf!=null?c.pf+'×':'—', 'Market cap of the chain\'s token ÷ annualized fees. Lower = cheaper relative to the revenue it generates.')}
+    ${statH('Fee yield', c.feeYield!=null?c.feeYield+'%':'—', 'Annualized fees as a % of TVL. Higher = capital on the chain is generating more revenue.')}
+    ${statH('Turnover', c.turnover!=null?c.turnover+'×':'—', '24h DEX volume ÷ TVL. Higher = liquidity is being traded more actively (velocity).')}
+    ${statH('Fees / user', c.feePerUser!=null?'$'+c.feePerUser:'—', '24h fees ÷ active addresses. Higher = each user is more economically valuable (less likely wash/farming).')}
+  </div>`;
+}
+
+function analystHtml(d){
+  if (!d) return `<div class="dsec">Analysis</div><div class="anbox muted">Loading analysis…</div>`;
+  const a = d.analysis;
+  if (!a || !a.take) return `<div class="dsec">Analyst take</div><div class="anbox muted">No analyst take yet — a research agent refreshes these every 12h. Check back soon.</div>`;
+  const p = a.profile || {};
+  const sent = (a.sentiment || '').toLowerCase().replace(/[^a-z]/g, '');
+  const badge = a.sentiment ? `<span class="sent ${sent}">${esc(a.sentiment)}</span>` : '';
+  const when = a.updated_at ? `<span class="anwhen">updated ${esc(a.updated_at)} UTC</span>` : '';
+  let sources = '';
+  if (a.sources) {
+    try {
+      const arr = JSON.parse(a.sources);
+      if (Array.isArray(arr) && arr.length)
+        sources = srcHtml(a.sources);
+    } catch (e) {}
+  }
+  return `
+    ${p.what_it_does?`<div class="dsec">What it does</div><div class="gbody">${esc(p.what_it_does)}</div>`:''}
+    ${p.purpose?`<div class="dsec">Original purpose</div><div class="gbody">${esc(p.purpose)}</div>`:''}
+    <div class="dsec">Major events & analyst take ${badge}${when}</div><div class="anbox">${proseBox(a.take)}${sources}</div>
+    ${p.non_economic?`<div class="dsec">Social · media · community · dev</div>${proseBox(p.non_economic)}`:''}
+    ${p.outlook?`<div class="dsec">Outlook — bull / base / bear</div>${proseBox(p.outlook)}`:''}`;
+}
+
+function detailHtml(c) {
+  const d = state.details[c.name];
+  const reflink = `<div class="reflink"><a href="https://defillama.com/chain/${encodeURIComponent(c.name)}" target="_blank" rel="noopener noreferrer">Verify on DefiLlama ↗</a>${c.gecko?` · <a href="https://www.coingecko.com/en/coins/${encodeURIComponent(c.gecko)}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a>`:''}</div>`;
+  const priceBadge = c.tokenPrice!=null ? `<span class="hprice">$${fmtTok(c.tokenPrice)}${c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''}</span>` : '';
+  const head = `<div class="dtitle">${logoBig(c)}<div><div class="dname">${esc(c.name)}${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${priceBadge}</div><div class="ddesc" id="desc-${cssId(c.name)}">${d&&d.description?esc(d.description):'<span class="muted">Loading overview…</span>'}</div>${reflink}</div></div>`;
+  const stats = `<div class="statgrid">
+    ${statH('Active Addresses 24h', fmtNum(c.activeAddresses), 'Daily active addresses (growthepie) — a proxy for real users. EVM chains only; others show —.')}
+    ${statH('24h DEX Volume', fmtUsd(c.volume24h)+(c.volChange1d!=null?' '+delta(c.volChange1d):''), 'Decentralized-exchange trading volume in the last 24h (DefiLlama). Excludes centralized exchanges.')}
+    ${statH('TVL', fmtUsd(c.tvl)+(c.tvlChange7d!=null?' '+delta(c.tvlChange7d):''), 'Total Value Locked — assets deposited across the chain\'s DeFi protocols. Measures on-chain capital.')}
+    ${statH('24h Fees', fmtUsd(c.fees24h), 'Total fees paid by users on the chain in 24h (DefiLlama). Reflects real economic demand / revenue.')}
+    ${statH('Stablecoin Mcap', c.stables?fmtUsd(c.stables):'—', 'Total stablecoins circulating on this chain (DefiLlama). A strong proxy for real liquidity and payment/economic activity — and one of the few metrics that covers non-EVM chains.')}
+    ${statH('Token Price', c.tokenPrice!=null?'$'+Intl.NumberFormat('en',{maximumFractionDigits:c.tokenPrice<1?4:2}).format(c.tokenPrice)+(c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''):'—', 'Price and 24h change of the chain\'s native/gas token (CoinGecko).')}
+    ${statH('Token Mcap', c.tokenMcap?fmtUsd(c.tokenMcap):'—', 'Market capitalization of the chain\'s native token (CoinGecko).')}
+    ${statH('Activity Index', actScore(c)+'/100', 'Composite activity index scaled 1–100 across the top 25 (100 = most active). 50% 24h volume, 30% TVL, 20% fees.')}
+  </div>`;
+  let projects;
+  if (!d) projects = '<div class="muted" style="padding:6px 2px">Loading top projects…</div>';
+  else if (!d.topProjects || !d.topProjects.length) projects = '<div class="muted" style="padding:6px 2px">No project data available for this chain.</div>';
+  else projects = `<div class="applist">${d.topProjects.map(p=>`
+      <div class="app">
+        <div class="apphead">${p.logo?`<img class="applogo" src="${esc(p.logo)}" alt="" onerror="this.remove()">`:''}<span class="pn">${esc(p.name)}</span><span class="pc">${esc(p.category||'—')}</span><span class="pt">${fmtUsd(p.tvl)}</span></div>
+        ${p.description?`<div class="appdesc">${esc(p.description)}</div>`:''}
+        ${(p.url||p.twitter)?`<div class="applinks">${p.url?`<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>`:''}${p.url&&p.twitter?' · ':''}${p.twitter?`<a href="https://x.com/${esc(String(p.twitter).replace(/^@/,''))}" target="_blank" rel="noopener noreferrer">@${esc(String(p.twitter).replace(/^@/,''))} ↗</a>`:''}</div>`:''}
+      </div>`).join('')}</div>`;
+  const L = c.links;
+  const mbtn = (x,kind) => x && x.url ? `<a class="mktbtn" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer"><span class="mk">${kind}</span> ${esc(x.name)} ↗</a>` : '';
+  const markets = (L && (L.dex || L.nft)) ? `<div class="dsec">Markets</div><div class="mktbtns">${mbtn(L.dex,'DEX')}${mbtn(L.nft,'NFT')}</div>` : '';
+  const tokensSection = (d && d.topTokens && d.topTokens.length) ? `<div class="dsec">Top tokens on this chain</div><div class="applist">${d.topTokens.map(t=>`<div class="app"><div class="apphead"><span class="pn">${esc(t.name)}</span><span class="pc">${esc(t.symbol)}</span><span class="pt">$${fmtTok(t.price)}${t.change24h!=null?' '+delta(t.change24h):''}</span></div><div class="applinks"><a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a></div></div>`).join('')}</div>` : '';
+  const nftsSection = (d && d.topNfts && d.topNfts.length) ? `<div class="dsec">Top NFT / Ordinals collections</div><div class="applist">${d.topNfts.map(n=>`<div class="app"><div class="apphead"><span class="pn">${esc(n.name)}</span><a class="pt" href="${esc(n.url)}" target="_blank" rel="noopener noreferrer">View ↗</a></div></div>`).join('')}</div>` : '';
+  const idx = actScore(c);
+  const sent = (d && d.analysis && d.analysis.sentiment) || '';
+  const vline = (d && d.analysis && d.analysis.trend) || (`Rank #${c.rank} by composite activity`);
+  const verdict = `<div class="verdictstrip"><div class="vscore">${idx}<span>/100</span></div><div class="vmeta">${sent?`<span class="sent ${sent.toLowerCase().replace(/[^a-z]/g,'')}">${esc(sent)}</span>`:''}<div class="vline">${esc(vline)}</div></div></div>`;
+  const snapshot = stats + momentumHtml(c) + fundamentalsHtml(c);
+  const ecosystem = markets + tokensSection + nftsSection + `<div class="dsec">Top apps on this chain</div>${projects}`;
+  return `<div class="detail">${head}${d&&d.risk?riskBanner(d.risk):''}${verdict}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
+}
+
+function logoBig(c){ const slug=c.name.toLowerCase().trim().replace(/\s+/g,'-'); return `<span class="logo big" style="background:${hueFor(c.name)}">${esc(c.name[0].toUpperCase())}<img src="https://icons.llamao.fi/icons/chains/rsz_${encodeURIComponent(slug)}.jpg" alt="" onerror="this.remove()"></span>`; }
+function cssId(s){ return s.replace(/[^a-z0-9]/gi,'_'); }
+
+async function loadDetail(name){
+  if (state.details[name]) { render(); return; }
+  render(); // show loading state
+  try {
+    const d = await fetch('api/chain/'+encodeURIComponent(name)).then(r=>r.json());
+    state.details[name] = d;
+  } catch(e) { state.details[name] = { description:null, topProjects:[] }; }
+  if (state.expanded === name) render();
+}
+
+function setTotals(t, cov) {
+  document.getElementById('c-usr').textContent = fmtNum(t.activeAddresses);
+  document.getElementById('c-vol').textContent = fmtUsd(t.volume24h);
+  document.getElementById('c-tvl').textContent = fmtUsd(t.tvl);
+  document.getElementById('c-stbl').textContent = fmtUsd(t.stables);
+  document.getElementById('cov').textContent = `Active-address data available for ${cov} of 25 chains.`;
+}
+
+async function load() {
+  try {
+    const r = await fetch('api/chains');
+    const d = await r.json();
+    if (d.error && !d.chains) throw new Error(d.error);
+    state.chains = d.chains || [];
+    setTotals(d.totals || {}, d.usersCoverage || 0);
+    render();
+    renderNotable();
+    document.getElementById('err').innerHTML = d.stale ? `<div class="err">Showing cached data — live refresh failed: ${esc(d.error||'')}</div>` : '';
+    document.getElementById('status').textContent = 'updated ' + new Date(d.updatedAt).toLocaleTimeString();
+  } catch (e) {
+    document.getElementById('err').innerHTML = `<div class="err">Couldn't load chain data: ${esc(e.message)}</div>`;
+    document.getElementById('status').textContent = 'error';
+  }
+}
+
+document.querySelectorAll('thead th').forEach(th => th.addEventListener('click', () => {
+  const k = th.dataset.k;
+  if (state.sortKey === k) state.dir *= -1;
+  else { state.sortKey = k; state.dir = (k==='name'||k==='rank') ? 1 : -1; }
+  render();
+}));
+document.getElementById('search').addEventListener('input', (e) => { state.q = e.target.value.toLowerCase().trim(); render(); });
+
+document.getElementById('notable').addEventListener('click', (e) => {
+  const chip = e.target.closest('.nchip');
+  if (!chip) return;
+  const name = chip.dataset.name;
+  state.expanded = name; loadDetail(name);
+  const row = document.querySelector(`tr.crow[data-name="${CSS.escape(name)}"]`);
+  if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
+
+document.getElementById('rows').addEventListener('click', (e) => {
+  if (e.target.closest('a')) return; // let market links open normally
+  const tr = e.target.closest('tr.crow');
+  if (!tr) return;
+  const name = tr.dataset.name;
+  if (state.expanded === name) { state.expanded = null; render(); }
+  else { state.expanded = name; loadDetail(name); }
+});
+
+// ---- view switching (Live / Mid / Graveyard) ----
+let graveLoaded = false, midLoaded = false, nftLoaded = false, infraLoaded = false, marketsLoaded = false, stablesLoaded = false, geoLoaded = false, rwaLoaded = false, usLoaded = false, newsLoaded = false, powerLoaded = false, tracesLoaded = false;
+function switchView(view){
+  state.activeView = view;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+  document.querySelectorAll('.liveonly').forEach(el => { el.style.display = view === 'live' ? '' : 'none'; });
+  document.getElementById('midview').style.display = view === 'mid' ? 'block' : 'none';
+  document.getElementById('graveview').style.display = view === 'grave' ? 'block' : 'none';
+  document.getElementById('nftview').style.display = view === 'nft' ? 'block' : 'none';
+  document.getElementById('infraview').style.display = view === 'infra' ? 'block' : 'none';
+  document.getElementById('marketsview').style.display = view === 'markets' ? 'block' : 'none';
+  document.getElementById('stablesview').style.display = view === 'stables' ? 'block' : 'none';
+  document.getElementById('rwaview').style.display = view === 'rwa' ? 'block' : 'none';
+  document.getElementById('geoview').style.display = view === 'geo' ? 'block' : 'none';
+  document.getElementById('uspolicyview').style.display = view === 'uspolicy' ? 'block' : 'none';
+  document.getElementById('newsview').style.display = view === 'news' ? 'block' : 'none';
+  document.getElementById('powerview').style.display = view === 'power' ? 'block' : 'none';
+  document.getElementById('tracesview').style.display = view === 'traces' ? 'block' : 'none';
+  document.getElementById('apiview').style.display = view === 'api' ? 'block' : 'none';
+  if (view === 'api' && !apiLoaded) loadApi();
+  if (view === 'news' && !newsLoaded) loadNews();
+  if (view === 'power' && !powerLoaded) loadPower();
+  if (view === 'traces') { state.scamGraph = null; loadTraces(); }
+  if (view === 'grave' && !graveLoaded) loadGraveyard();
+  if (view === 'mid' && !midLoaded) loadMid();
+  if (view === 'nft' && !nftLoaded) loadNft();
+  if (view === 'infra' && !infraLoaded) loadInfra();
+  if (view === 'markets' && !marketsLoaded) loadMarkets();
+  if (view === 'stables' && !stablesLoaded) loadStables();
+  if (view === 'rwa' && !rwaLoaded) loadRwa();
+  if (view === 'geo' && !geoLoaded) loadGeo();
+  if (view === 'uspolicy' && !usLoaded) loadUs();
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
+
+const MID_VERDICT = { stalling:'dead', drifting:'declining', pivoting:'spec', quietly_building:'recover' };
+function renderMid(data){
+  const el = document.getElementById('midview');
+  state.midData = data;
+  if (data.error && !data.chains.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.chains.length) { el.innerHTML = `<div class="gvintro">Chains that are alive and doing okay but seem to lack direction, momentum, or a clear reason to win.</div><div class="skel">🟡 The mid-chains research agent is compiling profiles — check back shortly.</div>`; return; }
+  const fw = data.framework;
+  const gaps = (data.topGaps||[]).slice(0,6);
+  const maxG = Math.max(...gaps.map(x=>x.count),1);
+  const gapBars = gaps.map(x=>`<div class="tagrow"><span class="tagn">${esc(x.label)}</span><span class="tagbarwrap"><span class="tagbar" style="width:${(x.count/maxG)*100}%;background:linear-gradient(90deg,var(--yellow),#f59e0b)"></span></span><span class="tagc">${x.count}</span></div>`).join('');
+  const panel = `<div class="gpanel"><div class="gcols">
+    <div><div class="dsec">What they're missing — common gaps</div><div class="taglist">${gapBars||'<span class="muted">—</span>'}</div></div>
+    <div>${fw?accordion('Why chains succeed vs fail', fw.text, true):'<div class="gnar muted">Framework compiling…</div>'}</div>
+  </div></div>`;
+  const cards = data.chains.map(c => {
+    const p = c.profile || {};
+    const open = state.midExpanded === c.chain;
+    const td = tokenDrop(p);
+    const tags = (p.success_factors_missing||[]).map(t=>`<span class="ctag">${esc(t.replace(/_/g,' '))}</span>`).join('');
+    let sources = '';
+    sources = srcHtml(c.sources);
+    const tokenLine = p.token_symbol ? `${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)}${p.token_ath_date?` (${esc(p.token_ath_date)})`:''} → $${fmtTok(p.token_current)}${td!=null?` <span class="tdrop">-${td}%</span>`:''}` : 'No token';
+    const body = open ? `<div class="gexp">
+      ${(p.founded||p.founders)?`<div class="gfield"><span class="gfl">Founded</span> ${esc(p.founded||'—')}${p.founders?` · ${esc(p.founders)}`:''}</div>`:''}
+      ${p.raised?`<div class="gfield"><span class="gfl">Raised</span> ${esc(p.raised)}</div>`:''}
+      <div class="gfield"><span class="gfl">Token</span> ${tokenLine}</div>
+      <div class="gfield"><span class="gfl">TVL</span> ${fmtUsd(c.tvl)}</div>
+      ${p.purpose?`<div class="gsec">Purpose</div><div class="gbody">${esc(p.purpose)}</div>`:''}
+      ${p.situation?`<div class="gsec">What's happening now (the pivot)</div>${proseBox(p.situation)}`:''}
+      ${p.whats_working?`<div class="gsec">What's working</div>${proseBox(p.whats_working)}`:''}
+      ${(p.whats_not||c.why_stuck)?`<div class="gsec">Why it's stuck</div>${proseBox(p.whats_not||c.why_stuck)}`:''}
+      ${p.non_economic?`<div class="gsec">Social · media · community · dev</div>${proseBox(p.non_economic)}`:''}
+      ${(p.outlook||c.outlook)?`<div class="gsec">Outlook — bull / base / bear</div>${proseBox(p.outlook||c.outlook)}`:''}
+      ${tags?`<div class="ctags">${tags}</div>`:''}
+      ${sources}${stamp(c.updated_at)}
+    </div>` : `${tags?`<div class="ctags">${tags}</div>`:''}`;
+    return `<div class="gcard ${open?'open':''}" data-chain="${esc(c.chain)}">
+      <div class="ghead">
+        <div class="gname">${esc(c.chain)} <span class="gverdict ${MID_VERDICT[(c.verdict||'').toLowerCase()]||'declining'}">${esc((c.verdict||'').replace(/_/g,' '))}</span></div>
+        <div class="gdd" style="color:var(--muted2);font-size:14px">${fmtUsd(c.tvl)}<span class="gddl">TVL</span></div>
+      </div>
+      <div class="gmeta">${p.token_symbol&&td!=null?`${esc(p.token_symbol)} -${td}% from ATH`:''}</div>
+      ${body}
+      <div class="gexpand">${open?'Hide details ▲':'Full profile ▾'}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="gvintro">Alive but adrift — chains with real tech or history that lack a killer app, a live narrative, or a token that captures value. ${data.chains.length} profiled.</div>${panel}<div class="dsec" style="margin:20px 0 10px">The drifting — ${data.chains.length} chains</div><div class="gwrap">${cards}</div>`;
+}
+async function loadMid(){
+  midLoaded = true;
+  document.getElementById('midview').innerHTML = `<div class="skel">Loading…</div>`;
+  try { renderMid(await fetch('api/mid').then(r=>r.json())); }
+  catch (e) { midLoaded = false; document.getElementById('midview').innerHTML = `<div class="skel">Couldn't load: ${esc(e.message)}</div>`; }
+}
+document.getElementById('midview').addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const card = e.target.closest('.gcard');
+  if (!card || !state.midData) return;
+  const name = card.dataset.chain;
+  const y = window.scrollY;
+  state.midExpanded = state.midExpanded === name ? null : name;
+  renderMid(state.midData);
+  window.scrollTo(0, y);
+});
+
+function mktUrl(c){
+  const p = c.profile || {};
+  if (p.marketplace_url) return p.marketplace_url;
+  const chain = (c.chain||'').toLowerCase();
+  if (chain === 'ethereum') return `https://opensea.io/collection/${encodeURIComponent(c.slug)}`;
+  if (chain === 'solana') return `https://magiceden.io/marketplace/${encodeURIComponent(c.slug)}`;
+  if (chain.includes('ordinal') || chain.includes('bitcoin')) return `https://magiceden.io/ordinals/marketplace/${encodeURIComponent(c.slug)}`;
+  return null;
+}
+const CHAIN_ICON = { ethereum:'⟠', solana:'◎', 'bitcoin-ordinals':'₿', polygon:'⬡' };
+function renderNft(data){
+  const el = document.getElementById('nftview');
+  state.nftData = data;
+  if (data.error && !data.collections.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.collections.length) { el.innerHTML = `<div class="gvintro">A lifecycle library for NFT &amp; Ordinals collections — mint raise vs secondary, holder/founder engagement, royalty capture, and average project lifespan.</div><div class="skel">🖼️ The NFT/Ordinals research agent is compiling the library (scoping data + researching collections). Check back in a few minutes.</div>`; return; }
+  const a = data.agg || {};
+  const n = (data.market && data.market.count) || 0;
+  const m = data.market || {};
+  const panel = `<div class="gpanel">
+    ${n>50 ? `<div class="gstats">
+      ${gstat(n, 'collections tracked (live data)')}
+      ${gstat(m.medianFloorUsd!=null?fmtUsd(m.medianFloorUsd):'—', 'median floor')}
+      ${gstat(m.medianMcapUsd!=null?fmtUsd(m.medianMcapUsd):'—', 'median market cap')}
+      ${gstat(m.total24hUsd!=null?fmtUsd(m.total24hUsd):'—', 'total 24h volume')}
+    </div>` : `<div class="gstats">
+      ${gstat(data.collections.length, 'deep case studies')}
+      ${gstat(a.avgHolderRetentionPct!=null?a.avgHolderRetentionPct+'%':'—', 'holder retention · case studies')}
+      ${gstat(a.avgLifespanDays!=null?Math.round(a.avgLifespanDays/30)+' mo':'—', 'avg age · case studies')}
+      ${gstat(n||'…', 'live-data collections loading')}
+    </div><div class="gnar muted" style="margin-bottom:10px">Note: the stats above are across the ${data.collections.length} in-depth case studies (blue-chips + notable failures), not a market average — a broader live dataset of hundreds of collections is loading.</div>`}
+    ${data.analysis?accordion('Lifecycle analysis — what the data says', data.analysis.text, true):'<div class="gnar muted">Aggregate analysis compiling…</div>'}
+  </div>`;
+  const cards = data.collections.map(c => {
+    const p = c.profile || {};
+    const open = state.nftExpanded === c.slug;
+    const icon = CHAIN_ICON[(c.chain||'').toLowerCase()] || '◆';
+    let sources = '';
+    sources = srcHtml(c.sources);
+    const mkt = mktUrl(c);
+    const body = open ? `<div class="gexp">
+      ${c.risk?riskBanner(c.risk):''}
+      ${mkt?`<div class="gfield"><span class="gfl">Collection</span> <a href="${esc(mkt)}" target="_blank" rel="noopener noreferrer">View on marketplace ↗</a></div>`:''}
+      <div class="gfield"><span class="gfl">Minted</span> ${esc(p.launched||'—')}${p.supply?` · ${Intl.NumberFormat('en').format(p.supply)} supply`:''}</div>
+      <div class="gfield"><span class="gfl">Mint→2nd</span> raised ${p.mint_raise_usd?fmtUsd(p.mint_raise_usd):'—'} → secondary ${p.secondary_volume_usd?fmtUsd(p.secondary_volume_usd):'—'}</div>
+      <div class="gfield"><span class="gfl">Floor</span> now ${p.floor_current!=null?p.floor_current+' ':'—'}${p.floor_ath?`(ATH ${p.floor_ath})`:''}</div>
+      <div class="gfield"><span class="gfl">Royalties</span> ${esc(p.royalties_enforced||'—')}${p.royalties_earned_usd?` · earned ${fmtUsd(p.royalties_earned_usd)}`:''}</div>
+      <div class="gfield"><span class="gfl">Holders</span> ${p.holder_count?Intl.NumberFormat('en').format(p.holder_count):'—'}${p.holder_retention_pct!=null?` · ${p.holder_retention_pct}% of peak retained`:''}</div>
+      ${p.community_history?`<div class="gsec">Community history</div>${proseBox(p.community_history)}`:''}
+      ${p.community_sentiment?`<div class="gsec">Community sentiment</div>${proseBox(p.community_sentiment)}`:''}
+      ${p.notable_holders?`<div class="gsec">Notable holders</div>${proseBox(p.notable_holders)}`:''}
+      ${p.founder_engagement?`<div class="gsec">Founder engagement</div><div class="gbody">${esc(p.founder_engagement)}</div>`:''}
+      ${p.social?`<div class="gsec">Social signals</div>${proseBox(p.social)}`:''}
+      ${p.benefits?`<div class="gsec">Holder benefits / products</div>${proseBox(p.benefits)}`:''}
+      ${p.business?`<div class="gsec">Real-world business — product · distribution · strengths &amp; weaknesses</div>${proseBox(p.business)}`:''}
+      ${p.analysis?`<div class="gsec">Lifecycle read</div>${proseBox(p.analysis)}`:''}
+      ${sources}
+    </div>` : '';
+    return `<div class="gcard ${open?'open':''}" data-slug="${esc(c.slug)}">
+      <div class="ghead">
+        <div class="gname">${icon} ${esc(c.name)} <span class="gverdict ${verdictClass(c.status)}">${esc(c.status||'')}</span></div>
+        <div class="gdd" style="color:var(--muted2);font-size:13px">${p.secondary_volume_usd?fmtUsd(p.secondary_volume_usd):'—'}<span class="gddl">2nd vol</span></div>
+      </div>
+      <div class="gmeta">${esc((c.chain||'').replace('-',' '))}${p.launched?` · ${esc(p.launched)}`:''}${p.holder_retention_pct!=null?` · ${p.holder_retention_pct}% holders retained`:''}</div>
+      ${body}
+      <div class="gexpand">${open?'Hide details ▲':'Full lifecycle ▾'}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="gvintro">NFT &amp; Ordinals lifecycle library — ${data.collections.length} collections tracked across mint economics, holder/founder engagement, royalties, and lifespan.</div>${panel}<div class="dsec" style="margin:20px 0 10px">Collections</div><div class="gwrap">${cards}</div>`;
+}
+async function loadNft(){
+  nftLoaded = true;
+  document.getElementById('nftview').innerHTML = `<div class="skel">Loading…</div>`;
+  try { renderNft(await fetch('api/nft').then(r=>r.json())); }
+  catch (e) { nftLoaded = false; document.getElementById('nftview').innerHTML = `<div class="skel">Couldn't load: ${esc(e.message)}</div>`; }
+}
+document.getElementById('nftview').addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const card = e.target.closest('.gcard');
+  if (!card || !state.nftData) return;
+  const slug = card.dataset.slug;
+  const y = window.scrollY;
+  state.nftExpanded = state.nftExpanded === slug ? null : slug;
+  renderNft(state.nftData);
+  window.scrollTo(0, y);
+});
+
+const INFRA_ICON = { storage:'🗄️', 'data-availability':'📦', 'notarization-verification':'📜', 'cdn-compute':'⚙️' };
+function renderInfra(data){
+  const el = document.getElementById('infraview');
+  state.infraData = data;
+  if (data.error && !data.chains.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.chains.length) { el.innerHTML = `<div class="gvintro">Decentralized storage &amp; document-verification infrastructure — Arweave, Filecoin, IPFS, data-availability layers, and notarization networks. Measured by real adoption, not TVL.</div><div class="skel">🗄️ The infrastructure research agent is compiling the library — check back in a few minutes.</div>`; return; }
+  const panel = `<div class="gpanel">${data.analysis?accordion('State of decentralized storage & verification', data.analysis.text, true):'<div class="gnar muted">Analysis compiling…</div>'}</div>`;
+  const cards = data.chains.map(c => {
+    const p = c.profile || {};
+    const open = state.infraExpanded === c.slug;
+    const icon = INFRA_ICON[(c.category||'').toLowerCase()] || '◆';
+    let sources = '';
+    sources = srcHtml(c.sources);
+    const body = open ? `<div class="gexp">
+      ${(p.founders||p.raised)?`<div class="gfield"><span class="gfl">Backing</span> ${esc(p.founders||'—')}${p.raised?` · raised ${esc(p.raised)}`:''}</div>`:''}
+      ${p.token_symbol?`<div class="gfield"><span class="gfl">Token</span> ${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)} → $${fmtTok(p.token_current)}</div>`:''}
+      ${p.what_it_does?`<div class="gsec">What it does</div><div class="gbody">${esc(p.what_it_does)}</div>`:''}
+      ${p.how_it_works?`<div class="gsec">How it works</div>${proseBox(p.how_it_works)}`:''}
+      ${p.adoption?`<div class="gsec">Real adoption</div>${proseBox(p.adoption)}`:''}
+      ${p.doc_verification_use?`<div class="gsec">Document verification use</div>${proseBox(p.doc_verification_use)}`:''}
+      ${p.economics?`<div class="gsec">Economics / value capture</div>${proseBox(p.economics)}`:''}
+      ${p.non_economic?`<div class="gsec">Ecosystem · dev · community</div>${proseBox(p.non_economic)}`:''}
+      ${p.outlook?`<div class="gsec">Outlook</div>${proseBox(p.outlook)}`:''}
+      ${sources}
+    </div>` : '';
+    return `<div class="gcard ${open?'open':''}" data-slug="${esc(c.slug)}">
+      <div class="ghead">
+        <div class="gname">${icon} ${esc(c.name)} <span class="gverdict ${verdictClass(c.status)}">${esc(c.status||'')}</span></div>
+        <div class="gdd" style="color:var(--muted2);font-size:12px">${esc((c.category||'').replace(/-/g,' '))}</div>
+      </div>
+      ${p.what_it_does?`<div class="gmeta">${esc(p.what_it_does)}</div>`:''}
+      ${body}
+      <div class="gexpand">${open?'Hide details ▲':'Full profile ▾'}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="gvintro">Decentralized storage &amp; verification infrastructure — ${data.chains.length} networks, measured by real adoption. Click for full profiles.</div>${panel}<div class="dsec" style="margin:20px 0 10px">Networks</div><div class="gwrap">${cards}</div>`;
+}
+async function loadInfra(){
+  infraLoaded = true;
+  document.getElementById('infraview').innerHTML = `<div class="skel">Loading…</div>`;
+  try { renderInfra(await fetch('api/infra').then(r=>r.json())); }
+  catch (e) { infraLoaded = false; document.getElementById('infraview').innerHTML = `<div class="skel">Couldn't load: ${esc(e.message)}</div>`; }
+}
+document.getElementById('infraview').addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const card = e.target.closest('.gcard');
+  if (!card || !state.infraData) return;
+  const slug = card.dataset.slug;
+  const y = window.scrollY;
+  state.infraExpanded = state.infraExpanded === slug ? null : slug;
+  renderInfra(state.infraData);
+  window.scrollTo(0, y);
+});
+
+const MKT_STATUS = { thriving:'recover', steady:'declining', 'at-risk':'dead', inflowing:'recover', outflowing:'dead', 'at risk':'dead' };
+const S = (x) => x==null ? '' : (typeof x==='number' ? (Math.abs(x)>=1e6 ? fmtUsd(x) : Intl.NumberFormat('en').format(x)) : String(x));
+function marketCard(e){
+  const p = e.profile || {};
+  const open = state.marketsExpanded === e.slug;
+  let sources = '';
+  sources = srcHtml(e.sources);
+  let summary = '';
+  if (e.type==='treasury') summary = `${esc(S(p.crypto_asset))} ${esc(S(p.crypto_held))}${p.mnav?` · mNAV ${esc(S(p.mnav))}`:''}`;
+  else if (e.type==='miner') summary = `${p.hashrate_ehs?esc(S(p.hashrate_ehs))+' EH/s':''}${p.monthly_production_btc?` · ${esc(S(p.monthly_production_btc))} BTC/mo`:''}`;
+  else if (e.type==='etf') summary = `${p.aum_usd?'AUM '+esc(S(p.aum_usd)):''}${p.fee_pct?` · ${esc(S(p.fee_pct))} fee`:''}`;
+  const fld = (label, v) => v!=null&&v!=='' ? `<div class="gfield"><span class="gfl">${label}</span> ${esc(S(v))}</div>` : '';
+  const sec = (label, v) => v!=null&&v!=='' ? `<div class="gsec">${label}</div>${proseBox(S(v))}` : '';
+  const body = open ? `<div class="gexp">
+    ${fld('Stock', p.stock_price)}${fld('Market cap', p.market_cap)}
+    ${fld('Holds', p.crypto_held)}${fld('Avg cost', p.avg_cost_basis)}
+    ${sec('Recent flows', p.recent_flows)}
+    ${sec('Strategy', p.strategy)}
+    ${sec('AI / HPC pivot', p.ai_hpc_pivot)}
+    ${sec('Background', p.background)}
+    ${sec('Recent moves', p.recent_moves)}
+    ${sec('Notes', p.notes)}
+    ${sec('Outlook', p.outlook)}
+    ${sources}
+  </div>` : '';
+  return `<div class="gcard ${open?'open':''}" data-slug="${esc(e.slug)}">
+    <div class="ghead"><div class="gname">${esc(e.name)}${e.ticker?` <span class="csym">${esc(e.ticker)}</span>`:''} <span class="gverdict ${MKT_STATUS[(e.status||'').toLowerCase()]||'declining'}">${esc(e.status||'')}</span></div></div>
+    ${summary.trim()?`<div class="gmeta">${summary}</div>`:''}
+    ${body}
+    <div class="gexpand">${open?'Hide ▲':'Full profile ▾'}</div>
+  </div>`;
+}
+function renderMarkets(data){
+  const el = document.getElementById('marketsview');
+  state.marketsData = data;
+  if (data.error && !data.entities.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.entities.length) { el.innerHTML = `<div class="gvintro">The TradFi bridge — crypto treasury companies, miners, and ETFs.</div><div class="skel">🏦 The markets research agent is compiling — check back shortly.</div>`; return; }
+  const bt = data.byType || {};
+  const section = (title, arr) => arr && arr.length ? `<div class="dsec" style="margin:18px 0 10px">${title} (${arr.length})</div><div class="gwrap">${arr.map(marketCard).join('')}</div>` : '';
+  const panel = data.analysis ? `<div class="gpanel">${accordion('State of the crypto-equity complex', data.analysis.text, true)}</div>` : '';
+  el.innerHTML = `<div class="gvintro">The TradFi bridge — ${data.count} public-market vehicles tied to crypto: treasury companies, miners &amp; ETFs.</div>${panel}
+    ${section('₿ Treasury companies', bt.treasury)}
+    ${section('⛏️ Miners', bt.miner)}
+    ${section('📊 ETFs', bt.etf)}`;
+}
+async function loadMarkets(){
+  marketsLoaded = true;
+  document.getElementById('marketsview').innerHTML = `<div class="skel">Loading…</div>`;
+  try { renderMarkets(await fetch('api/markets').then(r=>r.json())); }
+  catch (e) { marketsLoaded = false; document.getElementById('marketsview').innerHTML = `<div class="skel">Couldn't load: ${esc(e.message)}</div>`; }
+}
+document.getElementById('marketsview').addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const card = e.target.closest('.gcard');
+  if (!card || !state.marketsData) return;
+  const slug = card.dataset.slug;
+  const y = window.scrollY;
+  state.marketsExpanded = state.marketsExpanded === slug ? null : slug;
+  renderMarkets(state.marketsData);
+  window.scrollTo(0, y);
+});
+
+function fldS(l, v){ return v!=null&&v!=='' ? `<div class="gfield"><span class="gfl">${l}</span> ${esc(S(v))}</div>` : ''; }
+function secS(l, v){ return v!=null&&v!=='' ? `<div class="gsec">${l}</div>${proseBox(S(v))}` : ''; }
+function renderStables(data){
+  const el = document.getElementById('stablesview');
+  state.stablesData = data;
+  if (data.error && !data.stablecoins.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.stablecoins.length) { el.innerHTML = `<div class="skel">Loading stablecoins…</div>`; return; }
+  const panel = data.analysis ? `<div class="gpanel">${accordion('State of stablecoins', data.analysis.text, true)}</div>` : '';
+  const cards = data.stablecoins.map(s => {
+    const m = (s.meta && s.meta.profile) || {};
+    const open = state.stablesExpanded === s.symbol;
+    let sources = '';
+    sources = srcHtml(s.meta && s.meta.sources);
+    const body = open ? `<div class="gexp">
+      ${fldS('Issuer', m.issuer)}${fldS('Founders', m.founders)}${fldS('Type', m.type||s.pegMechanism)}${fldS('Peg', s.pegType)}
+      ${fldS('Raised', m.raised)}${fldS('Price', s.price!=null?'$'+Number(s.price).toFixed(4):null)}${fldS('Chains', (s.chains||[]).join(', '))}
+      ${secS('Backing / collateral', m.backing)}
+      ${secS('Issuer background', m.issuer_background)}
+      ${secS('Daily activity', m.daily_activity)}
+      ${secS('Audits / attestations', m.audits)}
+      ${secS('Regulatory status', m.regulatory)}
+      ${secS('Transparency', m.transparency)}
+      ${secS('Yield', m.yield)}
+      ${secS('How it compares to others', m.comparison)}
+      ${secS('Outlook / future', m.future||m.outlook)}
+      ${secS('Risks', m.risks)}
+      ${secS('Notes', m.notes)}
+      ${sources}
+    </div>` : '';
+    return `<div class="gcard ${open?'open':''}" data-slug="${esc(s.symbol)}">
+      <div class="ghead"><div class="gname"><span class="muted">#${s.rank}</span> ${esc(s.name)} <span class="csym">${esc(s.symbol)}</span>${s.pegMechanism?` <span class="gverdict declining">${esc(s.pegMechanism)}</span>`:''}</div>
+      <div class="gdd" style="color:var(--accent2);font-size:14px">${fmtUsd(s.circulating)}<span class="gddl">circulating</span></div></div>
+      <div class="gmeta">${esc(s.pegType||'')}${(s.chains||[]).length?` · ${esc(s.chains.slice(0,4).join(', '))}`:''}</div>
+      ${body}
+      <div class="gexpand">${open?'Hide ▲':'Full profile ▾'}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="gvintro">Stablecoin rankings — ${data.count} by circulating supply (${fmtUsd(data.totalMcap)} total). Issuer, type, backing, audits &amp; regulatory status.</div>${panel}<div class="gwrap">${cards}</div>`;
+}
+async function loadStables(){
+  stablesLoaded = true;
+  document.getElementById('stablesview').innerHTML = `<div class="skel">Loading…</div>`;
+  try { renderStables(await fetch('api/stablecoins').then(r=>r.json())); }
+  catch (e) { stablesLoaded = false; document.getElementById('stablesview').innerHTML = `<div class="skel">Couldn't load: ${esc(e.message)}</div>`; }
+}
+document.getElementById('stablesview').addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const card = e.target.closest('.gcard');
+  if (!card || !state.stablesData) return;
+  const slug = card.dataset.slug;
+  const y = window.scrollY;
+  state.stablesExpanded = state.stablesExpanded === slug ? null : slug;
+  renderStables(state.stablesData);
+  window.scrollTo(0, y);
+});
+
+function genLibrary(cfg){
+  // cfg: {el, data, groups:[{title,items}], intro, analysisTitle, expandedKey, renderCard}
+  const el = document.getElementById(cfg.el);
+  if (cfg.data.error && !cfg.groups.some(g=>g.items.length)) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(cfg.data.error)}</div>`; return; }
+  if (!cfg.groups.some(g=>g.items.length)) { el.innerHTML = `<div class="gvintro">${cfg.intro}</div><div class="skel">🔬 The research agent is compiling this library — check back in a few minutes.</div>`; return; }
+  const panel = cfg.data.analysis ? `<div class="gpanel">${accordion(cfg.analysisTitle, cfg.data.analysis.text, true)}</div>` : '';
+  const sections = cfg.groups.filter(g=>g.items.length).map(g=>`<div class="dsec" style="margin:18px 0 10px">${g.title} (${g.items.length})</div><div class="gwrap">${g.items.map(cfg.renderCard).join('')}</div>`).join('');
+  el.innerHTML = `<div class="gvintro">${cfg.intro}</div>${panel}${sections}`;
+}
+function libCard(item, key, headerRight, fields, sections, sources){
+  const open = state[key] === item.slug;
+  let src = '';
+  src = srcHtml(sources);
+  const body = open ? `<div class="gexp">${fields.map(f=>fldS(f[0],f[1])).join('')}${sections.map(s=>secS(s[0],s[1])).join('')}${src}</div>` : '';
+  return `<div class="gcard ${open?'open':''}" data-slug="${esc(item.slug)}">
+    <div class="ghead"><div class="gname">${esc(item.name)}${item.badge?` <span class="gverdict ${item.badgeClass||'declining'}">${esc(item.badge)}</span>`:''}</div>${headerRight||''}</div>
+    ${item.meta?`<div class="gmeta">${item.meta}</div>`:''}${body}
+    <div class="gexpand">${open?'Hide ▲':'Full profile ▾'}</div>
+  </div>`;
+}
+function renderRwa(data){
+  state.rwaData = data;
+  const cardFn = (it) => { const p=it.profile||{}; return libCard(
+    { slug:it.slug, name:it.name, badge:it.status, badgeClass:verdictClass(it.status), meta:(p.what_it_does?esc(p.what_it_does):'') },
+    'rwaExpanded', `<div class="gdd" style="color:var(--muted2);font-size:12px">${esc((it.category||'').replace(/-/g,' '))}</div>`,
+    [['Backing', p.backing_partners],['Raised', p.raised],['Token', p.token_symbol],['Traction', p.market_metric]],
+    [['How it works', p.how_it_works],['Traction', p.traction],['Business model', p.business_model],['Outlook', p.outlook]], it.sources); };
+  const bc = data.byCat || {};
+  genLibrary({ el:'rwaview', data, expandedKey:'rwaExpanded', analysisTitle:'State of RWAs & DePIN',
+    intro:`RWA &amp; DePIN library — real-world assets on-chain and decentralized physical infrastructure. ${data.count||0} projects.`,
+    groups: Object.keys(bc).map(k=>({title:k.replace(/-/g,' '), items:bc[k]})), renderCard:cardFn });
+}
+async function loadRwa(){ rwaLoaded=true; document.getElementById('rwaview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderRwa(await fetch('api/rwa').then(r=>r.json())); }catch(e){ rwaLoaded=false; document.getElementById('rwaview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
+function renderGeo(data){
+  state.geoData = data;
+  const cardFn = (it) => { const p=it.profile||{}; return libCard(
+    { slug:it.slug, name:it.name, badge:p.adoption_rank?('#'+p.adoption_rank+' adoption'):(it.kind==='region'?'region':''), badgeClass:'recover', meta:(p.regulation?esc(String(p.regulation)):'') },
+    'geoExpanded', `<div class="gdd" style="color:var(--muted2);font-size:11px">${esc(it.region||'')}</div>`,
+    [['Gov holdings', p.gov_holdings],['Sentiment', p.sentiment]],
+    [['Adoption', p.adoption],['Regulation', p.regulation],['Upcoming regulation', p.upcoming_regulation],['Dominant use', p.use_cases],['Notable history', p.notable]], it.sources); };
+  const byRegion = {};
+  (data.regions||[]).forEach(r=>{ const k=r.region||'Other'; (byRegion[k]=byRegion[k]||[]).push(r); });
+  genLibrary({ el:'geoview', data, expandedKey:'geoExpanded', analysisTitle:'Global adoption patterns',
+    intro:`Global adoption &amp; regulation — how countries and continents are adopting, regulating, and holding crypto. ${data.count||0} profiles.`,
+    groups: Object.keys(byRegion).map(k=>({title:k, items:byRegion[k]})), renderCard:cardFn });
+}
+async function loadGeo(){ geoLoaded=true; document.getElementById('geoview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderGeo(await fetch('api/geo').then(r=>r.json())); }catch(e){ geoLoaded=false; document.getElementById('geoview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
+const NEWS_TOPICS = ['All','Bitcoin','Ethereum','Solana','Stablecoin','NFT','ETF','Regulation','RWA','DePIN'];
+function newsMatch(item, topic){
+  if (topic==='All') return true;
+  const t = (item.title||'').toLowerCase();
+  if (topic==='Regulation') return /reg|sec|law|congress|senate|court|sue|ban|polic|genius|clarity/.test(t);
+  if (topic==='ETF') return /etf/.test(t);
+  if (topic==='NFT') return /nft|ordinal|collectible|pudgy|punk/.test(t);
+  if (topic==='Stablecoin') return /stablecoin|usdt|usdc|tether|circle/.test(t);
+  if (topic==='RWA') return /rwa|real.world|tokeniz|treasur/.test(t);
+  if (topic==='DePIN') return /depin|helium|render|infrastructure/.test(t);
+  return t.includes(topic.toLowerCase());
+}
+let newsTopic = 'All';
+function timeAgo(ts){ if(!ts) return ''; const s=(Date.now()-ts)/1000; if(s<3600) return Math.round(s/60)+'m ago'; if(s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
+function renderNews(data){
+  state.newsData = data;
+  const el = document.getElementById('newsview');
+  if (data.error && !data.items.length) { el.innerHTML = `<div class="skel">Couldn't load news: ${esc(data.error)}</div>`; return; }
+  if (!data.items.length) { el.innerHTML = `<div class="skel">Loading news…</div>`; return; }
+  const chips = NEWS_TOPICS.map(t=>`<span class="nfilter${t===newsTopic?' on':''}" data-topic="${t}">${t}</span>`).join('');
+  const items = data.items.filter(i=>newsMatch(i, newsTopic));
+  const rows = items.map(i=>`<a class="newsitem" href="${esc(i.link)}" target="_blank" rel="noopener noreferrer"><span class="nsrc">${esc(i.src)}</span><span class="ntitle">${esc(i.title)}</span><span class="nage">${timeAgo(i.ts)}</span></a>`).join('');
+  el.innerHTML = `<div class="gvintro">Trending crypto news — aggregated from CoinDesk, Cointelegraph, Decrypt, The Block, Bitcoin Magazine &amp; DL News. Updated every 10 min.</div>
+    <div class="nfilters">${chips}</div>
+    <div class="newslist">${rows||'<div class="skel">No stories match this filter.</div>'}</div>`;
+}
+async function loadNews(){ newsLoaded=true; document.getElementById('newsview').innerHTML=`<div class="skel">Loading news…</div>`; try{ renderNews(await fetch('api/news').then(r=>r.json())); }catch(e){ newsLoaded=false; document.getElementById('newsview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
+document.getElementById('newsview').addEventListener('click', (e) => {
+  const f = e.target.closest('.nfilter'); if (!f || !state.newsData) return;
+  newsTopic = f.dataset.topic; renderNews(state.newsData);
+});
+
+function renderPower(data){
+  state.powerData = data;
+  const el = document.getElementById('powerview');
+  if (data.error && !data.countries.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.countries.length) { el.innerHTML = `<div class="gvintro">Crypto Power Rankings — countries ranked by a composite of usage, policy, institutional adoption, innovation &amp; government stance.</div><div class="skel">🏆 The rankings agent is compiling — check back shortly.</div>`; return; }
+  const rows = data.countries.map(c => {
+    const open = state.powerExpanded === c.name;
+    const bar = (l,v) => `<div class="pwbar"><span class="pwl">${l}</span><span class="pwtrack"><span class="pwfill" style="width:${Math.max(2,v||0)}%"></span></span><span class="pwv">${v!=null?v:'—'}</span></div>`;
+    let src = srcHtml(c.sources);
+    return `<div class="gcard ${open?'open':''}" data-name="${esc(c.name)}">
+      <div class="ghead"><div class="gname"><span class="muted">#${c.rank}</span> ${esc(c.name)}</div><div class="gdd" style="color:var(--accent);font-size:17px">${c.total}<span class="gddl">power score</span></div></div>
+      ${open?`<div class="gexp">${bar('Usage',c.usage)}${bar('Policy',c.policy)}${bar('Institutional',c.institutional)}${bar('Innovation',c.innovation)}${bar('Government',c.government)}${c.rationale?`<div class="gbody" style="margin-top:10px">${esc(c.rationale)}</div>`:''}${src}</div>`:''}
+      <div class="gexpand">${open?'Hide ▲':'Score breakdown ▾'}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="gvintro">Crypto Power Rankings — ${data.count} countries by a composite of usage (30%), policy (25%), institutional (20%), innovation (15%) &amp; government stance (10%).</div><div class="gwrap">${rows}</div>`;
+}
+async function loadPower(){ powerLoaded=true; document.getElementById('powerview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderPower(await fetch('api/power').then(r=>r.json())); }catch(e){ powerLoaded=false; document.getElementById('powerview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
+
+let apiLoaded=false;
+function renderApiDocs(m){
+  const el = document.getElementById('apiview');
+  const DOMAIN = 'https://chaindump.xyz';
+  const pay = (m&&m.payment)||{};
+  const mode = pay.mode==='live' ? '<span style="color:#4ade80">● LIVE</span>' : '<span style="color:#fbbf24">● demo (settlement stubbed until CDP keys set)</span>';
+  const free = (m&&m.freeCallsPerMonth!=null)?m.freeCallsPerMonth:1;
+  const eps = (m&&m.entrypoints)||[];
+  const box = 'background:#0b0d12;border:1px solid #1c2230;border-radius:8px;padding:12px 14px;overflow-x:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c8d3e6;white-space:pre;margin:8px 0';
+  const h = (t)=>`<div style="font-size:13px;font-weight:600;letter-spacing:.02em;color:#e6edf7;margin:22px 0 6px">${t}</div>`;
+  const p = (t)=>`<div style="color:#9aa7bd;font-size:13px;line-height:1.6;margin:4px 0">${t}</div>`;
+  const epRows = eps.map(e=>`<tr><td style="padding:7px 10px;border-bottom:1px solid #161c28;font-family:ui-monospace,monospace;color:#7dd3fc;white-space:nowrap">${esc(e.path)}</td><td style="padding:7px 10px;border-bottom:1px solid #161c28;color:var(--accent);white-space:nowrap;text-align:right">$${e.priceUsd}</td><td style="padding:7px 10px;border-bottom:1px solid #161c28;color:#9aa7bd">${esc(e.description)}</td></tr>`).join('');
+  el.innerHTML = `
+  <div class="gvintro">Chaindump is built for autonomous agents as much as humans. Every dataset here is reachable as a machine-readable JSON API — <b>discovery is free, deep &amp; compliance calls are pay-per-use over x402</b>. No account, no API key, no signup: your agent pays per call in USDC on Base and gets the data in the same round-trip.</div>
+
+  <div style="max-width:820px">
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 4px;font-size:12.5px;color:#9aa7bd">
+      <span>Protocol: <b style="color:#e6edf7">x402 v${(m&&m.x402Version)||1}</b></span>
+      <span>Network: <b style="color:#e6edf7">Base</b></span>
+      <span>Asset: <b style="color:#e6edf7">USDC</b></span>
+      <span>Free preview: <b style="color:#e6edf7">${free} call/mo</b></span>
+      <span>Status: <b>${mode}</b></span>
+    </div>
+
+    ${h('1 · Discover what\'s available (free)')}
+    ${p('Hit the manifest — no payment, no key. It lists every payable endpoint and its live price.')}
+    <div style="${box}">curl ${DOMAIN}/api/agent/manifest</div>
+
+    ${h('2 · Call an endpoint')}
+    ${p(`Your first call each month is free (watch the <code style="color:#7dd3fc">X-Free-Calls-Remaining</code> response header). After that, the endpoint answers with <b>HTTP 402 Payment Required</b> and the exact payment terms.`)}
+    <div style="${box}">curl -i ${DOMAIN}/api/agent/risk/lazarus
+
+HTTP/1.1 402 Payment Required
+{
+  "x402Version": 1,
+  "error": "payment_required",
+  "accepts": [{
+    "scheme": "exact",
+    "network": "base",
+    "maxAmountRequired": "50000",          // 0.05 USDC (6 decimals)
+    "resource": "/api/agent/risk",
+    "payTo": "${esc(pay.payTo||'0x…')}",
+    "asset": "${esc(pay.asset||'USDC on Base')}",
+    "maxTimeoutSeconds": 60
+  }]
+}</div>
+
+    ${h('3 · Pay + retry (automatic with any x402 client)')}
+    ${p('An x402-aware HTTP client reads the 402, signs a USDC transfer authorization (EIP-3009, gasless), attaches it as an <code style="color:#7dd3fc">X-PAYMENT</code> header, and retries — you just get the JSON back.')}
+    <div style="${box}">// JavaScript — x402-fetch
+import { wrapFetchWithPayment } from "x402-fetch";
+import { createWalletClient, http } from "viem";
+import { base } from "viem/chains";
+
+const wallet = createWalletClient({ account, chain: base, transport: http() });
+const fetchWithPay = wrapFetchWithPayment(fetch, wallet);
+
+const res = await fetchWithPay("${DOMAIN}/api/agent/risk/lazarus");
+const data = await res.json();   // 402 handled + paid automatically</div>
+    <div style="${box}"># Python — x402 + httpx
+from x402.clients.httpx import x402HttpxClient
+from eth_account import Account
+
+client = x402HttpxClient(account=Account.from_key(PRIVATE_KEY))
+r = client.get("${DOMAIN}/api/agent/chain/base")
+print(r.json())</div>
+
+    ${h('Payable endpoints')}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px">
+      <thead><tr>
+        <th style="text-align:left;padding:6px 10px;color:#6b7688;font-weight:500;border-bottom:1px solid #232b3a">Endpoint</th>
+        <th style="text-align:right;padding:6px 10px;color:#6b7688;font-weight:500;border-bottom:1px solid #232b3a">Price</th>
+        <th style="text-align:left;padding:6px 10px;color:#6b7688;font-weight:500;border-bottom:1px solid #232b3a">Returns</th>
+      </tr></thead>
+      <tbody>${epRows||'<tr><td colspan="3" style="padding:10px;color:#6b7688">Loading endpoints…</td></tr>'}</tbody>
+    </table>
+    ${p('Every paid response is JSON with <code style="color:#7dd3fc">schema_version</code>, <code style="color:#7dd3fc">data_as_of</code>, and inline <b>provenance/sources</b> — built to survive an agent\'s (or an auditor\'s) verification step.')}
+
+    ${h('Payment rail')}
+    ${p(`Settled on <b>Base mainnet</b> in <b>USDC</b> via the <b>Coinbase CDP</b> facilitator (gasless EIP-3009, built-in OFAC/KYT screening). Payments go to <code style="color:#7dd3fc;word-break:break-all">${esc(pay.payTo||'—')}</code>. USDC contract <code style="color:#7dd3fc;word-break:break-all">${esc(pay.asset||'—')}</code>.`)}
+    <div style="color:#6b7688;font-size:12px;margin-top:18px">x402 is an open standard — any compliant client works (x402-fetch, x402-axios, the Python SDK, or a raw <code>X-PAYMENT</code> header). Start free with the manifest above.</div>
+  </div>`;
+}
+async function loadApi(){
+  apiLoaded=true;
+  document.getElementById('apiview').innerHTML=`<div class="skel">Loading agent docs…</div>`;
+  try{ renderApiDocs(await fetch('api/agent/manifest').then(r=>r.json())); }
+  catch(e){ apiLoaded=false; renderApiDocs(null); }
+}
+
+function renderTraces(data){
+  state.tracesData = data;
+  const el = document.getElementById('tracesview');
+  if (data.error && !data.cases.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.cases.length) { el.innerHTML = `<div class="gvintro">Scam Tracker — tracing stolen/scam funds across wallets, chains, bridges &amp; exchanges, with a linked transaction and note at every hop.</div><div class="skel">🕵️ The forensics team is tracing cases — check back shortly.</div>`; return; }
+  const panel = data.analysis ? `<div class="gpanel">${accordion('Cross-case laundering patterns', data.analysis.text, true)}</div>` : '';
+  const cards = data.cases.map(c => {
+    const p = c.profile || {};
+    const open = state.tracesExpanded === c.slug;
+    const hops = (p.hops||[]).map(h => `<div class="hop"><div class="hopfrom">${esc(h.from||'')}</div><div class="hoparrow">↓<span class="hopmeta">${esc(String(h.amount||''))} ${esc(h.asset||'')}${h.chain?' · '+esc(h.chain):''}${h.txurl?` · <a href="${esc(h.txurl)}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}</span></div><div class="hopto">${esc(h.to||'')}</div>${h.note?`<div class="hopnote">${esc(h.note)}</div>`:''}</div>`).join('');
+    let src = srcHtml(c.sources);
+    const tl = Array.isArray(p.timeline) ? `<div class="tl">${p.timeline.map(t=>`<div class="tlrow"><span class="tld">${esc(t.date||'')}</span><span class="tle">${esc(t.event||String(t))}</span></div>`).join('')}</div>` : (p.timeline?proseBox(p.timeline):'');
+    const ents = Array.isArray(p.entities) ? `<div class="entlist">${p.entities.map(en=>`<div class="entrow"><span class="entrole">${esc(en.role||'')}</span><span class="entname">${esc(en.name||en.label||'')}${en.person?` — <b>${esc(en.person)}</b>`:''}${en.address?` <code class="ent-addr">${esc(en.address)}</code>`:''}${(en.links&&en.links.length)?`<div class="entlinks">${en.links.map(l=>`<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.title||'source')} ↗</a>`).join('')}</div>`:''}</span></div>`).join('')}</div>` : (p.entities?proseBox(p.entities):'');
+    const hasTl = Array.isArray(p.timeline)?p.timeline.length:p.timeline;
+    const hasEnt = Array.isArray(p.entities)?p.entities.length:p.entities;
+    const body = open ? `<div class="gexp">${p.summary?proseBox(p.summary):''}${p.technical?`<div class="gsec">How the attack worked</div>${proseBox(p.technical)}`:''}${hasTl?`<div class="gsec">Timeline</div>${tl}`:''}${hops?`<div class="gsec">Fund-flow trail</div><div class="hoptrail">${hops}</div>`:''}${hasEnt?`<div class="gsec">Entities involved</div>${ents}`:''}${p.analysis?`<div class="gsec">Forensic analysis</div>${proseBox(p.analysis)}`:''}${p.aftermath?`<div class="gsec">Aftermath — recovery, indictments, sanctions</div>${proseBox(p.aftermath)}`:''}${p.industry_impact?`<div class="gsec">Industry impact</div>${proseBox(p.industry_impact)}`:''}${p.parallels?`<div class="gsec">Parallels to other cases</div>${proseBox(p.parallels)}`:''}${p.legal?`<div class="gsec">Legal / enforcement</div>${proseBox(p.legal)}`:''}${src}${stamp(c.updated_at)}</div>` : '';
+    return `<div class="gcard ${open?'open':''}" data-slug="${esc(c.slug)}">
+      <div class="ghead"><div class="gname">${esc(c.name)}${c.category?` <span class="gverdict dead">${esc(c.category)}</span>`:''}</div><div class="gdd" style="color:var(--red);font-size:14px">${c.amount_usd?fmtUsd(c.amount_usd):''}<span class="gddl">funds traced</span></div></div>
+      ${body}
+      <div class="gexpand">${open?'Hide ▲':'Trace the funds ▾'}</div>
+    </div>`;
+  }).join('');
+  const modeToggle = `<div class="tracemode"><span class="tm${state.tracesMode!=='web'?' on':''}" data-tm="cases">Cases</span><span class="tm${state.tracesMode==='web'?' on':''}" data-tm="web">🕸 Connection web</span></div>`;
+  if (state.tracesMode === 'web') {
+    el.innerHTML = `<div class="gvintro">Interactive fund-flow web. Each node is a wallet, exchange or mixer with at least one <b>traced transaction</b>; each edge is that transaction (click an edge to open it on-chain). <b>Red = culpable actor</b> (exploiter / fraudster); <b>purple = neutral infrastructure</b> (mixer / bridge / exchange — a tool, not blamed); <b>amber = shared</b> across cases.</div>${modeToggle}
+      <div class="weblegend"><span><i class="lg-sus"></i> culpable actor</span><span><i class="lg-infra"></i> infrastructure (mixer/bridge/exchange)</span><span><i class="lg-shared"></i> shared across cases</span><span><i class="lg-norm"></i> other</span></div>
+      <div id="scamweb" class="scamweb"></div><div id="webinfo" class="webinfo">Tap a node to see which cases it appears in · tap an edge for the transaction.</div>`;
+    renderScamWeb();
+    return;
+  }
+  el.innerHTML = `<div class="gvintro">Scam Tracker — ${data.count} cases traced across wallets, chains, bridges &amp; exchanges, with a linked transaction and note at each hop.</div>${modeToggle}
+    <div class="tracesearch"><input id="traceq" placeholder="Trace an address, tx hash, entity or case name…" value="${esc(state.traceQuery||'')}" /></div>
+    <div id="tracelookup"></div>${panel}<div class="gwrap" style="grid-template-columns:1fr">${cards}</div>`;
+  if (state.traceResults) renderTraceResults(state.traceResults);
+}
+async function renderScamWeb(){
+  const host = document.getElementById('scamweb'); if (!host) return;
+  if (typeof cytoscape === 'undefined') { host.innerHTML = '<div class="skel">Graph library loading… reload if this persists.</div>'; return; }
+  let g = state.scamGraph;
+  if (!g) { try { g = await fetch('api/scam-graph').then(r=>r.json()); state.scamGraph = g; } catch(e){ host.innerHTML = '<div class="skel">Couldn\'t load graph.</div>'; return; } }
+  if (!g.nodes || !g.nodes.length) { host.innerHTML = '<div class="skel">No traced flows yet.</div>'; return; }
+  const els = [
+    ...g.nodes.map(n => ({ data: { id: n.id, label: n.label, kind: n.actor ? 'actor' : n.infra ? 'infra' : n.shared ? 'shared' : 'norm', deg: n.degree, cases: (n.cases||[]).join(', ') } })),
+    ...g.edges.map((e, i) => ({ data: { id: 'e'+i, source: e.source, target: e.target, txurl: e.txurl, label: [e.amount, e.asset].filter(Boolean).join(' '), caseName: e.caseName, note: e.note, sources: e.sources } })),
+  ].filter(el => el.data.source === undefined || (g.nodes.find(n=>n.id===el.data.source) && g.nodes.find(n=>n.id===el.data.target)));
+  const cy = cytoscape({
+    container: host, elements: els,
+    style: [
+      { selector: 'node', style: { 'background-color': '#3a4560', 'label': 'data(label)', 'color': '#dde4f0', 'font-size': 9, 'text-wrap': 'wrap', 'text-max-width': 90, 'width': 'mapData(deg,1,12,14,44)', 'height': 'mapData(deg,1,12,14,44)', 'text-valign': 'bottom', 'text-margin-y': 3 } },
+      { selector: 'node[kind="shared"]', style: { 'background-color': '#fbbf24', 'color': '#fde68a' } },
+      { selector: 'node[kind="infra"]', style: { 'background-color': '#a78bfa', 'color': '#ddd6fe' } },
+      { selector: 'node[kind="actor"]', style: { 'background-color': '#f87171', 'color': '#fecaca', 'border-width': 2, 'border-color': '#f87171' } },
+      { selector: 'edge', style: { 'width': 1.2, 'line-color': '#2a3450', 'target-arrow-color': '#2a3450', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.7 } },
+      { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#22d3ee' } },
+      { selector: 'edge:selected', style: { 'line-color': '#22d3ee', 'target-arrow-color': '#22d3ee', 'width': 2.5 } },
+    ],
+    layout: { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 85, componentSpacing: 120, nodeOverlap: 16, gravity: 0.3, padding: 28, randomize: false },
+    wheelSensitivity: 0.2, minZoom: 0.3, maxZoom: 2.5,
+  });
+  cy.ready(() => { cy.fit(undefined, 30); });
+  const info = document.getElementById('webinfo');
+  const nCount = g.nodes.length, eCount = els.filter(x => x.data.source !== undefined).length;
+  const mapped = g.casesMapped || 0, hidden = g.hiddenIsolated || 0;
+  if (info) info.innerHTML = `<b>${nCount}</b> traced wallet${nCount===1?'':'s'} · <b>${eCount}</b> transaction${eCount===1?'':'s'} mapped across <b>${mapped}</b> case${mapped===1?'':'s'}${hidden>0?` · <span class="muted">${hidden} untraced address${hidden===1?'':'es'} hidden until flows are mapped</span>`:''} — tap a node or edge for detail.`;
+  cy.on('tap', 'node', (ev) => { const d = ev.target.data(); const k = d.kind==='actor'?' <span class="dn">· culpable actor</span>':d.kind==='infra'?' <span style="color:#a78bfa">· neutral infrastructure (tool, not blamed)</span>':d.kind==='shared'?' <span style="color:var(--yellow)">· shared across cases</span>':''; if (info) info.innerHTML = `<b>${esc(d.label)}</b>${k}<br><span class="muted">Appears in: ${esc(d.cases)}</span>`; });
+  cy.on('tap', 'edge', (ev) => { const d = ev.target.data(); let esrc=''; if(d.sources){try{const a=typeof d.sources==='string'?JSON.parse(d.sources):d.sources; if(Array.isArray(a)&&a.length) esrc=`<br><span class="muted">Sources: ${a.map(x=>{const u=typeof x==='string'?x:(x&&x.url); const t=(x&&x.title)||(u?u.replace(/^https?:\/\//,'').split('/')[0]:'source'); return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(t)} ↗</a>`:'';}).filter(Boolean).join(' · ')}</span>`;}catch(e){}} if (info) info.innerHTML = `<b>${esc(d.caseName||'')}</b> · ${esc(d.label||'transfer')}${d.note?` — ${esc(d.note)}`:''}${d.txurl?` · <a href="${esc(d.txurl)}" target="_blank" rel="noopener noreferrer">open tx ↗</a>`:''}${esrc}`; });
+}
+function renderTraceResults(data){
+  const el = document.getElementById('tracelookup'); if (!el) return;
+  if (!data || !data.query) { el.innerHTML=''; return; }
+  const m = data.matches || [], rk = data.risk || [];
+  if (!m.length && !rk.length) { el.innerHTML = `<div class="traceres muted">No traced case or risk flag contains “${esc(data.query)}”. It may not be in our dataset yet.</div>`; return; }
+  const rkHtml = rk.length ? `<div class="dsec">Risk flags</div>${rk.map(r=>`<div class="traceres"><b class="${r.level==='high'?'dn':''}">⚠ ${esc(r.entity_name)} — ${esc(r.level)}</b> ${esc(r.summary||'')}</div>`).join('')}` : '';
+  const mHtml = m.length ? `<div class="dsec">Found in ${m.length} traced case${m.length>1?'s':''}</div>${m.map(x=>`<div class="traceres" data-goto="${esc(x.slug)}"><b>${esc(x.name)}</b>${x.amount_usd?` · ${fmtUsd(x.amount_usd)}`:''}<div class="tracehits">${(x.hits||[]).map(h=>`<div class="tracehit">${h.type==='hop'?'↳':'•'} ${esc(h.detail)}${h.txurl?` · <a href="${esc(h.txurl)}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}</div>`).join('')||'<div class="tracehit">Referenced in case</div>'}</div><div class="tracegoto">Open case ↓</div></div>`).join('')}` : '';
+  el.innerHTML = `<div class="tracepanel">${rkHtml}${mHtml}</div>`;
+}
+async function loadTraces(){ tracesLoaded=true; document.getElementById('tracesview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderTraces(await fetch('api/traces').then(r=>r.json())); }catch(e){ tracesLoaded=false; document.getElementById('tracesview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
+
+let traceTimer;
+document.getElementById('tracesview').addEventListener('input', (e) => {
+  if (e.target.id !== 'traceq') return;
+  const q = e.target.value; state.traceQuery = q;
+  clearTimeout(traceTimer);
+  traceTimer = setTimeout(async () => {
+    if (q.trim().length < 3) { state.traceResults = null; renderTraceResults(null); return; }
+    try { const d = await fetch('api/trace-lookup?q=' + encodeURIComponent(q)).then(r => r.json()); state.traceResults = d; renderTraceResults(d); } catch (er) {}
+  }, 350);
+});
+document.getElementById('tracesview').addEventListener('click', (e) => {
+  const tm = e.target.closest('.tm');
+  if (tm) { state.tracesMode = tm.dataset.tm; if (state.tracesData) renderTraces(state.tracesData); return; }
+  const g = e.target.closest('[data-goto]');
+  if (!g || !state.tracesData) return;
+  const slug = g.dataset.goto; state.tracesExpanded = slug; renderTraces(state.tracesData);
+  const card = document.querySelector('#tracesview .gcard[data-slug="' + (window.CSS && CSS.escape ? CSS.escape(slug) : slug) + '"]');
+  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+});
+['powerview','tracesview'].forEach(id => document.getElementById(id).addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead') || e.target.closest('[data-goto]')) return;
+  const card = e.target.closest('.gcard'); if (!card) return;
+  const y = window.scrollY;
+  if (id==='powerview' && state.powerData) { const nm=card.dataset.name; state.powerExpanded = state.powerExpanded===nm?null:nm; renderPower(state.powerData); }
+  if (id==='tracesview' && state.tracesData) { const sl=card.dataset.slug; state.tracesExpanded = state.tracesExpanded===sl?null:sl; renderTraces(state.tracesData); }
+  window.scrollTo(0, y);
+}));
+
+// US tile-grid map: [row, col] approximate geographic positions
+const US_GRID = {
+  AK:[0,0], ME:[0,10], VT:[1,9], NH:[1,10],
+  WA:[2,0], ID:[2,1], MT:[2,2], ND:[2,3], MN:[2,4], IL:[2,5], WI:[2,6], MI:[2,7], NY:[2,8], MA:[2,9],
+  OR:[3,0], NV:[3,1], WY:[3,2], SD:[3,3], IA:[3,4], IN:[3,5], OH:[3,6], PA:[3,7], NJ:[3,8], CT:[3,9], RI:[3,10],
+  CA:[4,0], UT:[4,1], CO:[4,2], NE:[4,3], MO:[4,4], KY:[4,5], WV:[4,6], VA:[4,7], MD:[4,8], DE:[4,9],
+  AZ:[5,1], NM:[5,2], KS:[5,3], AR:[5,4], TN:[5,5], NC:[5,6], SC:[5,7], DC:[5,8],
+  OK:[6,3], LA:[6,4], MS:[6,5], AL:[6,6], GA:[6,7], TX:[6,2],
+  HI:[7,0], FL:[7,8],
+};
+const US_NAMES = { AL:'Alabama',AK:'Alaska',AZ:'Arizona',AR:'Arkansas',CA:'California',CO:'Colorado',CT:'Connecticut',DE:'Delaware',DC:'D.C.',FL:'Florida',GA:'Georgia',HI:'Hawaii',ID:'Idaho',IL:'Illinois',IN:'Indiana',IA:'Iowa',KS:'Kansas',KY:'Kentucky',LA:'Louisiana',ME:'Maine',MD:'Maryland',MA:'Massachusetts',MI:'Michigan',MN:'Minnesota',MS:'Mississippi',MO:'Missouri',MT:'Montana',NE:'Nebraska',NV:'Nevada',NH:'New Hampshire',NJ:'New Jersey',NM:'New Mexico',NY:'New York',NC:'North Carolina',ND:'North Dakota',OH:'Ohio',OK:'Oklahoma',OR:'Oregon',PA:'Pennsylvania',RI:'Rhode Island',SC:'South Carolina',SD:'South Dakota',TN:'Tennessee',TX:'Texas',UT:'Utah',VT:'Vermont',VA:'Virginia',WA:'Washington',WV:'West Virginia',WI:'Wisconsin',WY:'Wyoming' };
+function stanceClass(st){ st=(st||'').toLowerCase(); if(st.includes('favor')||st.includes('pro')||st.includes('friendly')) return 'st-pro'; if(st.includes('restrict')||st.includes('hostile')||st.includes('against')) return 'st-anti'; if(st.includes('mixed')||st.includes('neutral')) return 'st-mix'; return 'st-unk'; }
+function renderUs(data){
+  state.usData = data;
+  const el = document.getElementById('uspolicyview');
+  const states = data.states || {};
+  const tiles = Object.keys(US_GRID).map(ab => {
+    const s = states[ab]; const cls = s ? stanceClass(s.stance) : 'st-unk';
+    const [r, c] = US_GRID[ab];
+    const sel = state.usSelected === ab ? ' sel' : '';
+    return `<div class="ustile ${cls}${sel}" data-ab="${ab}" style="grid-row:${r+1};grid-column:${c+1}" title="${esc(US_NAMES[ab]||ab)}${s&&s.stance?' — '+esc(s.stance):''}">${ab}</div>`;
+  }).join('');
+  const legend = `<div class="uslegend"><span><i class="st-pro"></i> Pro-crypto</span><span><i class="st-mix"></i> Mixed/neutral</span><span><i class="st-anti"></i> Restrictive</span><span><i class="st-unk"></i> No data</span></div>`;
+  void US_GRID;
+  // federal section
+  const f = data.federal;
+  const fedBills = f && Array.isArray(f.bills) ? `<div class="dsec" style="margin-top:6px">Key federal legislation</div><div class="gwrap">${f.bills.map(b=>`<div class="app"><div class="apphead"><span class="pn">${esc(b.name||b.title||'')}</span><span class="pc">${esc(b.status||'')}</span></div>${b.summary?`<div class="appdesc">${esc(b.summary)}</div>`:''}${b.url?`<div class="applinks"><a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Source ↗</a></div>`:''}</div>`).join('')}</div>` : '';
+  const fedText = f && (f.analysis||f.text) ? accordion('Federal policy analysis', f.analysis||f.text, true) : (f?'':'<div class="gnar muted">Federal analysis compiling…</div>');
+  // selected state detail
+  const sel = state.usSelected && states[state.usSelected];
+  const p = sel && sel.profile || {};
+  let selSrc = srcHtml(sel && sel.sources);
+  const detail = sel ? `<div class="gcard open" style="margin-top:14px"><div class="ghead"><div class="gname">${esc(sel.name||US_NAMES[state.usSelected])} <span class="gverdict ${stanceClass(sel.stance)==='st-pro'?'recover':stanceClass(sel.stance)==='st-anti'?'dead':'declining'}">${esc(sel.stance||'')}</span></div></div><div class="gexp">
+      ${p.governor?`<div class="gfield"><span class="gfl">Governor</span> ${esc(S(p.governor))}</div>`:''}
+      ${p.legislature?`<div class="gfield"><span class="gfl">Legislature</span> ${esc(S(p.legislature))}</div>`:''}
+      ${secS('Regulation & laws', p.regulation)}
+      ${secS('Notable legislators & stances', p.legislators)}
+      ${secS('Influential orgs & advocacy (Stand With Crypto, industry)', p.orgs)}
+      ${secS('Influential people', p.people)}
+      ${secS('University programs & research', p.universities)}
+      ${secS('Government blockchain use', p.gov_use)}
+      ${secS('Localities', p.localities)}
+      ${secS('Upcoming / pending', p.upcoming)}
+      ${secS('Overview', p.overview)}
+      ${selSrc}
+    </div></div>` : `<div class="gnar muted" style="margin-top:14px">Hover a state for its stance; click to open its full policy profile.</div>`;
+  el.innerHTML = `<div class="gvintro">US crypto-policy map — hover a state to see its stance, click for full regulation, governor/legislature position, notable legislators, and pending bills. Plus federal legislation &amp; analysis.</div>
+    ${legend}<div class="usmapwrap">${state.usSvg||'<div class="skel">Loading map…</div>'}</div>
+    <div id="uspreview" class="uspreview"></div>
+    ${detail}
+    <div class="gpanel" style="margin-top:16px">${fedText}${fedBills}</div>`;
+  const svg = document.getElementById('usmapsvg');
+  if (svg) svg.querySelectorAll('path').forEach(pth => { const s = states[pth.id]; pth.setAttribute('class', (s ? stanceClass(s.stance) : 'st-unk') + (state.usSelected === pth.id ? ' sel' : '')); });
+}
+async function loadUs(){ usLoaded=true; document.getElementById('uspolicyview').innerHTML=`<div class="skel">Loading US policy map…</div>`; try{ const [d, svg] = await Promise.all([ fetch('api/uspolicy').then(r=>r.json()), state.usSvg?Promise.resolve(state.usSvg):fetch('usmap.svg').then(r=>r.text()) ]); state.usSvg=svg; renderUs(d); }catch(e){ usLoaded=false; document.getElementById('uspolicyview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
+document.getElementById('uspolicyview').addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const path = e.target.closest('#usmapsvg path'); if (!path || !state.usData) return;
+  const ab = path.id; const y = window.scrollY;
+  state.usSelected = state.usSelected === ab ? null : ab;
+  renderUs(state.usData); window.scrollTo(0, y);
+});
+document.getElementById('uspolicyview').addEventListener('mousemove', (e) => {
+  const path = e.target.closest('#usmapsvg path'); const pv = document.getElementById('uspreview');
+  if (!pv || !state.usData) return;
+  if (!path) return;
+  const ab = path.id; const s = (state.usData.states||{})[ab]; const p = s&&s.profile||{};
+  pv.innerHTML = `<b>${esc(US_NAMES[ab]||ab)}</b>${s&&s.stance?` — <span class="${stanceClass(s.stance)==='st-pro'?'up':stanceClass(s.stance)==='st-anti'?'dn':''}">${esc(s.stance)}</span>`:' — no data yet'}${p.preview?` · ${esc(p.preview)}`:(p.regulation?` · ${esc(String(p.regulation).slice(0,120))}…`:'')}`;
+});
+
+['rwaview','geoview'].forEach(id => document.getElementById(id).addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const card = e.target.closest('.gcard'); if (!card) return;
+  const y = window.scrollY; const slug = card.dataset.slug;
+  if (id==='rwaview' && state.rwaData) { state.rwaExpanded = state.rwaExpanded===slug?null:slug; renderRwa(state.rwaData); }
+  if (id==='geoview' && state.geoData) { state.geoExpanded = state.geoExpanded===slug?null:slug; renderGeo(state.geoData); }
+  window.scrollTo(0, y);
+}));
+
+function verdictClass(v){ v=(v||'').toLowerCase(); if(v.includes('dead')) return 'dead'; if(v.includes('recover')||v.includes('life')) return 'recover'; if(v.includes('spec')) return 'spec'; return 'declining'; }
+const fmtTok = (n) => n==null ? '—' : (n < 0.01 ? Number(n).toPrecision(2) : n < 1 ? Number(n).toFixed(4) : Intl.NumberFormat('en',{maximumFractionDigits:2}).format(n));
+function fmtProse(text){
+  const t = String(text||'').trim();
+  const parts = t.split(/(?=(?:^|\s)\d{1,2}[\.\)]\s)/).map(s=>s.trim()).filter(Boolean);
+  if (parts.length >= 3) return `<ol class="proselist">${parts.map(p=>`<li>${esc(p.replace(/^\d{1,2}[\.\)]\s*/,'').replace(/^[—–-]\s*/,''))}</li>`).join('')}</ol>`;
+  return `<p>${esc(t).replace(/\n{2,}/g,'</p><p>')}</p>`;
+}
+let pbSeq = 0;
+function proseBox(text){
+  const t = String(text||'').trim();
+  if (t.length < 320) return `<div class="prose">${fmtProse(t)}</div>`;
+  const id = 'pb'+(pbSeq++);
+  return `<div class="prosebox" id="${id}"><div class="proseclamp">${fmtProse(t)}</div><button class="prosetoggle" data-pb="${id}">Show full ▾</button></div>`;
+}
+// Renders an outlook that may be either a {bull,base,bear} object or a prose string.
+function outlookHtml(v){
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const rows = ['bull','base','bear'].filter(k => v[k]).map(k => {
+      const cls = k==='bull' ? 'up' : k==='bear' ? 'dn' : 'ol-base';
+      return `<div class="olrow"><span class="ollabel ${cls}">${k[0].toUpperCase()+k.slice(1)} case</span>${proseBox(String(v[k]))}</div>`;
+    }).join('');
+    return rows || '';
+  }
+  return v ? proseBox(String(v)) : '';
+}
+function accordion(title, text, open){
+  const id = 'ac'+(pbSeq++);
+  return `<div class="acc${open?' open':''}" id="${id}"><button class="acchead" data-acc="${id}"><span>${esc(title)}</span><span class="accchev">▾</span></button><div class="accbody">${fmtProse(text)}</div></div>`;
+}
+function stamp(ts){ if(!ts) return ''; return `<div class="stampline">✓ Data verified ${esc(String(ts).slice(0,10))} · sources auto-checked every 12h</div>`; }
+function accordionHtml(title, html, open){
+  const id = 'ac'+(pbSeq++);
+  return `<div class="acc${open?' open':''}" id="${id}"><button class="acchead" data-acc="${id}"><span>${esc(title)}</span><span class="accchev">▾</span></button><div class="accbody">${html}</div></div>`;
+}
+function tokenDrop(p){ return (p.token_ath && p.token_current!=null && p.token_ath>0) ? Math.round((1 - p.token_current/p.token_ath)*100) : null; }
+function gstat(val, label){ return `<div class="gsx"><div class="gsv">${val}</div><div class="gsl">${label}</div></div>`; }
+function tagLabel(data, tg){ const f=((data.trends&&data.trends.topTags)||[]).find(x=>x.tag===tg); return f?f.label:tg.replace(/_/g,' '); }
+
+function renderGraveyard(data){
+  const el = document.getElementById('graveview');
+  state.graveData = data;
+  if (data.error && !data.chains.length) { el.innerHTML = `<div class="skel">Couldn't load graveyard: ${esc(data.error)}</div>`; return; }
+  if (!data.chains.length) {
+    el.innerHTML = `<div class="gvintro">A library of chains that launched in roughly the last 18 months and collapsed — each with a full postmortem, and an aggregator that extracts why they died.</div>
+      <div class="skel">🪦 The research agent is compiling the graveyard (scraping news &amp; social for each fallen chain). This takes a few minutes on first run — check back shortly.</div>`;
+    return;
+  }
+  const t = data.trends || {};
+  const maxTag = Math.max(...(t.topTags||[]).map(x=>x.count), 1);
+  const tagBars = (t.topTags||[]).map(x=>`<div class="tagrow"><span class="tagn">${esc(x.label)}</span><span class="tagbarwrap"><span class="tagbar" style="width:${(x.count/maxTag)*100}%"></span></span><span class="tagc">${x.count}</span></div>`).join('');
+  const trendsPanel = `<div class="gpanel">
+    <div class="gstats">
+      ${gstat(data.chains.length, 'chains in the graveyard')}
+      ${gstat(t.avgDrawdown!=null?('-'+Math.abs(t.avgDrawdown).toFixed(0)+'%'):'—', 'avg drawdown from peak')}
+      ${gstat(fmtUsd(t.totalPeakTvl)+' → '+fmtUsd(t.totalCurrentTvl), 'peak TVL'+(t.wipedOut!=null?' — '+t.wipedOut+'% wiped out':''))}
+      ${gstat(t.fraudCount!=null?t.fraudCount:'—', 'suspected rug / extraction')}
+    </div>
+    <div class="gcols">
+      <div><div class="dsec">Why they died — dominant causes</div><div class="taglist">${tagBars||'<span class="muted">—</span>'}</div></div>
+      <div>
+        ${t.narrative?accordion('Trend analysis', t.narrative.text, true):''}
+        ${t.successFactors?accordion('Why chains succeed vs fail', t.successFactors.text, false):'<div class="gnar muted">The success/failure framework is being compiled — check back shortly.</div>'}
+      </div>
+    </div>
+  </div>`;
+
+  const gf = state.graveFilter || 'all';
+  const isDying = (v) => /declin|dying|zombie|recover/i.test(v || '');
+  const filtered = data.chains.filter((c) => gf === 'all' ? true : gf === 'dying' ? isDying(c.verdict) : !isDying(c.verdict));
+  const nDead = data.chains.filter((c) => !isDying(c.verdict)).length;
+  const nDying = data.chains.length - nDead;
+  const chips = `<div class="gvfilters">
+    <span class="gvf${gf==='all'?' on':''}" data-gf="all">All (${data.chains.length})</span>
+    <span class="gvf${gf==='dead'?' on':''}" data-gf="dead">☠ Dead (${nDead})</span>
+    <span class="gvf${gf==='dying'?' on':''}" data-gf="dying">🩸 Dying / declining (${nDying})</span>
+  </div>`;
+  const cards = filtered.map(c => {
+    const p = c.profile || {};
+    const open = state.graveExpanded === c.chain;
+    const dd = c.drawdown_pct != null ? `-${Math.abs(c.drawdown_pct).toFixed(0)}%` : '—';
+    const td = tokenDrop(p);
+    const tags = (p.cause_tags||[]).map(tg=>`<span class="ctag">${esc(tagLabel(data,tg))}</span>`).join('');
+    let sources = '';
+    sources = srcHtml(c.sources);
+    const tokenLine = p.token_symbol ? `${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)}${p.token_ath_date?` (${esc(p.token_ath_date)})`:''} → $${fmtTok(p.token_current)}${td!=null?` <span class="tdrop">-${td}%</span>`:''}` : 'No live token';
+    const body = open ? `<div class="gexp">
+      ${(p.founded||p.founders)?`<div class="gfield"><span class="gfl">Founded</span> ${esc(p.founded||'—')}${p.founders?` · ${esc(p.founders)}`:''}</div>`:''}
+      ${p.raised?`<div class="gfield"><span class="gfl">Raised</span> ${esc(p.raised)}</div>`:''}
+      <div class="gfield"><span class="gfl">Token</span> ${tokenLine}</div>
+      <div class="gfield"><span class="gfl">TVL</span> peak ${fmtUsd(c.peak_tvl)}${c.peak_date?` (${esc(c.peak_date)})`:''} → now ${fmtUsd(c.current_tvl)} <span class="tdrop">${dd}</span></div>
+      ${p.purpose?`<div class="gsec">Purpose</div><div class="gbody">${esc(p.purpose)}</div>`:''}
+      ${p.situation?`<div class="gsec">What happened</div>${proseBox(p.situation)}`:''}
+      ${(p.postmortem||c.why)?`<div class="gsec">Postmortem</div>${proseBox(p.postmortem||c.why)}`:''}
+      ${p.non_economic?`<div class="gsec">Social · media · community signals</div>${proseBox(p.non_economic)}`:''}
+      ${p.lessons_learned?`<div class="gsec">Lessons learned</div>${proseBox(p.lessons_learned)}`:''}
+      ${p.could_differ?`<div class="gsec">What they could've done differently — and why</div>${proseBox(p.could_differ)}`:''}
+      ${(p.outlook||c.outlook)?`<div class="gsec">Outlook</div>${proseBox(p.outlook||c.outlook)}`:''}
+      ${tags?`<div class="ctags">${tags}</div>`:''}
+      ${sources}${stamp(c.updated_at)}
+    </div>` : `${tags?`<div class="ctags">${tags}</div>`:''}`;
+    return `<div class="gcard ${open?'open':''}" data-chain="${esc(c.chain)}">
+      <div class="ghead">
+        <div class="gname">${esc(c.chain)} <span class="gverdict ${verdictClass(c.verdict)}">${esc(c.verdict||'')}</span></div>
+        <div class="gdd">${dd}<span class="gddl">from peak</span></div>
+      </div>
+      <div class="gmeta">${p.founded?`Founded ${esc(p.founded)} · `:''}Peak ${fmtUsd(c.peak_tvl)} → ${fmtUsd(c.current_tvl)}${p.token_symbol&&td!=null?` · ${esc(p.token_symbol)} -${td}%`:''}</div>
+      ${body}
+      <div class="gexpand">${open?'Hide details ▲':'Full postmortem ▾'}</div>
+    </div>`;
+  }).join('');
+  const dq = data.declining || [];
+  const watch = dq.length ? `<div class="gpanel"><div class="dsec">🩸 Live dying watch — steepest 90-day decliners, auto-updating from live TVL (${dq.length})</div><div class="watchgrid">${dq.map(w=>`<div class="watchrow"><span class="wn">${esc(w.chain)}</span><span class="w90">${w.change_90d}%<span class="wl">90d</span></span><span class="wdd">-${Math.abs(w.drawdown_pct||0).toFixed(0)}%<span class="wl">peak</span></span>${w.research?'<span class="wtag">profiled ↓</span>':''}</div>`).join('')}</div><div class="gnar muted" style="margin-top:8px">Live from the classifier — chains bleeding out now, before they hit the graveyard. Refreshes automatically.</div></div>` : '';
+  el.innerHTML = `<div class="gvintro">Dead &amp; dying chains — a live decliner watch plus full researched postmortems (founding, funding, token, what went wrong) and an aggregator that extracts the patterns.</div>${watch}${trendsPanel}${chips}<div class="dsec" style="margin:14px 0 10px">${gf==='all'?'Researched postmortems':gf==='dying'?'Dying / declining':'Dead'} — ${filtered.length} chains, biggest first</div><div class="gwrap">${cards||'<div class="skel">None in this filter.</div>'}</div>`;
+}
+
+async function loadGraveyard(){
+  graveLoaded = true;
+  document.getElementById('graveview').innerHTML = `<div class="skel">Loading…</div>`;
+  try {
+    const [d, tiers] = await Promise.all([
+      fetch('api/dead').then(r => r.json()),
+      fetch('api/tiers').then(r => r.json()).catch(() => ({})),
+    ]);
+    d.declining = tiers.declining || [];
+    renderGraveyard(d);
+  } catch (e) {
+    graveLoaded = false;
+    document.getElementById('graveview').innerHTML = `<div class="skel">Couldn't load: ${esc(e.message)}</div>`;
+  }
+}
+document.getElementById('graveview').addEventListener('click', (e) => {
+  if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
+  const f = e.target.closest('.gvf');
+  if (f && state.graveData) { state.graveFilter = f.dataset.gf; renderGraveyard(state.graveData); return; }
+  const card = e.target.closest('.gcard');
+  if (!card || !state.graveData) return;
+  const name = card.dataset.chain;
+  const y = window.scrollY;
+  state.graveExpanded = state.graveExpanded === name ? null : name;
+  renderGraveyard(state.graveData);
+  window.scrollTo(0, y);
+});
+
+document.addEventListener('click', (e) => {
+  const pt = e.target.closest('.prosetoggle');
+  if (pt) { const box = document.getElementById(pt.dataset.pb); if (box) { const o = box.classList.toggle('open'); pt.textContent = o ? 'Show less ▲' : 'Show full ▾'; } return; }
+  const ah = e.target.closest('.acchead');
+  if (ah) { const acc = document.getElementById(ah.dataset.acc); if (acc) acc.classList.toggle('open'); }
+});
+
+load();
+setInterval(load, 30000);
+// real-time refresh of whichever live-data tab is open (research tabs are static, skip them)
+const LIVE_REFRESH = { stables: loadStables, nft: loadNft, news: loadNews, markets: loadMarkets, power: loadPower };
+setInterval(() => {
+  const v = state.activeView;
+  const fn = LIVE_REFRESH[v];
+  if (!fn) return;
+  const y = window.scrollY;
+  fn();
+  setTimeout(() => window.scrollTo(0, y), 60);
+}, 60000);
+</script>
+</body>
+</html>

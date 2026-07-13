@@ -1,0 +1,104 @@
+{
+  "name": "chain-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "express": "^4.21.0"
+  },
+  "emblem_build": {
+    "tables": [
+      {
+        "name": "chain_analysis",
+        "schema": "CREATE TABLE IF NOT EXISTS chain_analysis (chain TEXT PRIMARY KEY, take TEXT, sentiment TEXT, trend TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "dead_chains",
+        "schema": "CREATE TABLE IF NOT EXISTS dead_chains (chain TEXT PRIMARY KEY, launched TEXT, peak_tvl REAL, current_tvl REAL, drawdown_pct REAL, peak_date TEXT, why TEXT, outlook TEXT, verdict TEXT, sources TEXT, profile TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "graveyard_meta",
+        "schema": "CREATE TABLE IF NOT EXISTS graveyard_meta (k TEXT PRIMARY KEY, v TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "mid_chains",
+        "schema": "CREATE TABLE IF NOT EXISTS mid_chains (chain TEXT PRIMARY KEY, launched TEXT, tvl REAL, verdict TEXT, why_stuck TEXT, outlook TEXT, profile TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "nft_collections",
+        "schema": "CREATE TABLE IF NOT EXISTS nft_collections (slug TEXT PRIMARY KEY, name TEXT, chain TEXT, category TEXT, status TEXT, profile TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "infra_chains",
+        "schema": "CREATE TABLE IF NOT EXISTS infra_chains (slug TEXT PRIMARY KEY, name TEXT, category TEXT, status TEXT, profile TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "market_entities",
+        "schema": "CREATE TABLE IF NOT EXISTS market_entities (slug TEXT PRIMARY KEY, name TEXT, ticker TEXT, type TEXT, status TEXT, profile TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "stablecoin_meta",
+        "schema": "CREATE TABLE IF NOT EXISTS stablecoin_meta (slug TEXT PRIMARY KEY, name TEXT, symbol TEXT, profile TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "risk_flags",
+        "schema": "CREATE TABLE IF NOT EXISTS risk_flags (slug TEXT PRIMARY KEY, entity_type TEXT, entity_name TEXT, level TEXT, summary TEXT, evidence TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "geo_regions",
+        "schema": "CREATE TABLE IF NOT EXISTS geo_regions (slug TEXT PRIMARY KEY, name TEXT, region TEXT, kind TEXT, profile TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "rwa_depin",
+        "schema": "CREATE TABLE IF NOT EXISTS rwa_depin (slug TEXT PRIMARY KEY, name TEXT, category TEXT, status TEXT, profile TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "us_states",
+        "schema": "CREATE TABLE IF NOT EXISTS us_states (abbr TEXT PRIMARY KEY, name TEXT, stance TEXT, profile TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "scam_traces",
+        "schema": "CREATE TABLE IF NOT EXISTS scam_traces (slug TEXT PRIMARY KEY, name TEXT, category TEXT, amount_usd REAL, net_usd REAL, recovered_usd REAL, victims INTEGER, start_date TEXT, collapse_date TEXT, status TEXT, chains TEXT, confidence TEXT, profile TEXT, sources TEXT, source_checked_at TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "nft_market",
+        "schema": "CREATE TABLE IF NOT EXISTS nft_market (id TEXT PRIMARY KEY, name TEXT, chain TEXT, floor_usd REAL, mcap_usd REAL, vol24h_usd REAL, holders INTEGER, supply INTEGER, change24h REAL, url TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "scam_addresses",
+        "schema": "CREATE TABLE IF NOT EXISTS scam_addresses (address TEXT, chain TEXT, case_slug TEXT, role TEXT, label TEXT, entity TEXT, entity_id TEXT, cluster_id TEXT, balance_note TEXT, first_seen TEXT, last_seen TEXT, sources TEXT, confidence TEXT DEFAULT 'reported', updated_at TEXT DEFAULT (datetime('now')), PRIMARY KEY (address, case_slug))"
+      },
+      {
+        "name": "wallet_links",
+        "schema": "CREATE TABLE IF NOT EXISTS wallet_links (id INTEGER PRIMARY KEY AUTOINCREMENT, address_a TEXT, chain_a TEXT, address_b TEXT, chain_b TEXT, link_type TEXT, direction TEXT, confidence TEXT DEFAULT 'reported', evidence TEXT, tx_hash TEXT, tx_url TEXT, case_slug TEXT, entity TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "scam_flows",
+        "schema": "CREATE TABLE IF NOT EXISTS scam_flows (id INTEGER PRIMARY KEY AUTOINCREMENT, case_slug TEXT, from_addr TEXT, to_addr TEXT, from_label TEXT, to_label TEXT, asset TEXT, amount REAL, amount_usd REAL, tx_hash TEXT, tx_url TEXT, ts TEXT, hop_index INTEGER, note TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "scam_actors",
+        "schema": "CREATE TABLE IF NOT EXISTS scam_actors (slug TEXT PRIMARY KEY, case_slug TEXT, real_name TEXT, aliases TEXT, role TEXT, nationality TEXT, status TEXT, links TEXT, summary TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "actor_trail",
+        "schema": "CREATE TABLE IF NOT EXISTS actor_trail (id INTEGER PRIMARY KEY AUTOINCREMENT, actor_slug TEXT, case_slug TEXT, type TEXT, title TEXT, url TEXT, archived_url TEXT, source TEXT, author TEXT, dated TEXT, excerpt TEXT, note TEXT, verified INTEGER DEFAULT 0, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "scam_links",
+        "schema": "CREATE TABLE IF NOT EXISTS scam_links (id INTEGER PRIMARY KEY AUTOINCREMENT, a_slug TEXT, b_slug TEXT, kind TEXT, detail TEXT, evidence TEXT, sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "scam_intel",
+        "schema": "CREATE TABLE IF NOT EXISTS scam_intel (slug TEXT PRIMARY KEY, name TEXT, category TEXT, chain TEXT, approx_loss_usd REAL, discovered_at TEXT DEFAULT (datetime('now')), incident_date TEXT, severity TEXT, credibility TEXT, status TEXT DEFAULT 'candidate', culpable TEXT, connections TEXT, summary TEXT, how_it_happened TEXT, what_stolen TEXT, aftermath TEXT, links TEXT, sources TEXT, debate_notes TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "risk_signals",
+        "schema": "CREATE TABLE IF NOT EXISTS risk_signals (slug TEXT PRIMARY KEY, target TEXT, target_name TEXT, chain TEXT, signal_type TEXT, severity TEXT, description TEXT, evidence TEXT, matched_addresses TEXT, matched_cases TEXT, status TEXT DEFAULT 'watch', confidence TEXT DEFAULT 'low', sources TEXT, updated_at TEXT DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "desk_log",
+        "schema": "CREATE TABLE IF NOT EXISTS desk_log (id INTEGER PRIMARY KEY AUTOINCREMENT, desk TEXT, run_at TEXT DEFAULT (datetime('now')), target TEXT, action TEXT, outcome TEXT, items_touched INTEGER DEFAULT 0, notes TEXT)"
+      }
+    ]
+  }
+}
