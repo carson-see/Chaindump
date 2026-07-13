@@ -5,13 +5,16 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "express": "^4.21.0",
     "hono": "^4.6.14"
   },
   "devDependencies": {
+    "vitest": "2.1.9",
     "wrangler": "^4.4.0"
   },
   "emblem_build": {

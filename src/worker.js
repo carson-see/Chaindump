@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
+import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 
 const ENV = {};
 const app = new Hono();
@@ -718,6 +720,103 @@ async function refreshRwaDepin(env) {
     }
   } catch (e) { console.error('[refreshRwaDepin] DePIN failed:', e.message); }
 }
+
+// Refresh the OFAC-sanctioned address list from the 0xB10C SDN mirror.
+// Per chain: fetch the plain-text file, parse, and atomically replace that
+// chain's rows (delete-then-insert) so removed addresses drop off too. A failed
+// fetch for a chain leaves that chain's existing rows untouched (fail-safe: we
+// never wipe a chain's screening set on a transient network error).
+async function refreshSanctioned(env) {
+  if (!env || !env.DB) return;
+  const now = Date.now();
+  let chains = 0, total = 0;
+  for (const { file, chain } of OFAC_FILES) {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 15000);
+      let text;
+      try {
+        const r = await fetch(ofacFileUrl(file), { headers: GP_HEADERS, signal: ctl.signal });
+        if (!r.ok) throw new Error(`${r.status}`);
+        text = await r.text();
+      } finally { clearTimeout(t); }
+      const addrs = parseSanctionedFile(text);
+      if (!addrs.length) continue; // never blank out a chain we can't parse
+      const rows = buildSanctionedRows(chain, addrs, now);
+      const ins = env.DB.prepare(
+        `INSERT INTO sanctioned_addresses (address_lc, address, chain, source, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(address_lc, chain) DO UPDATE SET address=excluded.address,
+           source=excluded.source, updated_at=excluded.updated_at`
+      );
+      // upsert fresh in chunks (D1 batch statement cap), then drop this chain's
+      // rows not re-stamped this run (addresses removed from the SDN list)
+      for (let i = 0; i < rows.length; i += 100) {
+        await env.DB.batch(rows.slice(i, i + 100).map((x) =>
+          ins.bind(x.address_lc, x.address, x.chain, x.source, x.updated_at)));
+      }
+      await env.DB.prepare(`DELETE FROM sanctioned_addresses WHERE chain = ? AND updated_at < ?`).bind(chain, now).run();
+      chains += 1; total += rows.length;
+    } catch (e) { console.error(`[refreshSanctioned] ${chain} failed:`, e.message); }
+  }
+  if (chains) console.error(`[refreshSanctioned] refreshed ${total} addresses across ${chains} chains`);
+}
+
+// Re-index the NFT catalog from CoinGecko /nfts/list (the full collection
+// universe, paged). Upserts fresh rows; prunes collections no longer listed.
+async function refreshNftCatalog(env) {
+  if (!env || !env.DB) return;
+  const now = Date.now();
+  try {
+    const all = [];
+    for (let page = 1; page <= 20; page++) { // hard cap ~5000 collections
+      // no `order` param: /nfts/list's default enumeration is stable + complete;
+      // adding an order causes unstable paging (repeats/gaps → collections skipped)
+      const url = cgUrl(`${NFT_LIST_URL}?per_page=${NFT_PER_PAGE}&page=${page}`);
+      let batch;
+      try { batch = await fetchJson(url, 15000, GP_HEADERS); } catch (e) {
+        console.error(`[refreshNftCatalog] page ${page} failed:`, e.message); break;
+      }
+      const rows = nftRowsFromPage(batch, now);
+      if (!rows.length) break; // reached the end
+      all.push(...rows);
+      if (rows.length < NFT_PER_PAGE) break;
+    }
+    const rows = dedupeNftRows(all);
+    if (rows.length < 100) { // sanity guard: never nuke the catalog on a partial pull
+      console.error(`[refreshNftCatalog] only ${rows.length} rows fetched — skipping upsert`); return;
+    }
+    const ins = env.DB.prepare(
+      `INSERT INTO nft_catalog (id, name, chain, contract_address, symbol, indexed_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name, chain=excluded.chain,
+         contract_address=excluded.contract_address, symbol=excluded.symbol, indexed_at=excluded.indexed_at`
+    );
+    // D1 batches are capped; chunk the upsert, then prune stale in a final statement
+    for (let i = 0; i < rows.length; i += 100) {
+      await env.DB.batch(rows.slice(i, i + 100).map((x) =>
+        ins.bind(x.id, x.name, x.chain, x.contract_address, x.symbol, x.indexed_at)));
+    }
+    await env.DB.prepare(`DELETE FROM nft_catalog WHERE indexed_at < ?`).bind(now).run();
+    console.error(`[refreshNftCatalog] re-indexed ${rows.length} collections`);
+  } catch (e) { console.error('[refreshNftCatalog] failed:', e.message); }
+}
+
+// Token-guarded ops trigger for the slow refresh jobs (manual re-seed / verify).
+// Disabled (404) unless the ADMIN_TOKEN secret is set; requires a matching bearer.
+app.post('/api/admin/refresh', wrap(async (req, res) => {
+  const token = ENV.ADMIN_TOKEN || '';
+  if (!token) return res.status(404).json({ error: 'not found' });
+  const auth = req.headers['authorization'] || '';
+  if (auth !== `Bearer ${token}`) return res.status(401).json({ error: 'unauthorized' });
+  const job = (req.query.job || 'all').toLowerCase();
+  const ran = [];
+  try {
+    if (job === 'sanctioned' || job === 'all') { await refreshSanctioned(ENV); ran.push('sanctioned'); }
+    if (job === 'nft' || job === 'all') { await refreshNftCatalog(ENV); ran.push('nft'); }
+    res.json({ ok: true, ran });
+  } catch (e) { res.status(500).json({ error: e.message, ran }); }
+}));
 
 app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
@@ -1640,10 +1739,15 @@ async function handleScheduled(event, env, ctx) {
     const deltas = await computeSnapshotDeltas(env, ts);
     for (const c of rows) Object.assign(c, deltas[c.name] || {});
 
+    const tick = Math.floor(ts / (5 * 60 * 1000));
     // roughly every 4 hours (1-in-48 five-minute ticks) is plenty for a 90-day prune
-    if (Math.floor(ts / (5 * 60 * 1000)) % 48 === 0) await pruneOldSnapshots(env, ts);
+    if (tick % 48 === 0) await pruneOldSnapshots(env, ts);
     // RWA/DePIN breadth changes slowly — refresh ~hourly (1-in-12 ticks)
-    if (Math.floor(ts / (5 * 60 * 1000)) % 12 === 0) await refreshRwaDepin(env);
+    if (tick % 12 === 0) await refreshRwaDepin(env);
+    // OFAC SDN list updates often; keep the wallet-screening set current daily (1-in-288)
+    if (tick % 288 === 0) await refreshSanctioned(env);
+    // NFT collection universe changes slowly — re-index ~weekly (1-in-2016)
+    if (tick % 2016 === 0) await refreshNftCatalog(env);
   }
 
   cache = { ts, data };
