@@ -20,6 +20,32 @@ const MCP_URL = process.env.CHAINDUMP_MCP_URL || "https://chaindump-mcp-27001852
 const QUEUE_DIR = process.env.DESK_QUEUE_DIR || "./proposals";
 const MODEL = process.env.DESK_MODEL || "claude-sonnet-5";
 const MAX_TURNS = Number(process.env.DESK_MAX_TURNS) || 40;
+const CHAINDUMP_BASE = (process.env.CHAINDUMP_BASE_URL || "https://chaindump.xyz").replace(/\/$/, "");
+const DESK_TOKEN = process.env.DESK_TOKEN;
+
+// Persist a proposal to the durable, human-reviewed queue via the Worker's
+// authenticated write path (/api/desk/propose). Falls back to a local file when
+// DESK_TOKEN isn't set (offline/dev) or on a transient POST failure. Returns
+// where it landed, for the tool's confirmation text.
+async function persistProposal(dataset: string, slug: string, record: unknown): Promise<string> {
+  if (DESK_TOKEN) {
+    try {
+      const r = await fetch(`${CHAINDUMP_BASE}/api/desk/propose`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${DESK_TOKEN}` },
+        body: JSON.stringify(record),
+      });
+      if (r.ok) return "the review queue (/api/desk/propose)";
+      console.error(`[desk] propose ${r.status}; falling back to local file`);
+    } catch (e) {
+      console.error("[desk] propose failed; falling back to local file:", e instanceof Error ? e.message : e);
+    }
+  }
+  await mkdir(QUEUE_DIR, { recursive: true });
+  const safeSlug = slug.replace(/[^a-z0-9-]/gi, "-").slice(0, 80);
+  await writeFile(join(QUEUE_DIR, `${dataset}.${safeSlug}.json`), JSON.stringify(record, null, 2), "utf8");
+  return `a local file (${QUEUE_DIR})`;
+}
 
 // ---- the human-gated persistence tool --------------------------------------
 // The desk's ONLY write path. It does not touch D1; it queues a proposal for a
@@ -48,14 +74,12 @@ const queueProposal = tool(
   async (args) => {
     const needsHumanReview = args.names_individuals || args.confidence < 0.75;
     const record = { ...args, needs_human_review: needsHumanReview, queued_at: new Date().toISOString() };
-    await mkdir(QUEUE_DIR, { recursive: true });
-    const safeSlug = args.slug.replace(/[^a-z0-9-]/gi, "-").slice(0, 80);
-    await writeFile(join(QUEUE_DIR, `${args.dataset}.${safeSlug}.json`), JSON.stringify(record, null, 2), "utf8");
+    const persisted = await persistProposal(args.dataset, args.slug, record);
     return {
       content: [
         {
           type: "text" as const,
-          text: `Queued proposal "${args.slug}" -> ${args.dataset} (needs_human_review=${needsHumanReview}, confidence=${args.confidence}). It will NOT publish until a human promotes it.`,
+          text: `Queued proposal "${args.slug}" -> ${args.dataset} (needs_human_review=${needsHumanReview}, confidence=${args.confidence}) via ${persisted}. It will NOT publish until a human promotes it.`,
         },
       ],
     };
