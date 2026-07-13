@@ -43,6 +43,21 @@ npx @modelcontextprotocol/inspector
 # then connect to http://localhost:8790/mcp (Streamable HTTP)
 ```
 
+## Deploy (container)
+
+A `Dockerfile` is included (multi-stage: build TS → slim prod image; reads
+`PORT`, so Cloud Run / any container host works). **Hosting location is a pending
+decision** — Chaindump is a standalone project (NOT Arkova), so it should go in
+Chaindump's own infra, not the `arkova1` GCP project. Once a target + resolving
+URL exist, publish `/.well-known/mcp/server-card.json` (Worker route) pointing at
+it. Example (adjust project/region):
+
+```bash
+gcloud run deploy chaindump-mcp --source . --region <region> \
+  --project <chaindump-project> --allow-unauthenticated \
+  --set-env-vars CHAINDUMP_BASE_URL=https://chaindump.xyz
+```
+
 ## Monetization
 
 The differentiated tools are the natural front for Chaindump's existing x402
