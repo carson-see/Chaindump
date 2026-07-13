@@ -1222,7 +1222,12 @@ app.get('/api/traces', wrap(async (req, res) => {
     const cases = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
     let analysis = null;
     try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='traces_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
-    res.json({ cases, count: cases.length, analysis });
+    let sanctionsStats = null;
+    try {
+      const s = await dbQuery(`SELECT COUNT(*) n, COUNT(DISTINCT chain) chains FROM sanctioned_addresses`);
+      if (s[0]) sanctionsStats = { addresses: s[0].n, chains: s[0].chains };
+    } catch (e) {}
+    res.json({ cases, count: cases.length, analysis, sanctionsStats });
   } catch (e) {
     res.json({ cases: [], count: 0, error: e.message });
   }
@@ -1375,7 +1380,15 @@ app.get('/api/trace-lookup', wrap(async (req, res) => {
     }
     let risk = [];
     try { risk = await dbQuery(`SELECT entity_type, entity_name, level, summary FROM risk_flags WHERE lower(entity_name) LIKE ? LIMIT 8`, ['%' + q + '%']); } catch (e) {}
-    res.json({ query: q, matches, risk });
+    // OFAC sanctions screening: does the pasted address appear on the SDN list?
+    let sanctioned = null;
+    if (q.length >= 8) {
+      try {
+        const hit = await dbQuery(`SELECT address, chain, source FROM sanctioned_addresses WHERE address_lc = ?`, [q]);
+        if (hit.length) sanctioned = { address: hit[0].address, chains: hit.map((h) => h.chain), source: hit[0].source, sanctioned: true };
+      } catch (e) {}
+    }
+    res.json({ query: q, matches, risk, sanctioned });
   } catch (e) {
     res.json({ query: q, matches: [], risk: [], error: e.message });
   }

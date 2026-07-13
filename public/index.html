@@ -372,6 +372,11 @@
   .rlchg { width:72px; text-align:right; flex-shrink:0; font-size:12.5px; }
   .rlchg.up { color:var(--green); } .rlchg.down { color:var(--red); }
   @media(max-width:680px){ .rlchains{display:none} .rlprice{display:none} }
+  /* OFAC sanctions hit banner */
+  .ofachit { background:rgba(224,106,106,.10); border:1px solid rgba(224,106,106,.45); border-radius:12px; padding:14px 16px; margin-bottom:12px; }
+  .ofachit-h { color:#e06a6a; font-weight:800; font-size:14px; letter-spacing:.03em; }
+  .ofachit-b { color:var(--fg); font-size:13px; margin-top:5px; line-height:1.5; }
+  .ofachit-a { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; color:var(--fg); background:var(--bg); border:1px solid var(--border); border-radius:7px; padding:6px 9px; margin-top:8px; word-break:break-all; }
 </style>
 </head>
 <body>
@@ -1472,8 +1477,9 @@ function renderTraces(data){
     renderScamWeb();
     return;
   }
-  el.innerHTML = `<div class="gvintro">Scam Tracker — ${data.count} cases traced across wallets, chains, bridges &amp; exchanges, with a linked transaction and note at each hop.</div>${modeToggle}
-    <div class="tracesearch"><input id="traceq" placeholder="Trace an address, tx hash, entity or case name…" value="${esc(state.traceQuery||'')}" /></div>
+  const ss = data.sanctionsStats;
+  el.innerHTML = `<div class="gvintro">Scam Tracker — ${data.count} cases traced across wallets, chains, bridges &amp; exchanges${ss?`, plus live OFAC screening against <b>${ss.addresses.toLocaleString()}</b> sanctioned addresses on ${ss.chains} chains`:''}.</div>${modeToggle}
+    <div class="tracesearch"><input id="traceq" placeholder="${ss?'Screen a wallet against OFAC sanctions, or trace an address / tx / case…':'Trace an address, tx hash, entity or case name…'}" value="${esc(state.traceQuery||'')}" /></div>
     <div id="tracelookup"></div>${panel}<div class="gwrap" style="grid-template-columns:1fr">${cards}</div>`;
   if (state.traceResults) renderTraceResults(state.traceResults);
 }
@@ -1513,10 +1519,18 @@ function renderTraceResults(data){
   const el = document.getElementById('tracelookup'); if (!el) return;
   if (!data || !data.query) { el.innerHTML=''; return; }
   const m = data.matches || [], rk = data.risk || [];
-  if (!m.length && !rk.length) { el.innerHTML = `<div class="traceres muted">No traced case or risk flag contains “${esc(data.query)}”. It may not be in our dataset yet.</div>`; return; }
+  // OFAC sanctions screening hit — the strongest signal, shown first
+  const sancHtml = data.sanctioned ? `<div class="ofachit">
+      <div class="ofachit-h">⛔ OFAC-SANCTIONED ADDRESS</div>
+      <div class="ofachit-b">This address is on the U.S. Treasury OFAC SDN (Specially Designated Nationals) list${data.sanctioned.chains&&data.sanctioned.chains.length?` — flagged on ${data.sanctioned.chains.join(', ')}`:''}. U.S. persons are prohibited from transacting with it.</div>
+      <div class="ofachit-a">${esc(data.sanctioned.address)}</div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Source: ${esc(data.sanctioned.source||'OFAC SDN')} · <a href="https://sanctionssearch.ofac.treas.gov/" target="_blank" rel="noopener noreferrer">verify at sanctionssearch.ofac.treas.gov ↗</a></div>
+    </div>` : '';
+  if (!m.length && !rk.length && !data.sanctioned) { el.innerHTML = `<div class="traceres muted">No OFAC match, traced case, or risk flag for “${esc(data.query)}”. Not in our dataset — which is not the same as clean.</div>`; return; }
+  if (!m.length && !rk.length) { el.innerHTML = `<div class="tracepanel">${sancHtml}</div>`; return; }
   const rkHtml = rk.length ? `<div class="dsec">Risk flags</div>${rk.map(r=>`<div class="traceres"><b class="${r.level==='high'?'dn':''}">⚠ ${esc(r.entity_name)} — ${esc(r.level)}</b> ${esc(r.summary||'')}</div>`).join('')}` : '';
   const mHtml = m.length ? `<div class="dsec">Found in ${m.length} traced case${m.length>1?'s':''}</div>${m.map(x=>`<div class="traceres" data-goto="${esc(x.slug)}"><b>${esc(x.name)}</b>${x.amount_usd?` · ${fmtUsd(x.amount_usd)}`:''}<div class="tracehits">${(x.hits||[]).map(h=>`<div class="tracehit">${h.type==='hop'?'↳':'•'} ${esc(h.detail)}${h.txurl?` · <a href="${esc(h.txurl)}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}</div>`).join('')||'<div class="tracehit">Referenced in case</div>'}</div><div class="tracegoto">Open case ↓</div></div>`).join('')}` : '';
-  el.innerHTML = `<div class="tracepanel">${rkHtml}${mHtml}</div>`;
+  el.innerHTML = `<div class="tracepanel">${sancHtml}${rkHtml}${mHtml}</div>`;
 }
 async function loadTraces(){ tracesLoaded=true; document.getElementById('tracesview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderTraces(await fetch('api/traces').then(r=>r.json())); }catch(e){ tracesLoaded=false; document.getElementById('tracesview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
 
