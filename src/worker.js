@@ -155,24 +155,69 @@ async function dbQuery(sql, params = []) {
 }
 let masterCache = { ts: 0, data: null };
 const MASTER_TTL = 6 * 60 * 60 * 1000;
-// growthepie's fundamentals.json 403s from Cloudflare's edge (confirmed via
-// prod logs: same code path that succeeds from a normal residential/cloud IP
-// gets blocked here — looks like a WAF rule against CDN/hosting-provider
-// traffic, not something a User-Agent header fixes). Keep the last GOOD
-// result and reuse it on failure instead of nulling every chain's
-// activeAddresses on every 403'd tick. If this is a permanent block rather
-// than transient, daaCache.data will simply never update past whatever the
-// last successful fetch was — worth checking growthepie for an alternative
-// endpoint if this hasn't recovered after a few days.
-let daaCache = { ts: 0, data: {} };
 
-async function getMaster() {
+// master.json (chainId -> growthepie origin_key map, needed to attach DAA to
+// each chain) is CloudFront-fronted on the same host as fundamentals.json and
+// is blocked from Cloudflare's edge the same way. Without it, origin_key is
+// null for every chain and active-address data can never attach even when the
+// DAA map itself is present — that's the silent second half of the bug.
+// Same strategy: try live, else fall back to the D1-persisted last-good map.
+async function getMaster(env) {
   const now = Date.now();
-  if (!masterCache.data || now - masterCache.ts > MASTER_TTL) {
-    try { masterCache = { ts: now, data: parseMaster(await fetchJson(GP_MASTER_URL, 20000)) }; }
-    catch (e) { if (!masterCache.data) masterCache = { ts: now, data: {} }; }
+  if (masterCache.data && Object.keys(masterCache.data).length && now - masterCache.ts <= MASTER_TTL) return masterCache.data;
+  try {
+    const m = parseMaster(await fetchJson(GP_MASTER_URL, 20000, GP_HEADERS));
+    if (Object.keys(m).length) {
+      masterCache = { ts: now, data: m };
+      if (env && env.DB) { try { await env.DB.prepare(
+        `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('master', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at`
+      ).bind(JSON.stringify(m), now).run(); } catch (e) {} }
+      return m;
+    }
+  } catch (e) { console.error('[getMaster] live growthepie failed:', e.message); }
+  if (env && env.DB) {
+    try {
+      const row = await env.DB.prepare(`SELECT data FROM snapshot_cache WHERE key='master'`).first();
+      if (row && row.data) { masterCache = { ts: now, data: JSON.parse(row.data) }; return masterCache.data; }
+    } catch (e) { console.error('[getMaster] D1 fallback failed:', e.message); }
   }
-  return masterCache.data;
+  return masterCache.data || {};
+}
+
+// growthepie's fundamentals.json (source of active-address data) 403s from
+// Cloudflare's edge — confirmed via prod logs: the identical request succeeds
+// from a normal IP but CloudFront blocks Cloudflare's ASN. No smaller daa-only
+// endpoint exists and DefiLlama's active-users API is Pro-gated, so there is no
+// clean live free source reachable from the Worker. Strategy: keep attempting
+// the live fetch (auto-recovers if the block ever clears), but persist the last
+// GOOD daa map in D1 (key='daa') so active-address data survives cold starts
+// and 403'd ticks instead of nulling every chain. Seeded once from a normal IP.
+let daaCache = { ts: 0, data: {} };
+const DAA_TTL = 30 * 60 * 1000;
+async function getDaaByOrigin(env) {
+  const now = Date.now();
+  if (Object.keys(daaCache.data).length && now - daaCache.ts < DAA_TTL) return daaCache.data;
+  // 1) try live growthepie (works if the CF-edge block ever lifts)
+  try {
+    const fresh = latestByOrigin(await fetchJson(GP_FUND_URL, 25000, GP_HEADERS), 'daa');
+    if (Object.keys(fresh).length) {
+      daaCache = { ts: now, data: fresh };
+      if (env && env.DB) { try { await env.DB.prepare(
+        `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('daa', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at`
+      ).bind(JSON.stringify(fresh), now).run(); } catch (e) {} }
+      return fresh;
+    }
+  } catch (e) { console.error('[getDaaByOrigin] live growthepie failed:', e.message); }
+  // 2) fall back to last-good persisted map
+  if (env && env.DB) {
+    try {
+      const row = await env.DB.prepare(`SELECT data, updated_at FROM snapshot_cache WHERE key='daa'`).first();
+      if (row && row.data) { daaCache = { ts: row.updated_at, data: JSON.parse(row.data) }; return daaCache.data; }
+    } catch (e) { console.error('[getDaaByOrigin] D1 fallback failed:', e.message); }
+  }
+  return daaCache.data; // {} if never seeded
 }
 
 // Every buildSnapshot fetch degrades silently on failure (falls back to a
@@ -186,11 +231,13 @@ function logSettled(name, r) {
 
 async function buildSnapshot() {
   // --- cheap global fetches (partial failure tolerated) ---
-  const [chainsR, dexsR, feesR, stablesR, gpFundR, cgSeed, gpMaster] = await Promise.allSettled([
+  // growthepie DAA is fetched separately via getDaaByOrigin (D1-persisted,
+  // its own try-live-then-last-good path), not in this parallel group.
+  const [chainsR, dexsR, feesR, stablesR, cgSeed, gpMaster, daaByOrigin] = await Promise.allSettled([
     fetchJson(CHAINS_URL), fetchJson(DEXS_URL), fetchJson(FEES_URL),
-    fetchJson(STABLES_URL), fetchJson(GP_FUND_URL, 25000, GP_HEADERS), Promise.resolve(null), getMaster(),
+    fetchJson(STABLES_URL), Promise.resolve(null), getMaster(ENV), getDaaByOrigin(ENV),
   ]);
-  [['chains', chainsR], ['dexs', dexsR], ['fees', feesR], ['stables', stablesR], ['gpFund', gpFundR], ['gpMaster', gpMaster]]
+  [['chains', chainsR], ['dexs', dexsR], ['fees', feesR], ['stables', stablesR], ['gpMaster', gpMaster], ['daa', daaByOrigin]]
     .forEach(([name, r]) => logSettled(name, r));
   const val = (r, d) => (r.status === 'fulfilled' && r.value != null ? r.value : d);
 
@@ -200,9 +247,7 @@ async function buildSnapshot() {
   const volAgg = aggregateBreakdown(val(dexsR, {}));
   const feeAgg = aggregateBreakdown(val(feesR, {}));
   const masterMap = gpMaster.status === 'fulfilled' ? gpMaster.value : {};
-  const freshDaa = latestByOrigin(val(gpFundR, []), 'daa');
-  if (Object.keys(freshDaa).length) daaCache = { ts: Date.now(), data: freshDaa };
-  const daaByOrigin = daaCache.data;
+  const daaMap = val(daaByOrigin, {});
 
   // stablecoin mcap by normalized chain name
   const stableByChain = {};
@@ -229,7 +274,7 @@ async function buildSnapshot() {
         volume24h: volAgg[key] || 0,
         fees24h: feeAgg[key] || 0,
         stables: stableByChain[key] || 0,
-        activeAddresses: originKey && daaByOrigin[originKey] != null ? daaByOrigin[originKey] : null,
+        activeAddresses: originKey && daaMap[originKey] != null ? daaMap[originKey] : null,
       };
     });
 
