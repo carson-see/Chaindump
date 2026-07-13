@@ -82,9 +82,6 @@ Work the loop: discover candidates -> research each -> verify sources resolve ->
 // ---- one desk run -----------------------------------------------------------
 
 async function runDesk(task: string): Promise<void> {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY is not set (in prod, load it from GCP Secret Manager `Anthropic`).");
-  }
   let proposals = 0;
   const run = query({
     prompt: task,
@@ -116,13 +113,14 @@ async function runDesk(task: string): Promise<void> {
   });
 
   for await (const message of run) {
-    if (message.type === "assistant") {
-      for (const block of message.message.content) {
-        if (block.type === "tool_use" && block.name === "mcp__desk__queue_proposal") proposals += 1;
-      }
-    } else if (message.type === "result") {
+    if (message.type === "result") {
       const cost = "total_cost_usd" in message ? message.total_cost_usd : undefined;
       console.error(`[desk] run finished: ${proposals} proposal(s) queued to ${QUEUE_DIR}` + (cost != null ? ` — $${cost.toFixed(4)}` : ""));
+      continue;
+    }
+    if (message.type !== "assistant") continue;
+    for (const block of message.message.content) {
+      if (block.type === "tool_use" && block.name === "mcp__desk__queue_proposal") proposals += 1;
     }
   }
 }
@@ -137,6 +135,9 @@ const TASK =
   `Do a fresh discovery pass for NEW or newly-escalated crypto scams, exploits, and rug pulls from the last ~2 weeks. For each credible candidate: verify the loss, chain, date, and attribution against resolving authoritative sources; check whether Chaindump already covers it (scam_cases tool); and queue the novel, verified ones via queue_proposal (dataset "scam_intel"). Aim for quality over quantity — 3-6 well-sourced findings.`;
 
 try {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error("ANTHROPIC_API_KEY is not set (in prod, load it from GCP Secret Manager `Anthropic`).");
+  }
   await runDesk(TASK);
 } catch (e) {
   console.error("[desk] fatal:", e instanceof Error ? e.message : e);
