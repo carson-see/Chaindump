@@ -1,0 +1,33 @@
+<evaluation>
+  <!--
+    Evaluations for the chaindump-mcp server. Answers are drawn from Chaindump's
+    CURATED, stable data (OFAC SDN membership, curated forensic verdicts) so they
+    don't drift with live metrics. Run against a server pointed at the live API
+    (CHAINDUMP_BASE_URL=https://chaindump.xyz) with the MCP Inspector or an
+    evaluation harness. Verified 2026-07-13.
+  -->
+  <qa_pair>
+    <question>Screen the Ethereum address 0x0330070FD38Ec3bB94F58FA55D40368271E9e54A. Is it on the OFAC SDN sanctioned list? Answer "yes" or "no".</question>
+    <answer>yes</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using Chaindump's forensic classification, what one-word verdict does it assign the Tezos chain (its stuck/mid thesis)?</question>
+    <answer>pivoting</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What one-word forensic verdict does Chaindump assign the Flow blockchain?</question>
+    <answer>drifting</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What one-word forensic verdict does Chaindump assign Kaia (the Klaytn+Finschia merger chain)?</question>
+    <answer>pivoting</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What one-word forensic verdict does Chaindump assign Neo?</question>
+    <answer>drifting</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>In Chaindump's live tier classification (thriving / mid / dying / dead), which tier is Ethereum in?</question>
+    <answer>thriving</answer>
+  </qa_pair>
+</evaluation>
