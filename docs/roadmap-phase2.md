@@ -4,6 +4,46 @@ Set by Carson 2026-07-13, after the data-workflow + NFT-v2 restructure shipped.
 Execute in order; each phase is its own set of verified deploys. UAT is the very
 last thing.
 
+---
+## ▶ RESUME HERE (state as of 2026-07-13, end of session 1)
+
+**Standing practices (every task):** pre-mortem before ANY deploy/prod-change ·
+code-review the diff · structured debugging (diagnose before guessing) · TDD
+(build the missing test harness as you go) · verify live · content accuracy bar
+(cite resolving sources, verify figures against the authoritative source —
+DefiLlama for TVL, CoinGecko for token price — before publishing; no fabrication;
+human-gate anything naming an individual). All detailed in `CLAUDE.md`.
+
+**Done this session:** activeAddresses fix · NFT catalog · RWA/DePIN · scam/OFAC
+screening · policy+power reconcile · deep-links · NFT-v2 folder restructure ·
+dead/mid collapsible folders · **10 new dead-chain case studies inserted**
+(Canto, Moonriver, DeFiChain, KCC, OKExChain, Milkomeda C1, Velas, Wanchain,
+Fuse, Conflux — DefiLlama-verified). Design system committed. Docs in repo + the
+Google Drive "Chaindump" folder.
+
+**Immediate next task — the stuck/mid case studies (finishes Phase A content):**
+- 8 chains identified but NOT yet researched/inserted: **Tezos, Flow, Hedera,
+  MultiversX, Kaia, ICP, IOTA, Neo** (dead-chain discovery covered the rest).
+- **Method that works (proven):** do NOT re-run the big parallel research
+  workflow — it stalled twice on API overload (529s). Research each chain
+  directly (main loop, or a SMALL agent batch of ≤4), producing the `mid_chains`
+  shape: `chain, launched, tvl, verdict` (stalling|drifting|pivoting|
+  quietly_building), `why_stuck, outlook, sources[]`, and `profile` = {purpose,
+  whats_working, whats_not, situation, non_economic, outlook,
+  success_factors_missing[], founded, founders, raised, token_symbol, token_ath,
+  token_ath_date, token_current}.
+- **Verify before insert:** fetch DefiLlama `historicalChainTvl/<slug>` and use
+  its current TVL (authoritative); spot-check token price via CoinGecko. Then
+  **pre-mortem** (watch for migration-framing like Fantom→Sonic / Klaytn→Kaia,
+  and anything that fails fact-check — that's how Telos + Fantom were caught).
+- Insert via `wrangler d1 execute chaindump-db --remote --file=seed.sql` (no
+  `BEGIN TRANSACTION`), then `--local` for parity. Cards render automatically in
+  the verdict-folders; verify on /mid.
+
+Then continue Phases B → H below.
+---
+
+
 **Cross-cutting principle (Carson):** our value everywhere is **analysis +
 aggregation**, not raw data. Sourcing must go beyond web3-native outlets —
 especially for regulation/policy, pull **direct government sources, mainstream
