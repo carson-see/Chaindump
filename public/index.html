@@ -1295,8 +1295,8 @@ async function loadRwa(){ rwaLoaded=true; document.getElementById('rwaview').inn
 function renderGeo(data){
   state.geoData = data;
   const cardFn = (it) => { const p=it.profile||{}; return libCard(
-    { slug:it.slug, name:it.name, badge:p.adoption_rank?('#'+p.adoption_rank+' adoption'):(it.kind==='region'?'region':''), badgeClass:'recover', meta:(p.regulation?esc(String(p.regulation)):'') },
-    'geoExpanded', `<div class="gdd" style="color:var(--muted2);font-size:11px">${esc(it.region||'')}</div>`,
+    { slug:it.slug, name:it.name, badge:it.powerRank?('#'+it.powerRank+' power'):(p.adoption_rank?('#'+p.adoption_rank+' adoption'):(it.kind==='region'?'region':'')), badgeClass:'recover', meta:(p.regulation?esc(String(p.regulation)):'') },
+    'geoExpanded', `<div class="gdd" style="color:var(--muted2);font-size:11px">${esc(it.region||'')}${it.powerScore!=null?` · <span style="color:var(--accent)">${it.powerScore} power score</span>`:''}</div>`,
     [['Gov holdings', p.gov_holdings],['Sentiment', p.sentiment]],
     [['Adoption', p.adoption],['Regulation', p.regulation],['Upcoming regulation', p.upcoming_regulation],['Dominant use', p.use_cases],['Notable history', p.notable]], it.sources); };
   const byRegion = {};
@@ -1348,12 +1348,20 @@ function renderPower(data){
     const bar = (l,v) => `<div class="pwbar"><span class="pwl">${l}</span><span class="pwtrack"><span class="pwfill" style="width:${Math.max(2,v||0)}%"></span></span><span class="pwv">${v!=null?v:'—'}</span></div>`;
     let src = srcHtml(c.sources);
     return `<div class="gcard ${open?'open':''}" data-name="${esc(c.name)}">
-      <div class="ghead"><div class="gname"><span class="muted">#${c.rank}</span> ${esc(c.name)}</div><div class="gdd" style="color:var(--accent);font-size:17px">${c.total}<span class="gddl">power score</span></div></div>
-      ${open?`<div class="gexp">${bar('Usage',c.usage)}${bar('Policy',c.policy)}${bar('Institutional',c.institutional)}${bar('Innovation',c.innovation)}${bar('Government',c.government)}${c.rationale?`<div class="gbody" style="margin-top:10px">${esc(c.rationale)}</div>`:''}${src}</div>`:''}
-      <div class="gexpand">${open?'Hide ▲':'Score breakdown ▾'}</div>
+      <div class="ghead"><div class="gname"><span class="muted">#${c.rank}</span> ${esc(c.name)}${c.region?` <span class="rlchain">${esc(c.region)}</span>`:''}</div><div class="gdd" style="color:var(--accent);font-size:17px">${c.total}<span class="gddl">power score</span></div></div>
+      ${open?`<div class="gexp">${bar('Usage',c.usage)}${bar('Policy',c.policy)}${bar('Institutional',c.institutional)}${bar('Innovation',c.innovation)}${bar('Government',c.government)}${c.rationale?`<div class="gbody" style="margin-top:10px">${esc(c.rationale)}</div>`:''}
+        ${c.geo?`<div class="gsec" style="margin-top:12px">Adoption &amp; regulation</div>
+          ${c.geo.adoption?`<div class="gfield"><span class="gfl">Adoption</span> ${esc(c.geo.adoption)}</div>`:''}
+          ${c.geo.regulation?`<div class="gfield"><span class="gfl">Regulation</span> ${esc(c.geo.regulation)}</div>`:''}
+          ${c.geo.upcoming_regulation?`<div class="gfield"><span class="gfl">Upcoming</span> ${esc(c.geo.upcoming_regulation)}</div>`:''}
+          ${c.geo.gov_holdings?`<div class="gfield"><span class="gfl">Gov holdings</span> ${esc(c.geo.gov_holdings)}</div>`:''}
+          ${c.geo.sentiment?`<div class="gfield"><span class="gfl">Sentiment</span> ${esc(c.geo.sentiment)}</div>`:''}
+          ${c.geo.use_cases?`<div class="gfield"><span class="gfl">Use cases</span> ${esc(c.geo.use_cases)}</div>`:''}`:''}
+        ${src}</div>`:''}
+      <div class="gexpand">${open?'Hide ▲':'Score breakdown + regulation ▾'}</div>
     </div>`;
   }).join('');
-  el.innerHTML = `<div class="gvintro">Crypto Power Rankings — ${data.count} countries by a composite of usage (30%), policy (25%), institutional (20%), innovation (15%) &amp; government stance (10%).</div><div class="gwrap">${rows}</div>`;
+  el.innerHTML = `<div class="gvintro">Crypto Power Rankings — ${data.count} countries by a composite of usage (30%), policy (25%), institutional (20%), innovation (15%) &amp; government stance (10%). Expand any country for its full adoption &amp; regulation profile (shared with Global Adoption).</div><div class="gwrap">${rows}</div>`;
 }
 async function loadPower(){ powerLoaded=true; document.getElementById('powerview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderPower(await fetch('api/power').then(r=>r.json())); }catch(e){ powerLoaded=false; document.getElementById('powerview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
 

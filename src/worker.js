@@ -1119,6 +1119,17 @@ app.get('/api/geo', wrap(async (req, res) => {
     const regions = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
     let analysis = null;
     try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='geo_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    // Reconcile with Power Rankings: surface each country's rank + composite
+    // score so Global Adoption and Power Rankings agree and cross-reference.
+    try {
+      const pm = await dbQuery(`SELECT v FROM graveyard_meta WHERE k='power_rankings' LIMIT 1`);
+      if (pm[0]) {
+        let obj = {}; try { obj = JSON.parse(pm[0].v); } catch (e) {}
+        const rankByName = {};
+        (obj.countries || []).forEach((c) => { rankByName[c.name] = { rank: c.rank, total: c.total }; });
+        regions.forEach((r) => { if (rankByName[r.name]) { r.powerRank = rankByName[r.name].rank; r.powerScore = rankByName[r.name].total; } });
+      }
+    } catch (e) { /* best-effort */ }
     res.json({ regions, count: regions.length, analysis });
   } catch (e) {
     res.json({ regions: [], count: 0, error: e.message });
@@ -1239,7 +1250,26 @@ app.get('/api/power', wrap(async (req, res) => {
     const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='power_rankings' LIMIT 1`);
     if (!m[0]) return res.json({ countries: [], count: 0 });
     let obj = {}; try { obj = JSON.parse(m[0].v); } catch (e) {}
-    res.json({ countries: obj.countries || [], count: (obj.countries || []).length, updatedAt: m[0].updated_at });
+    let countries = obj.countries || [];
+    // Reconcile with Global Adoption (geo): the two datasets cover the same
+    // countries — merge each country's geo regulatory/adoption profile in so
+    // Power Rankings is the unified per-country view (score + regulation),
+    // not a second disconnected country list.
+    try {
+      const geoRows = await dbQuery(`SELECT name, region, profile FROM geo_regions WHERE kind='country'`);
+      const geoByName = {};
+      for (const g of geoRows) { let p = null; try { p = g.profile ? JSON.parse(g.profile) : null; } catch (e) {} geoByName[g.name] = { region: g.region, profile: p }; }
+      countries = countries.map((c) => {
+        const g = geoByName[c.name];
+        if (!g || !g.profile) return c;
+        const p = g.profile;
+        return { ...c, region: g.region, geo: {
+          adoption: p.adoption, regulation: p.regulation, upcoming_regulation: p.upcoming_regulation,
+          gov_holdings: p.gov_holdings, sentiment: p.sentiment, notable: p.notable, use_cases: p.use_cases,
+        } };
+      });
+    } catch (e) { /* geo merge best-effort */ }
+    res.json({ countries, count: countries.length, updatedAt: m[0].updated_at });
   } catch (e) {
     res.json({ countries: [], count: 0, error: e.message });
   }
