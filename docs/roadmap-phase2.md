@@ -34,12 +34,14 @@ Migrate the live app into the committed design system (`design/`): adopt the
 tokens (deep-dark + Signal Amber, 4-tier text), then the shell (grouped rail,
 ⌘K), then per-view components. Wired to the real APIs (the mockup is mock data).
 
-## Phase D — Full UAT clickthrough (Chrome)
-Complete manual UAT of every view + interaction via the browser: each tab loads,
-every card/folder/search/deep-link works, no console errors, responsive at
-1280px + 375px. Screenshot proof. Log any regressions and fix.
-
-## Phase E — Research & enhancement
+## Phase D — Research & enhancement
 Research ways to improve content, usability, and the product overall; propose +
 implement enhancements. (Signals feed, capital-rotation view, richer agent API,
 etc. — see ROADMAP.md P1/P2 for prior ideas.)
+
+## Phase E — Full UAT clickthrough (Chrome) — THE VERY LAST STEP
+After everything above (content, crons, redesign, enhancements) is in, do the
+complete manual UAT via the browser as the final gate: each tab loads, every
+card/folder/search/deep-link works, no console errors, responsive at 1280px +
+375px. Screenshot proof. Log any regressions and fix. Nothing ships after this
+except regression fixes it surfaces.
