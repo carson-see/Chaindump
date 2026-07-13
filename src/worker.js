@@ -1640,7 +1640,7 @@ async function spaShell(env, req) {
     return await r.text();
   } catch (e) { console.error('[spaShell] failed:', e && e.message); throw e; }
 }
-function sendHtml(res, html) { res.status(200).html(html); }
+function sendHtml(res, html) { res.setHeader('Link', DISCOVERY_LINK); res.status(200).html(html); }
 
 // Views that are valid single-segment deep-links → their share copy.
 const VIEW_OG = {
@@ -1690,6 +1690,65 @@ app.get('/collection/:id', wrap(async (req, res) => {
   const title = row ? `${row.name} — Chaindump` : 'NFT Collection — Chaindump';
   const desc = row ? `${row.name} (${row.chain}) — live floor, market cap, 24h volume and holders on Chaindump.` : OG_DESC_FALLBACK;
   sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/collection/${encodeURIComponent(id)}` }));
+}));
+
+// ---------------------------------------------------------------------------
+// Phase D — agent-readiness / AI-discovery surface (robots, sitemap, Link
+// headers, api-catalog). Content policy (Carson 2026-07-13): AI may read for
+// search + answers, but NOT train — Content-Signal ai-train=no, search=yes,
+// ai-input=yes. See docs/agent-readiness.md.
+// ---------------------------------------------------------------------------
+const ORIGIN = 'https://chaindump.xyz';
+const AI_CRAWLERS = ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-Web', 'anthropic-ai', 'Google-Extended', 'PerplexityBot', 'CCBot', 'Applebot-Extended', 'meta-externalagent'];
+const ROBOTS_TXT = [
+  '# Chaindump — real-time blockchain intelligence',
+  '# Content usage (contentsignals.org): index for search and let AI assistants',
+  '# cite/answer with our analysis, but do NOT train models on it.',
+  '',
+  'User-agent: *',
+  'Content-Signal: ai-train=no, search=yes, ai-input=yes',
+  'Allow: /',
+  'Disallow: /api/agent/',
+  '',
+  ...AI_CRAWLERS.flatMap((ua) => [`User-agent: ${ua}`, 'Content-Signal: ai-train=no, search=yes, ai-input=yes', 'Allow: /', 'Disallow: /api/agent/', '']),
+  `Sitemap: ${ORIGIN}/sitemap.xml`,
+  '',
+].join('\n');
+
+app.get('/robots.txt', (c) => c.text(ROBOTS_TXT, 200, { 'cache-control': 'public, max-age=3600' }));
+
+app.get('/sitemap.xml', async (c) => {
+  const urls = [`${ORIGIN}/`, ...Object.keys(VIEW_OG).map((v) => `${ORIGIN}/${v}`)];
+  try { // include the live top chains as entity deep-links when the snapshot is warm
+    if (!cache.data) cache = await loadSnapshot();
+    for (const ch of (cache.data.chains || []).slice(0, 50)) urls.push(`${ORIGIN}/chain/${encodeURIComponent(ch.name)}`);
+  } catch (e) {}
+  const body = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    + urls.map((u) => `  <url><loc>${u.replace(/&/g, '&amp;')}</loc></url>`).join('\n')
+    + '\n</urlset>\n';
+  return new Response(body, { headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+});
+
+// RFC 9727 API catalog — points agents at the x402 agent API, its manifest and health.
+app.get('/.well-known/api-catalog', (c) => {
+  const linkset = { linkset: [{
+    anchor: `${ORIGIN}/api/agent`,
+    'service-desc': [{ href: `${ORIGIN}/api/agent/manifest`, type: 'application/json' }],
+    'service-doc': [{ href: `${ORIGIN}/api`, type: 'text/html' }],
+    status: [{ href: `${ORIGIN}/api/health`, type: 'application/json' }],
+  }] };
+  return new Response(JSON.stringify(linkset), { headers: { 'content-type': 'application/linkset+json', 'cache-control': 'public, max-age=3600' } });
+});
+
+// RFC 8288 Link header advertising the API catalog + service docs. Applied to
+// the homepage (run_worker_first: ["/"]) and every Worker-served HTML view.
+const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", <${ORIGIN}/api>; rel="service-doc", <${ORIGIN}/api/agent/manifest>; rel="service-desc"`;
+
+// Homepage: Worker-served (run_worker_first: ["/"]) so we can attach the Link
+// header (sendHtml sets it) and proper homepage OG tags.
+app.get('/', wrap(async (req, res) => {
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: `${ORIGIN}/` }));
 }));
 
 // ---------------------------------------------------------------------------
