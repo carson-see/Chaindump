@@ -1741,6 +1741,57 @@ app.get('/.well-known/api-catalog', (c) => {
   return new Response(JSON.stringify(linkset), { headers: { 'content-type': 'application/linkset+json', 'cache-control': 'public, max-age=3600' } });
 });
 
+// Agent Skills Discovery (RFC v0.2.0) — advertises Chaindump's differentiated
+// agent capability, pointing at the LIVE x402 agent API (verified 200/402). The
+// skill resource is served below; the index digests it so agents can integrity-
+// check. (The MCP server-card is intentionally deferred until the chaindump-mcp
+// server is hosted at a resolving URL — see docs/agent-readiness.md.)
+const AGENT_SKILL_DOC = `# Chaindump — chain-intel (agent skill)
+
+Differentiated blockchain intelligence for AI agents: OFAC sanctions screening,
+chain forensics (why chains die/stall), live capital-flow & anomaly signals, and
+country crypto power rankings. **Every response carries its sources; signals carry
+a confidence score.** This is analysis + provenance — not raw TVL or spot prices
+(get those free from DefiLlama/CoinGecko).
+
+## Access
+Query via the x402-payable agent API (USDC on Base): a free monthly quota, then
+per-call payment. Discover prices, schemas and payment terms at
+\`/api/agent/manifest\` and \`/.well-known/api-catalog\`.
+
+## Entrypoints
+- \`GET /api/agent/summary\` — market posture + top signals across all chains
+- \`GET /api/agent/chain/{key}\` — full sourced profile + metrics + signals for one chain
+- \`GET /api/agent/signals\` — live signal feed (momentum, capital rotation, anomalies)
+- \`GET /api/agent/risk/{entity}\` — scam / bad-actor risk assessment with cited evidence
+
+## Auth
+x402 (HTTP 402 Payment Required on metered calls). Provenance is the product:
+sources on every response, confidence (0–1) on every signal.
+`;
+
+async function sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+app.get('/.well-known/agent-skills/chaindump-chain-intel.md', () =>
+  new Response(AGENT_SKILL_DOC, { headers: { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=3600' } }));
+
+app.get('/.well-known/agent-skills/index.json', async () => {
+  const index = {
+    $schema: 'https://agentskills.io/schema/v0.2.0/index.json',
+    skills: [{
+      name: 'chaindump-chain-intel',
+      type: 'api',
+      description: 'Differentiated blockchain intelligence — OFAC screening, chain forensics, live signals, country power rankings — via the x402 agent API. Sourced.',
+      url: `${ORIGIN}/.well-known/agent-skills/chaindump-chain-intel.md`,
+      sha256: await sha256Hex(AGENT_SKILL_DOC),
+    }],
+  };
+  return new Response(JSON.stringify(index, null, 2), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+});
+
 // RFC 8288 Link header advertising the API catalog + service docs. Applied to
 // the homepage (run_worker_first: ["/"]) and every Worker-served HTML view.
 const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", <${ORIGIN}/api>; rel="service-doc", <${ORIGIN}/api/agent/manifest>; rel="service-desc"`;
