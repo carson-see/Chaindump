@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<base href="/" />
 <title>Chaindump — Onchain Intelligence</title>
 <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 <style>
@@ -767,14 +768,15 @@ document.getElementById('rows').addEventListener('click', (e) => {
   const tr = e.target.closest('tr.crow');
   if (!tr) return;
   const name = tr.dataset.name;
-  if (state.expanded === name) { state.expanded = null; render(); }
-  else { state.expanded = name; loadDetail(name); }
+  if (state.expanded === name) { state.expanded = null; render(); history.pushState({ view: 'live' }, '', '/'); }
+  else { state.expanded = name; loadDetail(name); pushEntity('chain', name); }
 });
 
 // ---- view switching (Live / Mid / Graveyard) ----
 let graveLoaded = false, midLoaded = false, nftLoaded = false, infraLoaded = false, marketsLoaded = false, stablesLoaded = false, geoLoaded = false, rwaLoaded = false, usLoaded = false, newsLoaded = false, powerLoaded = false, tracesLoaded = false;
-function switchView(view){
+function switchView(view, push){
   state.activeView = view;
+  if (push !== false) { const path = view === 'live' ? '/' : '/' + view; if (location.pathname !== path) history.pushState({ view }, '', path); }
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
   document.querySelectorAll('.liveonly').forEach(el => { el.style.display = view === 'live' ? '' : 'none'; });
   document.getElementById('midview').style.display = view === 'mid' ? 'block' : 'none';
@@ -1566,7 +1568,7 @@ document.getElementById('tracesview').addEventListener('click', (e) => {
   const card = e.target.closest('.gcard'); if (!card) return;
   const y = window.scrollY;
   if (id==='powerview' && state.powerData) { const nm=card.dataset.name; state.powerExpanded = state.powerExpanded===nm?null:nm; renderPower(state.powerData); }
-  if (id==='tracesview' && state.tracesData) { const sl=card.dataset.slug; state.tracesExpanded = state.tracesExpanded===sl?null:sl; renderTraces(state.tracesData); }
+  if (id==='tracesview' && state.tracesData) { const sl=card.dataset.slug; const opening = state.tracesExpanded!==sl; state.tracesExpanded = opening?sl:null; renderTraces(state.tracesData); if (opening && sl) pushEntity('scam', sl); else history.pushState({view:'traces'},'','/traces'); }
   window.scrollTo(0, y);
 }));
 
@@ -1800,7 +1802,33 @@ document.addEventListener('click', (e) => {
   if (ah) { const acc = document.getElementById(ah.dataset.acc); if (acc) acc.classList.toggle('open'); }
 });
 
+// ---- deep-link routing (History API) ----
+const KNOWN_VIEWS = ['live','mid','grave','nft','stables','rwa','infra','markets','geo','uspolicy','power','news','traces','api'];
+function applyRoute(){
+  const parts = location.pathname.split('/').filter(Boolean);
+  if (!parts.length) { switchView('live', false); return; }
+  const [seg, rest] = parts;
+  if (seg === 'chain' && rest) {
+    switchView('live', false);
+    const name = decodeURIComponent(rest);
+    state.expanded = name; loadDetail(name);
+  } else if (seg === 'scam' && rest) {
+    state.tracesExpanded = decodeURIComponent(rest); // renderTraces opens it
+    switchView('traces', false);
+  } else if (seg === 'collection' && rest) {
+    switchView('nft', false); // lands on NFT tab; server OG describes the collection
+  } else if (KNOWN_VIEWS.includes(seg)) {
+    switchView(seg, false);
+  } else {
+    switchView('live', false);
+  }
+}
+window.addEventListener('popstate', applyRoute);
+// entity deep-link helpers: push URL when opening an entity
+function pushEntity(kind, id){ const path = `/${kind}/${encodeURIComponent(id)}`; if (location.pathname !== path) history.pushState({ kind, id }, '', path); }
+
 load();
+applyRoute();
 setInterval(load, 30000);
 // real-time refresh of whichever live-data tab is open (research tabs are static, skip them)
 const LIVE_REFRESH = { stables: loadStables, nft: loadNft, news: loadNews, markets: loadMarkets, power: loadPower };

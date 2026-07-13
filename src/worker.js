@@ -16,16 +16,21 @@ function wrap(handler) {
       params: c.req.param(),
       headers: Object.fromEntries(c.req.raw.headers),
       ip: c.req.header('cf-connecting-ip') || '',
+      raw: c.req.raw,
+      url: c.req.url,
     };
-    let body, status = 200;
+    let body, status = 200, html = null;
     const headers = {};
     const res = {
       json(obj) { body = obj; return res; },
+      html(str) { html = str; return res; },
       status(n) { status = n; return res; },
       setHeader(k, v) { headers[k] = v; return res; },
     };
     await handler(req, res);
-    const response = c.json(body, status);
+    const response = html != null
+      ? new Response(html, { status, headers: { 'content-type': 'text/html; charset=utf-8' } })
+      : c.json(body, status);
     for (const [k, v] of Object.entries(headers)) response.headers.set(k, v);
     return response;
   };
@@ -1487,6 +1492,87 @@ app.get('/api/scam-graph', wrap(async (req, res) => {
 }));
 
 app.get('/api/health', wrap((req, res) => res.json({ ok: true })));
+
+// ---------------------------------------------------------------------------
+// Deep-links + shareable pages. The SPA is served for entity/view paths with
+// per-entity Open Graph tags injected so pasted links unfurl (title/desc) in
+// Twitter/Discord/Slack. The client reads the path and opens the right view.
+// ---------------------------------------------------------------------------
+const OG_DESC_FALLBACK = 'Onchain intelligence — chains, assets, markets, policy & forensics. What is changing, why, and what to do about it.';
+function ogHtml(html, { title, desc, url }) {
+  const t = escapeHtml(title || 'Chaindump — Onchain Intelligence');
+  const d = escapeHtml(desc || OG_DESC_FALLBACK);
+  const u = escapeHtml(url || 'https://chaindump.xyz/');
+  const tags = `<title>${t}</title>
+<meta name="description" content="${d}">
+<meta property="og:title" content="${t}">
+<meta property="og:description" content="${d}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="${u}">
+<meta property="og:site_name" content="Chaindump">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="${t}">
+<meta name="twitter:description" content="${d}">`;
+  return html.replace(/<title>[\s\S]*?<\/title>/, tags);
+}
+async function spaShell(env, req) {
+  try {
+    if (!env || !env.ASSETS) throw new Error('no ASSETS binding');
+    const r = await env.ASSETS.fetch(new Request(new URL('/index.html', req.url)));
+    return await r.text();
+  } catch (e) { console.error('[spaShell] failed:', e && e.message); throw e; }
+}
+function sendHtml(res, html) { res.status(200).html(html); }
+
+// Views that are valid single-segment deep-links → their share copy.
+const VIEW_OG = {
+  live: ['Live · Top 50 chains — Chaindump', 'The top 50 chains ranked by composite on-chain activity (volume, TVL, fees), with live capital-flow and anomaly signals.'],
+  mid: ['Stuck / Mid chains — Chaindump', 'Alive-but-directionless chains: real product, weak token value capture, or a stalled thesis.'],
+  grave: ['Chain Graveyard — Chaindump', 'Why chains die: the forensic taxonomy of dead chains — mercenary TVL, points collapse, unlock dumps, rugs, and hacks.'],
+  nft: ['NFTs & Ordinals — Chaindump', 'The full NFT & Ordinals collection universe across chains, plus deep-dive lifecycle case studies.'],
+  stables: ['Stablecoins — Chaindump', 'Live stablecoin rankings by circulating supply, peg mechanism, issuer and chain footprint.'],
+  rwa: ['RWA · DePIN — Chaindump', 'Real-world assets on-chain ($25B+ tokenized) and decentralized physical infrastructure networks.'],
+  infra: ['Storage / Verify — Chaindump', 'Decentralized storage and document-verification infrastructure.'],
+  markets: ['Treasuries · Miners · ETFs — Chaindump', 'The TradFi bridge: crypto treasury companies, miners and ETFs.'],
+  geo: ['Global Adoption — Chaindump', 'How countries adopt, regulate and hold crypto — with each country\'s crypto power ranking.'],
+  uspolicy: ['US Policy Map — Chaindump', 'US crypto policy state-by-state, plus federal legislation tracking.'],
+  power: ['Crypto Power Rankings — Chaindump', 'Countries ranked by a composite of usage, policy, institutional adoption, innovation and government stance.'],
+  news: ['Crypto News — Chaindump', 'Aggregated crypto news across the major outlets.'],
+  traces: ['Scam Tracker — Chaindump', 'Traced scam fund-flows plus live OFAC wallet screening against 900+ sanctioned addresses across 14 chains.'],
+  api: ['Agent API · x402 — Chaindump', 'A versioned, provenance-tagged JSON API for AI agents, payable per-call via x402.'],
+};
+Object.keys(VIEW_OG).forEach((v) => {
+  app.get('/' + v, wrap(async (req, res) => {
+    const [title, desc] = VIEW_OG[v];
+    sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/${v}` }));
+  }));
+});
+app.get('/chain/:name', wrap(async (req, res) => {
+  const key = String(req.params.name || '');
+  if (!cache.data) cache = await loadSnapshot();
+  const row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === key.toLowerCase());
+  const title = row ? `${row.name} — Chaindump` : 'Chain — Chaindump';
+  const desc = row
+    ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
+    : OG_DESC_FALLBACK;
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/chain/${encodeURIComponent(key)}` }));
+}));
+app.get('/scam/:slug', wrap(async (req, res) => {
+  const slug = String(req.params.slug || '');
+  let row = null;
+  try { row = (await dbQuery(`SELECT name, category, amount_usd FROM scam_traces WHERE slug = ?`, [slug]))[0]; } catch (e) {}
+  const title = row ? `${row.name} — Chaindump Scam Tracker` : 'Scam Tracker — Chaindump';
+  const desc = row ? `${row.name}${row.amount_usd ? ` — ~$${fmtShort(row.amount_usd)} ${row.category || ''}` : ''}. Traced wallets, fund-flow and sources on Chaindump.` : OG_DESC_FALLBACK;
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/scam/${encodeURIComponent(slug)}` }));
+}));
+app.get('/collection/:id', wrap(async (req, res) => {
+  const id = String(req.params.id || '');
+  let row = null;
+  try { if (ENV.DB) row = await ENV.DB.prepare(`SELECT name, chain FROM nft_catalog WHERE id = ?`).bind(id).first(); } catch (e) {}
+  const title = row ? `${row.name} — Chaindump` : 'NFT Collection — Chaindump';
+  const desc = row ? `${row.name} (${row.chain}) — live floor, market cap, 24h volume and holders on Chaindump.` : OG_DESC_FALLBACK;
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/collection/${encodeURIComponent(id)}` }));
+}));
 
 // ---------------------------------------------------------------------------
 // Cron Trigger — refreshes the D1 snapshot cache off the request path (real
