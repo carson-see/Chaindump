@@ -895,6 +895,76 @@ app.get('/api/tiers', wrap(async (req, res) => {
 }));
 
 // NFT & Ordinals lifecycle library
+// ---------------------------------------------------------------------------
+// Live NFT/Ordinals catalog — the full CoinGecko collection universe (~2000
+// across ~17 chains), searchable + filterable + paginated from D1.
+// ---------------------------------------------------------------------------
+app.get('/api/nft-catalog', wrap(async (req, res) => {
+  try {
+    if (!ENV.DB) return res.json({ collections: [], total: 0, chains: [], page: 1, perPage: 30 });
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const chain = String(req.query.chain || '').trim();
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const perPage = Math.min(60, Math.max(10, parseInt(req.query.per) || 30));
+    const where = [], binds = [];
+    if (q) { where.push('lower(name) LIKE ?'); binds.push('%' + q + '%'); }
+    if (chain) { where.push('chain = ?'); binds.push(chain); }
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const totalRow = await ENV.DB.prepare(`SELECT COUNT(*) n FROM nft_catalog ${whereSql}`).bind(...binds).first();
+    const total = (totalRow && totalRow.n) || 0;
+    const rows = (await ENV.DB.prepare(
+      `SELECT id, name, chain, contract_address, symbol FROM nft_catalog ${whereSql} ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?`
+    ).bind(...binds, perPage, (page - 1) * perPage).all()).results || [];
+    // chain facets (with counts) for the filter dropdown — unfiltered by chain
+    const facets = (await ENV.DB.prepare(
+      `SELECT chain, COUNT(*) n FROM nft_catalog GROUP BY chain ORDER BY n DESC`
+    ).all()).results || [];
+    res.json({ collections: rows, total, page, perPage, pages: Math.ceil(total / perPage), chains: facets });
+  } catch (e) {
+    res.json({ collections: [], total: 0, chains: [], error: e.message });
+  }
+}));
+
+// On-demand enriched detail for one catalog collection (floor / mcap / 24h vol /
+// holders / thumbnail), cached in D1 to stay within the CoinGecko Demo rate limit.
+const NFT_DETAIL_TTL = 30 * 60 * 1000;
+app.get('/api/nft-collection/:id', wrap(async (req, res) => {
+  const id = String(req.params.id || '').toLowerCase().replace(/[^a-z0-9._-]/g, '');
+  if (!id) return res.status(400).json({ error: 'bad id' });
+  try {
+    if (ENV.DB) {
+      const cached = await ENV.DB.prepare(`SELECT data, updated_at FROM nft_detail WHERE id = ?`).bind(id).first();
+      if (cached && cached.data && Date.now() - cached.updated_at < NFT_DETAIL_TTL) {
+        return res.json({ ...JSON.parse(cached.data), cached: true });
+      }
+    }
+    const d = await fetchJson(cgUrl(`https://api.coingecko.com/api/v3/nfts/${encodeURIComponent(id)}`), 12000);
+    const detail = {
+      id: d.id, name: d.name, chain: d.asset_platform_id || null,
+      floorUsd: d.floor_price && d.floor_price.usd != null ? d.floor_price.usd : null,
+      floorNative: d.floor_price && d.floor_price.native_currency != null ? d.floor_price.native_currency : null,
+      nativeSymbol: d.native_currency_symbol || null,
+      mcapUsd: d.market_cap && d.market_cap.usd != null ? d.market_cap.usd : null,
+      vol24hUsd: d.volume_24h && d.volume_24h.usd != null ? d.volume_24h.usd : null,
+      floorChange24h: d.floor_price_24h_percentage_change && d.floor_price_24h_percentage_change.usd != null ? +d.floor_price_24h_percentage_change.usd.toFixed(1) : null,
+      holders: d.number_of_unique_addresses != null ? d.number_of_unique_addresses : null,
+      supply: d.total_supply != null ? d.total_supply : null,
+      thumb: (d.image && (d.image.small_2x || d.image.small)) || null,
+      desc: d.description ? String(d.description).slice(0, 600) : null,
+      homepage: (() => { const h = d.links && d.links.homepage; return Array.isArray(h) ? (h[0] || null) : (h || null); })(),
+      twitter: d.twitter_account_id ? `https://twitter.com/${d.twitter_account_id}` : null,
+      coingecko: `https://www.coingecko.com/en/nft/${d.id}`,
+    };
+    if (ENV.DB) { try { await ENV.DB.prepare(
+      `INSERT INTO nft_detail (id, data, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at`
+    ).bind(id, JSON.stringify(detail), Date.now()).run(); } catch (e) {} }
+    res.json(detail);
+  } catch (e) {
+    res.status(502).json({ error: 'detail unavailable: ' + e.message });
+  }
+}));
+
 app.get('/api/nft', wrap(async (req, res) => {
   try {
     const rows = await dbQuery(`SELECT slug, name, chain, category, status, profile, sources, updated_at FROM nft_collections ORDER BY name`);
