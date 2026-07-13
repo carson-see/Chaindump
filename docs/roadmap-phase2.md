@@ -21,24 +21,30 @@ dead/mid collapsible folders · **10 new dead-chain case studies inserted**
 Fuse, Conflux — DefiLlama-verified). Design system committed. Docs in repo + the
 Google Drive "Chaindump" folder.
 
-**Immediate next task — the stuck/mid case studies (finishes Phase A content):**
-- 8 chains identified but NOT yet researched/inserted: **Tezos, Flow, Hedera,
-  MultiversX, Kaia, ICP, IOTA, Neo** (dead-chain discovery covered the rest).
-- **Method that works (proven):** do NOT re-run the big parallel research
-  workflow — it stalled twice on API overload (529s). Research each chain
-  directly (main loop, or a SMALL agent batch of ≤4), producing the `mid_chains`
-  shape: `chain, launched, tvl, verdict` (stalling|drifting|pivoting|
-  quietly_building), `why_stuck, outlook, sources[]`, and `profile` = {purpose,
-  whats_working, whats_not, situation, non_economic, outlook,
-  success_factors_missing[], founded, founders, raised, token_symbol, token_ath,
-  token_ath_date, token_current}.
-- **Verify before insert:** fetch DefiLlama `historicalChainTvl/<slug>` and use
-  its current TVL (authoritative); spot-check token price via CoinGecko. Then
-  **pre-mortem** (watch for migration-framing like Fantom→Sonic / Klaytn→Kaia,
-  and anything that fails fact-check — that's how Telos + Fantom were caught).
-- Insert via `wrangler d1 execute chaindump-db --remote --file=seed.sql` (no
-  `BEGIN TRANSACTION`), then `--local` for parity. Cards render automatically in
-  the verdict-folders; verify on /mid.
+**✅ DONE (session 2, 2026-07-13) — stuck/mid case studies finish Phase A content:**
+- 8 chains researched + inserted into `mid_chains`: **Tezos** (pivoting),
+  **Flow** (drifting), **Hedera** (stalling), **MultiversX** (pivoting),
+  **Kaia** (pivoting), **ICP** (pivoting), **IOTA** (pivoting), **Neo**
+  (drifting). Migration `migrations/0007_mid_chains_stuck.sql` (idempotent
+  INSERT OR REPLACE); applied `--remote` + `--local`; verified live on /mid
+  (all 8 render in verdict folders, profiles/sources/token-drop all correct, no
+  console errors; mid_chains now 20 total).
+- **Verification:** every TVL from DefiLlama `historicalChainTvl/<slug>`; every
+  token price/ATH from CoinGecko. Pre-mortem caught two things, handled: (1)
+  **Kaia = Klaytn+Finschia merger** — framed as such, with the KLAY heritage ATH
+  ($4.34, Mar 2021) noted in prose so the KAIA-ticker drawdown isn't understated;
+  (2) **MultiversX** — the research agent flagged its 2025-26 AI/agentic-commerce
+  integrations + 9.47% tail-inflation figure as aggregated-news-only, so those
+  specifics were softened to the well-sourced facts (Elrond→MultiversX rebrand,
+  sharding+WASM, xPortal, serial pivots).
+- **⚠ ONE EDITORIAL CALL FOR CARSON — Neo:** the Neo entry names co-founders Da
+  Hongfei & Erik Zhang in a **publicly-reported treasury/transparency dispute**
+  (late-2025). It's written as *attributed* reporting (sourced to Crypto Briefing
+  + CCN, "not findings of wrongdoing"), and they're public project leaders, not
+  private individuals — so it's defensible under the accuracy bar. But per the
+  human-gate-on-individuals practice, **Carson should confirm he's comfortable
+  publishing it** (it's live now; easy to soften/pull the dispute framing if he
+  prefers — the rest of the Neo profile stands without it).
 
 Then continue Phases B → H below.
 ---
@@ -56,7 +62,8 @@ across the library sections, and grow case-study coverage.
 - ✅ **Dead & Dying** — collapsible folders by cause of death (done, code).
   Content: more fallen-chain case studies (research pass running).
 - ✅ **Stuck / Mid** — collapsible folders by verdict (done, code).
-  Content: more entries (research pass running).
+  Content: ✅ **+8 case studies inserted** (Tezos, Flow, Hedera, MultiversX,
+  Kaia, ICP, IOTA, Neo — DefiLlama/CoinGecko-verified; mid_chains now 20).
 - **NFT case studies** — the angle Carson wants (see `nft-v2-followup.md`):
   cover **projects that persisted** (why — active communities? products?
   pivots?), **dead/dying**, and **successful beyond web3** (brands/IP that broke
