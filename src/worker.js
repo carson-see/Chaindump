@@ -142,11 +142,14 @@ let rebuilding = false;
 const TTL = 60 * 1000;              // upstream refresh cadence (stale-while-revalidate)
 
 // ---- Dashboard DB access (server-side only) for analyst takes ----
-function DASH() { return ENV.DASHBOARD_BASE || `http://localhost:${ENV.DASHBOARD_PORT || 4000}`; }
+// Not deployed anywhere reachable yet — short-circuit instead of letting Workers'
+// SSRF protection 403 a fetch to the unset/localhost default on every call.
+function DASH() { return ENV.DASHBOARD_BASE || ''; }
 function DTOKEN() { return ENV.DASHBOARD_TOKEN; }
 function GROUP() { return ENV.ARTIFACT_GROUP || 'main'; }
 const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
 async function dbQuery(sql) {
+  if (!DASH()) return [];
   const r = await fetch(`${DASH()}/api/db/${GROUP()}/database/query?sql=${encodeURIComponent(sql)}`, {
     headers: { Authorization: `Bearer ${DTOKEN()}` },
   });
