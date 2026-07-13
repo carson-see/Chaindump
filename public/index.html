@@ -356,6 +356,22 @@
   .catbtn:disabled { opacity:.4; cursor:default; }
   .catbtn:not(:disabled):hover { border-color:var(--accent2); }
   @media(max-width:760px){ .catstats{grid-template-columns:repeat(2,1fr)} }
+  /* RWA / DePIN live rankings */
+  .rllist { display:flex; flex-direction:column; border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  .rlrow { display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--border); font-size:13.5px; }
+  .rlrow:last-child { border-bottom:none; }
+  .rlrow:hover { background:var(--surface); }
+  .rlrank { width:26px; color:var(--muted); font-size:12px; text-align:right; flex-shrink:0; }
+  .rllogo { width:22px; height:22px; border-radius:50%; object-fit:cover; background:var(--bg); flex-shrink:0; }
+  .rlname { flex:1; min-width:0; font-weight:600; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rlname a { color:var(--fg); }
+  .rlchains { display:flex; gap:4px; flex-shrink:0; }
+  .rlchain { font-size:10px; color:var(--muted2); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
+  .rltvl { width:88px; text-align:right; font-weight:700; color:var(--fg); flex-shrink:0; }
+  .rlprice { width:76px; text-align:right; color:var(--muted2); flex-shrink:0; }
+  .rlchg { width:72px; text-align:right; flex-shrink:0; font-size:12.5px; }
+  .rlchg.up { color:var(--green); } .rlchg.down { color:var(--red); }
+  @media(max-width:680px){ .rlchains{display:none} .rlprice{display:none} }
 </style>
 </head>
 <body>
@@ -1237,8 +1253,38 @@ function renderRwa(data){
     [['How it works', p.how_it_works],['Traction', p.traction],['Business model', p.business_model],['Outlook', p.outlook]], it.sources); };
   const bc = data.byCat || {};
   genLibrary({ el:'rwaview', data, expandedKey:'rwaExpanded', analysisTitle:'State of RWAs & DePIN',
-    intro:`RWA &amp; DePIN library — real-world assets on-chain and decentralized physical infrastructure. ${data.count||0} projects.`,
+    intro:`RWA &amp; DePIN library — real-world assets on-chain and decentralized physical infrastructure. ${data.count||0} in-depth case studies, plus live rankings below.`,
     groups: Object.keys(bc).map(k=>({title:k.replace(/-/g,' '), items:bc[k]})), renderCard:cardFn });
+  // ---- live breadth: RWA by TVL + DePIN by market cap ----
+  const rwaLive = data.rwaLive || [], depinLive = data.depinLive || [];
+  if (rwaLive.length || depinLive.length) {
+    const chip = (t) => `<span class="rlchain">${esc(t)}</span>`;
+    const rwaRows = rwaLive.map((r,i) => `<div class="rlrow">
+      <span class="rlrank">${i+1}</span>
+      ${r.logo?`<img class="rllogo" src="${esc(r.logo)}" alt="" onerror="this.style.visibility='hidden'"/>`:'<span class="rllogo"></span>'}
+      <span class="rlname">${r.url?`<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>`:esc(r.name)}</span>
+      <span class="rlchains">${(r.chains||[]).slice(0,4).map(chip).join('')}${(r.chains||[]).length>4?`<span class="rlchain">+${r.chains.length-4}</span>`:''}</span>
+      <span class="rltvl">${fmtUsd(r.tvl)}</span>
+      <span class="rlchg ${r.change_7d>=0?'up':'down'}">${r.change_7d!=null?(r.change_7d>=0?'▲':'▼')+' '+Math.abs(r.change_7d).toFixed(1)+'%':'—'}</span>
+    </div>`).join('');
+    const depinRows = depinLive.map((t,i) => `<div class="rlrow">
+      <span class="rlrank">${i+1}</span>
+      ${t.image?`<img class="rllogo" src="${esc(t.image)}" alt="" onerror="this.style.visibility='hidden'"/>`:'<span class="rllogo"></span>'}
+      <span class="rlname">${esc(t.name)} <span class="muted">${esc(t.symbol||'')}</span></span>
+      <span class="rltvl">${fmtUsd(t.mcap)}</span>
+      <span class="rlprice">${t.price!=null?fmtUsd(t.price):'—'}</span>
+      <span class="rlchg ${t.change_24h>=0?'up':'down'}">${t.change_24h!=null?(t.change_24h>=0?'▲':'▼')+' '+Math.abs(t.change_24h).toFixed(1)+'%':'—'}</span>
+    </div>`).join('');
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `
+      ${rwaLive.length?`<div class="dsec" style="margin:28px 0 4px">Live RWA rankings</div>
+        <div class="gnar muted" style="margin-bottom:10px">${fmtUsd(data.rwaTvlTotal)} of real-world assets tokenized on-chain across ${rwaLive.length} protocols · by TVL (DefiLlama, live).</div>
+        <div class="rllist">${rwaRows}</div>`:''}
+      ${depinLive.length?`<div class="dsec" style="margin:28px 0 4px">DePIN networks</div>
+        <div class="gnar muted" style="margin-bottom:10px">${fmtUsd(data.depinMcapTotal)} in decentralized physical infrastructure tokens across ${depinLive.length} networks · by market cap (CoinGecko, live).</div>
+        <div class="rllist">${depinRows}</div>`:''}`;
+    document.getElementById('rwaview').appendChild(wrap);
+  }
 }
 async function loadRwa(){ rwaLoaded=true; document.getElementById('rwaview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderRwa(await fetch('api/rwa').then(r=>r.json())); }catch(e){ rwaLoaded=false; document.getElementById('rwaview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
 function renderGeo(data){

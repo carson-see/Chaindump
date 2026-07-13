@@ -670,6 +670,50 @@ async function getProtocols() {
   return protoCache.data;
 }
 
+// Refresh live RWA (DefiLlama RWA category, TVL-ranked) + DePIN (CoinGecko DePIN
+// category, market-cap ranked) breadth into D1. Called on a slow cron gate.
+const normSlug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+async function refreshRwaDepin(env) {
+  if (!env || !env.DB) return;
+  try {
+    const protos = await getProtocols();
+    const rwa = (Array.isArray(protos) ? protos : [])
+      .filter((p) => p.category === 'RWA' && (Number(p.tvl) || 0) > 0)
+      .sort((a, b) => (b.tvl || 0) - (a.tvl || 0)).slice(0, 150);
+    if (rwa.length) {
+      const stmt = env.DB.prepare(
+        `INSERT INTO rwa_live (slug, name, tvl, chains, url, logo, change_1d, change_7d, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(slug) DO UPDATE SET name=excluded.name, tvl=excluded.tvl, chains=excluded.chains,
+           url=excluded.url, logo=excluded.logo, change_1d=excluded.change_1d, change_7d=excluded.change_7d, updated_at=excluded.updated_at`
+      );
+      const now = Date.now();
+      await env.DB.batch(rwa.map((p) => stmt.bind(
+        normSlug(p.name), p.name, Number(p.tvl) || 0, JSON.stringify((p.chains || []).slice(0, 10)),
+        p.url || null, p.logo || null, p.change_1d ?? null, p.change_7d ?? null, now
+      )));
+    }
+  } catch (e) { console.error('[refreshRwaDepin] RWA failed:', e.message); }
+  try {
+    const mk = await fetchJson(cgUrl('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=depin&order=market_cap_desc&per_page=50&page=1'), 15000);
+    const depin = (Array.isArray(mk) ? mk : []).filter((t) => t && t.id);
+    if (depin.length) {
+      const stmt = env.DB.prepare(
+        `INSERT INTO depin_live (id, name, symbol, mcap, price, change_24h, volume_24h, image, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, symbol=excluded.symbol, mcap=excluded.mcap,
+           price=excluded.price, change_24h=excluded.change_24h, volume_24h=excluded.volume_24h, image=excluded.image, updated_at=excluded.updated_at`
+      );
+      const now = Date.now();
+      await env.DB.batch(depin.map((t) => stmt.bind(
+        t.id, t.name, (t.symbol || '').toUpperCase(), t.market_cap ?? null, t.current_price ?? null,
+        t.price_change_percentage_24h != null ? +t.price_change_percentage_24h.toFixed(2) : null,
+        t.total_volume ?? null, t.image || null, now
+      )));
+    }
+  } catch (e) { console.error('[refreshRwaDepin] DePIN failed:', e.message); }
+}
+
 app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
@@ -1090,7 +1134,16 @@ app.get('/api/rwa', wrap(async (req, res) => {
     try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='rwa_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
     const byCat = {};
     items.forEach((i) => { const k = (i.category || 'other'); (byCat[k] = byCat[k] || []).push(i); });
-    res.json({ items, count: items.length, byCat, analysis });
+    // live breadth: RWA protocols by TVL + DePIN tokens by market cap
+    let rwaLive = [], depinLive = [], rwaTvlTotal = 0;
+    try {
+      rwaLive = (await dbQuery(`SELECT slug, name, tvl, chains, url, logo, change_1d, change_7d FROM rwa_live ORDER BY tvl DESC`))
+        .map((r) => { let c = []; try { c = JSON.parse(r.chains || '[]'); } catch (e) {} return { ...r, chains: c }; });
+      rwaTvlTotal = rwaLive.reduce((a, r) => a + (r.tvl || 0), 0);
+    } catch (e) {}
+    try { depinLive = await dbQuery(`SELECT id, name, symbol, mcap, price, change_24h, volume_24h, image FROM depin_live ORDER BY mcap DESC`); } catch (e) {}
+    const depinMcapTotal = depinLive.reduce((a, r) => a + (r.mcap || 0), 0);
+    res.json({ items, count: items.length, byCat, analysis, rwaLive, depinLive, rwaTvlTotal, depinMcapTotal });
   } catch (e) {
     res.json({ items: [], count: 0, error: e.message });
   }
@@ -1460,6 +1513,8 @@ async function handleScheduled(event, env, ctx) {
 
     // roughly every 4 hours (1-in-48 five-minute ticks) is plenty for a 90-day prune
     if (Math.floor(ts / (5 * 60 * 1000)) % 48 === 0) await pruneOldSnapshots(env, ts);
+    // RWA/DePIN breadth changes slowly — refresh ~hourly (1-in-12 ticks)
+    if (Math.floor(ts / (5 * 60 * 1000)) % 12 === 0) await refreshRwaDepin(env);
   }
 
   cache = { ts, data };
