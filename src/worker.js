@@ -1,0 +1,1213 @@
+import { Hono } from 'hono';
+
+const ENV = {};
+const app = new Hono();
+app.use('*', async (c, next) => {
+  if (!ENV.__init) { Object.assign(ENV, c.env || {}); ENV.__init = true; }
+  await next();
+});
+
+// --- Express(req,res) -> Hono(c) compatibility shim, keeps handler bodies untouched ---
+function wrap(handler) {
+  return async (c) => {
+    const url = new URL(c.req.url);
+    const req = {
+      query: Object.fromEntries(url.searchParams),
+      params: c.req.param(),
+      headers: Object.fromEntries(c.req.raw.headers),
+      ip: c.req.header('cf-connecting-ip') || '',
+    };
+    let body, status = 200;
+    const headers = {};
+    const res = {
+      json(obj) { body = obj; return res; },
+      status(n) { status = n; return res; },
+      setHeader(k, v) { headers[k] = v; return res; },
+    };
+    await handler(req, res);
+    const response = c.json(body, status);
+    for (const [k, v] of Object.entries(headers)) response.headers.set(k, v);
+    return response;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// DefiLlama + growthepie + CoinGecko — all free / no-auth endpoints
+// ---------------------------------------------------------------------------
+const CHAINS_URL = 'https://api.llama.fi/v2/chains';
+const DEXS_URL   = 'https://api.llama.fi/overview/dexs?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true';
+const FEES_URL   = 'https://api.llama.fi/overview/fees?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true';
+const STABLES_URL = 'https://stablecoins.llama.fi/stablecoinchains';
+const GP_FUND_URL = 'https://api.growthepie.xyz/v1/fundamentals.json';
+const GP_MASTER_URL = 'https://api.growthepie.xyz/v1/master.json';
+const CG_PRICE = 'https://api.coingecko.com/api/v3/simple/price';
+// CoinGecko API key (free "Demo" key or Pro) — greatly raises rate limits so prices load reliably.
+// Set COINGECKO_API_KEY in the environment. Demo keys use the public host + x_cg_demo_api_key.
+function cgUrl(url) { const CG_KEY = ENV.COINGECKO_API_KEY || ''; return CG_KEY ? url + (url.includes('?') ? '&' : '?') + 'x_cg_demo_api_key=' + encodeURIComponent(CG_KEY) : url; }
+let priceCache = {}; // gecko_id -> { price, mcap, ch, ts } — sticky so transient CoinGecko failures don't wipe prices
+
+// ---- name normalization so sources line up ----
+const ALIAS = {
+  bnb: 'bsc', binance: 'bsc', binancesmartchain: 'bsc',
+  op: 'opmainnet', optimism: 'opmainnet', opmainnet: 'opmainnet',
+  avax: 'avalanche',
+  xdai: 'gnosis',
+  zksyncera: 'zksync', zksync2: 'zksync',
+  arbitrumone: 'arbitrum',
+};
+function norm(name) {
+  let n = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (ALIAS[n]) return ALIAS[n];
+  if (n.length > 2 && (n.endsWith('l1') || n.endsWith('l2'))) n = n.slice(0, -2);
+  return ALIAS[n] || n;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// fetch JSON with timeout; never throws the whole snapshot down
+async function fetchJson(url, ms = 15000) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(url, { headers: { accept: 'application/json' }, signal: ctl.signal });
+    if (!r.ok) throw new Error(`${r.status}`);
+    return await r.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// run promise-returning tasks with a concurrency cap
+async function pool(items, worker, limit = 8) {
+  const out = new Array(items.length);
+  let i = 0;
+  async function run() {
+    while (i < items.length) {
+      const idx = i++;
+      try { out[idx] = await worker(items[idx], idx); }
+      catch (e) { out[idx] = null; }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return out;
+}
+
+// Sum a DefiLlama "overview" breakdown24h into { normKey: totalUSD }
+function aggregateBreakdown(overview) {
+  const out = {};
+  for (const proto of (overview && overview.protocols) || []) {
+    const b = proto.breakdown24h;
+    if (!b) continue;
+    for (const chain in b) {
+      if (chain === 'off_chain') continue;
+      let sum = 0;
+      for (const k in b[chain]) sum += Number(b[chain][k]) || 0;
+      const key = norm(chain);
+      out[key] = (out[key] || 0) + sum;
+    }
+  }
+  return out;
+}
+
+// growthepie master: origin_key -> { name, chainId }
+function parseMaster(master) {
+  const byChainId = {};
+  const chains = (master && master.chains) || {};
+  for (const originKey in chains) {
+    const c = chains[originKey];
+    const cid = c.evm_chain_id != null ? Number(c.evm_chain_id) : null;
+    if (cid != null && !Number.isNaN(cid)) byChainId[cid] = originKey;
+  }
+  return byChainId;
+}
+// growthepie fundamentals: latest value per origin_key for a metric
+function latestByOrigin(fundamentals, metricKey) {
+  const best = {}; // origin -> {date, value}
+  for (const row of Array.isArray(fundamentals) ? fundamentals : []) {
+    if (row.metric_key !== metricKey) continue;
+    const cur = best[row.origin_key];
+    if (!cur || row.date > cur.date) best[row.origin_key] = { date: row.date, value: Number(row.value) || 0 };
+  }
+  const out = {};
+  for (const o in best) out[o] = best[o].value;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot builder
+// ---------------------------------------------------------------------------
+let cache = { ts: 0, data: null };
+let rebuilding = false;
+const TTL = 60 * 1000;              // upstream refresh cadence (stale-while-revalidate)
+
+// ---- Dashboard DB access (server-side only) for analyst takes ----
+function DASH() { return ENV.DASHBOARD_BASE || `http://localhost:${ENV.DASHBOARD_PORT || 4000}`; }
+function DTOKEN() { return ENV.DASHBOARD_TOKEN; }
+function GROUP() { return ENV.ARTIFACT_GROUP || 'main'; }
+const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
+async function dbQuery(sql) {
+  const r = await fetch(`${DASH()}/api/db/${GROUP()}/database/query?sql=${encodeURIComponent(sql)}`, {
+    headers: { Authorization: `Bearer ${DTOKEN()}` },
+  });
+  if (!r.ok) throw new Error('db ' + r.status);
+  return (await r.json()).rows || [];
+}
+let masterCache = { ts: 0, data: null };
+const MASTER_TTL = 6 * 60 * 60 * 1000;
+
+async function getMaster() {
+  const now = Date.now();
+  if (!masterCache.data || now - masterCache.ts > MASTER_TTL) {
+    try { masterCache = { ts: now, data: parseMaster(await fetchJson(GP_MASTER_URL, 20000)) }; }
+    catch (e) { if (!masterCache.data) masterCache = { ts: now, data: {} }; }
+  }
+  return masterCache.data;
+}
+
+async function buildSnapshot() {
+  // --- cheap global fetches (partial failure tolerated) ---
+  const [chainsR, dexsR, feesR, stablesR, gpFundR, cgSeed, gpMaster] = await Promise.allSettled([
+    fetchJson(CHAINS_URL), fetchJson(DEXS_URL), fetchJson(FEES_URL),
+    fetchJson(STABLES_URL), fetchJson(GP_FUND_URL, 25000), Promise.resolve(null), getMaster(),
+  ]);
+  const val = (r, d) => (r.status === 'fulfilled' && r.value != null ? r.value : d);
+
+  const chains = val(chainsR, []);
+  if (!Array.isArray(chains) || !chains.length) throw new Error('chains feed unavailable');
+
+  const volAgg = aggregateBreakdown(val(dexsR, {}));
+  const feeAgg = aggregateBreakdown(val(feesR, {}));
+  const masterMap = gpMaster.status === 'fulfilled' ? gpMaster.value : {};
+  const daaByOrigin = latestByOrigin(val(gpFundR, []), 'daa');
+
+  // stablecoin mcap by normalized chain name
+  const stableByChain = {};
+  for (const s of val(stablesR, [])) {
+    const mc = s.totalCirculatingUSD
+      ? Object.values(s.totalCirculatingUSD).reduce((a, v) => a + (Number(v) || 0), 0)
+      : 0;
+    if (s.name) stableByChain[norm(s.name)] = mc;
+  }
+
+  // --- assemble base rows from TVL feed (canonical names + chainId + gecko) ---
+  const rows = chains
+    .filter((c) => c && c.name)
+    .map((c) => {
+      const key = norm(c.name);
+      const originKey = c.chainId != null ? masterMap[Number(c.chainId)] : null;
+      return {
+        key,
+        name: c.name,
+        symbol: c.tokenSymbol || null,
+        gecko: c.gecko_id || null,
+        chainId: c.chainId ?? null,
+        tvl: Number(c.tvl) || 0,
+        volume24h: volAgg[key] || 0,
+        fees24h: feeAgg[key] || 0,
+        stables: stableByChain[key] || 0,
+        activeAddresses: originKey && daaByOrigin[originKey] != null ? daaByOrigin[originKey] : null,
+      };
+    });
+
+  // --- log-value composite score over the FULL universe, volume-weighted ---
+  const lg = (x) => Math.log10(Math.max(1, x));
+  const maxV = Math.max(...rows.map((r) => lg(r.volume24h)), 1);
+  const maxT = Math.max(...rows.map((r) => lg(r.tvl)), 1);
+  const maxF = Math.max(...rows.map((r) => lg(r.fees24h)), 1);
+  for (const r of rows) {
+    r.score = +(0.5 * (lg(r.volume24h) / maxV) + 0.3 * (lg(r.tvl) / maxT) + 0.2 * (lg(r.fees24h) / maxF)).toFixed(4);
+  }
+  rows.sort((a, b) => b.score - a.score);
+  const top = rows.slice(0, 50);
+
+  // --- enrich ONLY the top 50 (bounded concurrency) ---
+  await pool(top, async (r) => {
+    const enc = encodeURIComponent(r.name);
+    const [dex, hist] = await Promise.allSettled([
+      fetchJson(`https://api.llama.fi/overview/dexs/${enc}?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`, 12000),
+      fetchJson(`https://api.llama.fi/v2/historicalChainTvl/${enc}`, 12000),
+    ]);
+    if (dex.status === 'fulfilled' && dex.value && dex.value.total24h != null) {
+      r.volume24h = Number(dex.value.total24h) || r.volume24h;
+      r.volChange1d = dex.value.change_1d ?? null;
+      r.volChange7d = dex.value.change_7d ?? null;
+      r.volChange30d = dex.value.change_1m ?? null;
+      r.volume7d = dex.value.total7d ?? null;
+      r.volume30d = dex.value.total30d ?? null;
+    }
+    if (hist.status === 'fulfilled' && Array.isArray(hist.value) && hist.value.length) {
+      const series = hist.value.slice(-30).map((p) => Number(p.tvl) || 0);
+      r.tvlSpark = series.slice(-14);
+      r.tvlSpark30 = series;
+      const now = series[series.length - 1];
+      const wk = series.length >= 8 ? series[series.length - 8] : series[0];
+      const mo = series[0];
+      r.tvlChange7d = wk > 0 ? +(((now - wk) / wk) * 100).toFixed(2) : null;
+      r.tvlChange30d = mo > 0 ? +(((now - mo) / mo) * 100).toFixed(2) : null;
+    }
+  }, 8);
+
+  // --- CoinGecko native-token price/mcap/24h (single batched call) ---
+  const ids = [...new Set(top.map((r) => r.gecko).filter(Boolean))];
+  if (ids.length) {
+    try {
+      const cg = await fetchJson(
+        cgUrl(`${CG_PRICE}?ids=${encodeURIComponent(ids.join(','))}&vs_currencies=usd&include_market_cap=true&include_24hr_change=true`),
+        15000
+      );
+      // persist into a sticky cache so a later failed fetch can't wipe prices
+      for (const g in cg) { if (cg[g] && cg[g].usd != null) priceCache[g] = { price: cg[g].usd, mcap: cg[g].usd_market_cap, ch: cg[g].usd_24h_change, ts: Date.now() }; }
+    } catch (e) { /* non-fatal — fall back to last-good prices below */ }
+  }
+  for (const r of top) {
+    const p = r.gecko && priceCache[r.gecko];
+    if (p) { r.tokenPrice = p.price; r.tokenMcap = p.mcap ?? null; r.tokenChange24h = p.ch != null ? +Number(p.ch).toFixed(2) : null; }
+  }
+
+  // --- derived fundamental ratios + anomaly flags (objective signal) ---
+  for (const r of top) {
+    const annFees = r.fees24h ? r.fees24h * 365 : 0;
+    r.pf = (r.tokenMcap && annFees > 0) ? +(r.tokenMcap / annFees).toFixed(1) : null;   // market cap / annualized fees
+    r.feeYield = (r.tvl > 0 && annFees > 0) ? +((annFees / r.tvl) * 100).toFixed(1) : null; // % annual fee yield on TVL
+    r.turnover = (r.tvl > 0) ? +(r.volume24h / r.tvl).toFixed(2) : null;                 // daily volume / TVL
+    r.feePerUser = (r.activeAddresses) ? +(r.fees24h / r.activeAddresses).toFixed(2) : null; // 24h fees per active address
+
+    const flags = [];
+    const s = r.tvlSpark30;
+    if (Array.isArray(s) && s.length > 8) {
+      const rets = [];
+      for (let i = 1; i < s.length; i++) if (s[i - 1] > 0) rets.push((s[i] - s[i - 1]) / s[i - 1]);
+      if (rets.length > 4) {
+        const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+        const sd = Math.sqrt(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length) || 0;
+        const last = rets[rets.length - 1];
+        if (sd > 0 && Math.abs((last - mean) / sd) >= 2.2 && Math.abs(last) >= 0.05)
+          flags.push({ label: `TVL ${last > 0 ? 'jumped' : 'dropped'} ${(last * 100).toFixed(0)}% in a day`, sev: last > 0 ? 'up' : 'down' });
+      }
+    }
+    if (r.volChange1d != null) {
+      const avgDaily = r.volChange7d != null ? r.volChange7d / 7 : 0;
+      if (r.volChange1d >= 35 && r.volChange1d > avgDaily * 3) flags.push({ label: `Volume +${r.volChange1d.toFixed(0)}% vs 24h ago`, sev: 'up' });
+      else if (r.volChange1d <= -35) flags.push({ label: `Volume ${r.volChange1d.toFixed(0)}% vs 24h ago`, sev: 'down' });
+    }
+    if (r.tvlChange7d != null && r.tvlChange7d <= -15) flags.push({ label: `TVL ${r.tvlChange7d.toFixed(0)}% over 7d`, sev: 'down' });
+    else if (r.tvlChange7d != null && r.tvlChange7d >= 20) flags.push({ label: `TVL +${r.tvlChange7d.toFixed(0)}% over 7d`, sev: 'up' });
+    r.flags = flags;
+  }
+
+  // --- real signal engine: peer medians + rank maps, then typed signals per chain ---
+  const _med = (arr) => { const a = arr.filter((x) => x != null && isFinite(x)).sort((x, y) => x - y); return a.length ? a[Math.floor(a.length / 2)] : null; };
+  const medPf = _med(top.map((r) => r.pf));
+  const medFeeYield = _med(top.map((r) => r.feeYield));
+  const medTurnover = _med(top.map((r) => r.turnover));
+  const tvlRankMap = {}; [...top].sort((a, b) => (b.tvl || 0) - (a.tvl || 0)).forEach((r, i) => { tvlRankMap[r.name] = i + 1; });
+  const feeRankMap = {}; [...top].sort((a, b) => (b.fees24h || 0) - (a.fees24h || 0)).forEach((r, i) => { feeRankMap[r.name] = i + 1; });
+  for (const r of top) {
+    r.signals = computeSignals(r, { medPf, medFeeYield, medTurnover, tvlRank: tvlRankMap[r.name], feeRank: feeRankMap[r.name], n: top.length });
+  }
+
+  const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
+  const totals = ranked.reduce((a, r) => {
+    a.tvl += r.tvl; a.volume24h += r.volume24h; a.fees24h += r.fees24h; a.stables += r.stables || 0;
+    a.activeAddresses += r.activeAddresses || 0;
+    return a;
+  }, { tvl: 0, volume24h: 0, fees24h: 0, stables: 0, activeAddresses: 0 });
+
+  const usersCoverage = ranked.filter((r) => r.activeAddresses != null).length;
+
+  return {
+    updatedAt: new Date().toISOString(),
+    count: ranked.length,
+    usersCoverage,
+    totals,
+    chains: ranked,
+  };
+}
+
+function fmtShort(n) {
+  n = Number(n) || 0; const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (a >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return String(Math.round(n));
+}
+function _clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
+// Typed, confidence-scored, evidence-bearing signals — the paid agent product.
+function computeSignals(r, peers) {
+  const sig = [];
+  const push = (o) => sig.push({ chain: r.name, id: `${r.name.toLowerCase().replace(/\W/g, '')}_${o.type}`, ...o });
+  const n = peers.n || 50;
+  // 1 — capital flow (USD-denominated TVL delta)
+  if (r.tvlChange7d != null && Math.abs(r.tvlChange7d) >= 12) {
+    const m = r.tvlChange7d;
+    push({ type: 'capital_flow_7d', label: `Capital ${m > 0 ? 'inflow' : 'outflow'} ${m > 0 ? '+' : ''}${m.toFixed(0)}% (7d TVL)`, direction: m > 0 ? 'bullish' : 'bearish', severity: Math.abs(m) >= 30 ? 'critical' : Math.abs(m) >= 20 ? 'notable' : 'info', confidence: +_clamp(0.55 + Math.abs(m) / 120, 0, 0.92).toFixed(2), summary: `Net ${m > 0 ? 'capital entering' : 'capital leaving'} — TVL ${m > 0 ? '+' : ''}${m.toFixed(1)}% over 7d to $${fmtShort(r.tvl)}.`, evidence: { tvlChange7d: m, tvlChange30d: r.tvlChange30d, tvl_usd: r.tvl }, method: 'USD TVL delta (DefiLlama historicalChainTvl), 7d. Partly price-sensitive — corroborate with fee/volume signals.' });
+  }
+  // 2 — inorganic / wash-traded volume
+  if (r.fees24h > 0 && r.volume24h > 0) {
+    const vf = r.volume24h / r.fees24h;
+    if (vf > 5000) push({ type: 'inorganic_volume', label: `Volume/fee ratio ${Math.round(vf).toLocaleString()}:1 — abnormally low fees for volume`, direction: 'warning', severity: vf > 15000 ? 'critical' : 'notable', confidence: +_clamp(0.5 + (vf - 5000) / 40000, 0, 0.9).toFixed(2), summary: `$${fmtShort(r.volume24h)} of 24h volume produced only $${fmtShort(r.fees24h)} in fees (${Math.round(vf).toLocaleString()}:1). Organic DEX volume runs ~300–2,000:1; elevated ratios flag wash-traded or heavily-incentivized volume.`, evidence: { volFeeRatio: +vf.toFixed(0), volume24h_usd: r.volume24h, fees24h_usd: r.fees24h, turnover: r.turnover }, method: 'volume24h / fees24h. >5000:1 flagged.' });
+  }
+  // 3 — volume acceleration (2nd derivative)
+  if (r.volChange1d != null && r.volChange7d != null) {
+    const daily = r.volChange7d / 7, accel = r.volChange1d - daily;
+    if (Math.abs(r.volChange1d) >= 40 && Math.abs(accel) >= 30) push({ type: 'volume_accel', label: `Volume ${r.volChange1d > 0 ? 'surge' : 'collapse'} ${r.volChange1d > 0 ? '+' : ''}${r.volChange1d.toFixed(0)}% (24h)`, direction: r.volChange1d > 0 ? 'bullish' : 'bearish', severity: Math.abs(r.volChange1d) >= 80 ? 'notable' : 'info', confidence: +_clamp(0.5 + Math.abs(accel) / 300, 0, 0.85).toFixed(2), summary: `24h volume moved ${r.volChange1d > 0 ? '+' : ''}${r.volChange1d.toFixed(0)}% vs a 7d run-rate of ${daily.toFixed(0)}%/day — ${accel > 0 ? 'positive' : 'negative'} acceleration.`, evidence: { volChange1d: r.volChange1d, volChange7d: r.volChange7d }, method: '1d vs (7d/7) run-rate; 2nd-derivative of DEX volume.' });
+  }
+  // 4 — mercenary / incentive-parked TVL
+  if (r.feeYield != null && r.turnover != null && r.tvl > 5e7 && r.feeYield < 0.8 && r.turnover < 0.15) push({ type: 'mercenary_tvl', label: `Capital parked, barely used — ${r.feeYield}% fee yield, ${r.turnover}× turnover`, direction: 'warning', severity: 'notable', confidence: 0.6, summary: `$${fmtShort(r.tvl)} locked but generating only ${r.feeYield}% annualized fee yield at ${r.turnover}× daily turnover — a signature of incentive-parked ("mercenary") TVL rather than organic usage.`, evidence: { feeYield_pct: r.feeYield, turnover: r.turnover, tvl_usd: r.tvl }, method: 'feeYield=(fees×365/TVL); turnover=(vol/TVL). Low-yield + low-turnover on large TVL ⇒ incentive-dependent capital.' });
+  // 5 — real yield (organic activity)
+  if (r.feeYield != null && peers.medFeeYield && r.feeYield > peers.medFeeYield * 1.8 && r.turnover > (peers.medTurnover || 0)) push({ type: 'real_yield', label: `Strong real activity — ${r.feeYield}% fee yield (${(r.feeYield / peers.medFeeYield).toFixed(1)}× peer median)`, direction: 'bullish', severity: 'info', confidence: 0.6, summary: `Fee yield of ${r.feeYield}% is ${(r.feeYield / peers.medFeeYield).toFixed(1)}× the peer median (${peers.medFeeYield}%) with above-median turnover — capital here is used, not just parked.`, evidence: { feeYield_pct: r.feeYield, peer_median_pct: peers.medFeeYield, turnover: r.turnover }, method: 'feeYield vs top-50 median.' });
+  // 6 — valuation vs peers (P/F)
+  if (r.pf != null && peers.medPf) {
+    const ratio = r.pf / peers.medPf;
+    if (ratio <= 0.5 || ratio >= 2.2) push({ type: 'valuation', label: `${ratio < 1 ? 'Cheap' : 'Rich'} vs peers — P/F ${r.pf} (median ${peers.medPf})`, direction: ratio < 1 ? 'bullish' : 'bearish', severity: 'info', confidence: 0.5, summary: `Market cap is ${r.pf}× annualized fees, ${ratio < 1 ? 'below' : 'above'} the peer median of ${peers.medPf}× — ${ratio < 1 ? 'relatively cheap on fee multiples' : 'a premium vs fees generated'}.`, evidence: { pf: r.pf, peer_median_pf: peers.medPf }, method: 'P/F = tokenMcap / (fees24h×365), vs top-50 median.' });
+  }
+  // 7 — TVL-vs-fee rank divergence (ghost-chain / whale-not-user)
+  if (peers.tvlRank && peers.feeRank) {
+    const gap = peers.feeRank - peers.tvlRank;
+    if (gap >= Math.max(10, n * 0.25) && peers.tvlRank <= n * 0.4) push({ type: 'tvl_fee_divergence', label: `Big TVL, little usage — #${peers.tvlRank} by TVL but #${peers.feeRank} by fees`, direction: 'warning', severity: 'notable', confidence: 0.6, summary: `Ranks #${peers.tvlRank} in capital locked but only #${peers.feeRank} in fees generated (${gap}-place gap) — capital-heavy, usage-light, a classic ghost-chain / whale-concentration pattern.`, evidence: { tvl_rank: peers.tvlRank, fee_rank: peers.feeRank, gap }, method: 'Rank divergence between TVL and 24h fees across top-50.' });
+  }
+  // 8 — price vs usage divergence
+  if (r.tokenChange24h != null && r.volChange1d != null && r.tokenChange24h >= 8 && r.volChange1d <= 0) push({ type: 'price_usage_divergence', label: `Token +${r.tokenChange24h.toFixed(0)}% but volume flat/down`, direction: 'warning', severity: 'info', confidence: 0.5, summary: `Native token is up ${r.tokenChange24h.toFixed(0)}% on the day while on-chain volume is ${r.volChange1d.toFixed(0)}% — price is running ahead of usage (speculative).`, evidence: { tokenChange24h: r.tokenChange24h, volChange1d: r.volChange1d }, method: '24h token price change vs 24h volume change.' });
+  return sig;
+}
+
+app.get('/api/chains', wrap(async (req, res) => {
+  try {
+    const now = Date.now();
+    if (!cache.data) {
+      cache = { ts: now, data: await buildSnapshot() };
+    } else if (now - cache.ts > TTL && !rebuilding) {
+      // stale-while-revalidate: serve cached instantly, refresh in the background
+      rebuilding = true;
+      buildSnapshot()
+        .then((d) => { cache = { ts: Date.now(), data: d }; })
+        .catch((e) => console.error('bg refresh:', e.message))
+        .finally(() => { rebuilding = false; });
+    }
+    res.json({ ...cache.data, cachedAgeMs: Date.now() - cache.ts });
+  } catch (e) {
+    console.error('snapshot error:', e.message);
+    if (cache.data) return res.json({ ...cache.data, stale: true, error: e.message });
+    res.status(502).json({ error: 'Failed to fetch chain data: ' + e.message });
+  }
+}));
+
+// ---------------------------------------------------------------------------
+// Per-chain drill-down: curated overview + live top projects by TVL
+// ---------------------------------------------------------------------------
+const DESCRIPTIONS = {
+  ethereum: 'The original smart-contract chain and the largest by TVL. Home to the deepest DeFi, stablecoin and NFT markets; secures most L2s that settle back to it.',
+  solana: 'High-throughput monolithic L1 known for low fees and fast finality. A hub for DeFi, memecoins and consumer apps, consistently leading in DEX volume and active traders.',
+  base: 'Coinbase\'s Ethereum L2 (OP Stack). Fast-growing retail on-ramp with strong consumer, social and memecoin activity and deep Coinbase integration.',
+  bsc: 'BNB Chain — Binance\'s EVM L1. High retail volume, low fees, and one of the largest DEX ecosystems (PancakeSwap) plus heavy stablecoin usage.',
+  tron: 'L1 optimized for stablecoin transfers; carries one of the largest USDT floats in crypto. Dominant for payments and remittances rather than DeFi.',
+  arbitrum: 'Leading Ethereum L2 (optimistic rollup). Mature DeFi ecosystem with deep liquidity, perps and a large protocol base.',
+  polygon: 'EVM scaling ecosystem (PoS chain + zk tech). Broad payments, gaming and enterprise adoption with very high daily active addresses.',
+  hyperliquid: 'Purpose-built L1 for a high-performance on-chain perps DEX. Rapidly grew into a top venue for derivatives volume with its own order-book design.',
+  avalanche: 'L1 with a subnet architecture for app-specific chains. Used for DeFi, institutional/RWA experiments and gaming.',
+  sui: 'Move-based L1 focused on parallel execution and low-latency consumer apps, gaming and DeFi.',
+  aptos: 'Move-based L1 (Diem lineage) emphasizing safety and throughput; growing DeFi and payments ecosystem.',
+  ton: 'The Open Network, tied to Telegram\'s ~1B users. Focused on mini-apps, payments and consumer-scale distribution.',
+  optimism: 'Ethereum L2 and the origin of the OP Stack Superchain. Established DeFi and governance ecosystem.',
+  opmainnet: 'Ethereum L2 and the origin of the OP Stack Superchain. Established DeFi and governance ecosystem.',
+  near: 'Sharded L1 with an account model aimed at usability; expanding into chain-abstraction and AI-related infrastructure.',
+  bitcoin: 'The original blockchain and largest asset by market cap. Increasingly a DeFi settlement layer via L2s, staking and BTCfi protocols.',
+  cardano: 'Research-driven PoS L1 (eUTXO model) with a focus on formal methods and a distinct DeFi ecosystem.',
+  sei: 'High-performance EVM-compatible L1 optimized for trading and low latency.',
+  monad: 'High-performance parallel-EVM L1 focused on massively higher throughput while staying EVM-compatible.',
+  celo: 'Mobile-first, EVM-compatible chain (now an Ethereum L2) focused on payments, stablecoins and real-world usage.',
+  starknet: 'ZK rollup using the Cairo VM for scalable, low-cost Ethereum execution.',
+  zksync: 'ZK rollup (zkEVM) scaling Ethereum with low fees and a growing DeFi ecosystem.',
+  gnosis: 'Stable-payments-focused EVM chain (xDai) with strong community and prediction-market roots.',
+};
+
+// Curated "most reliable" DEX + NFT marketplace per chain (keyed by norm()).
+// Only well-established venues are listed; unknowns fall back to "—" in the UI.
+const LINKS = {
+  ethereum:   { dex: { name: 'Uniswap',     url: 'https://app.uniswap.org' },     nft: { name: 'OpenSea',      url: 'https://opensea.io' } },
+  solana:     { dex: { name: 'Jupiter',     url: 'https://jup.ag' },              nft: { name: 'Magic Eden',   url: 'https://magiceden.io' } },
+  base:       { dex: { name: 'Aerodrome',   url: 'https://aerodrome.finance' },   nft: { name: 'OpenSea',      url: 'https://opensea.io' } },
+  bsc:        { dex: { name: 'PancakeSwap', url: 'https://pancakeswap.finance' }, nft: { name: 'OpenSea',      url: 'https://opensea.io' } },
+  tron:       { dex: { name: 'SunSwap',     url: 'https://sun.io' },              nft: { name: 'APENFT',       url: 'https://apenft.io' } },
+  arbitrum:   { dex: { name: 'Uniswap',     url: 'https://app.uniswap.org' },     nft: { name: 'OpenSea',      url: 'https://opensea.io' } },
+  polygon:    { dex: { name: 'QuickSwap',   url: 'https://quickswap.exchange' },  nft: { name: 'OpenSea',      url: 'https://opensea.io' } },
+  hyperliquid:{ dex: { name: 'Hyperliquid', url: 'https://app.hyperliquid.xyz' }, nft: { name: 'Drip.Trade',   url: 'https://drip.trade' } },
+  avalanche:  { dex: { name: 'Trader Joe',  url: 'https://lfj.gg' },              nft: { name: 'Joepegs',      url: 'https://joepegs.com' } },
+  sui:        { dex: { name: 'Cetus',       url: 'https://www.cetus.zone' },      nft: { name: 'Tradeport',    url: 'https://www.tradeport.xyz/sui' } },
+  aptos:      { dex: { name: 'Thala',       url: 'https://app.thala.fi' },        nft: { name: 'Wapal',        url: 'https://wapal.io' } },
+  ton:        { dex: { name: 'STON.fi',     url: 'https://ston.fi' },             nft: { name: 'Getgems',      url: 'https://getgems.io' } },
+  opmainnet:  { dex: { name: 'Velodrome',   url: 'https://velodrome.finance' },   nft: { name: 'OpenSea',      url: 'https://opensea.io' } },
+  near:       { dex: { name: 'Ref Finance', url: 'https://app.ref.finance' },     nft: { name: 'Mintbase',     url: 'https://www.mintbase.xyz' } },
+  bitcoin:    { dex: null,                                                        nft: { name: 'Magic Eden',   url: 'https://magiceden.io/ordinals' } },
+  cardano:    { dex: { name: 'Minswap',     url: 'https://minswap.org' },         nft: { name: 'jpg.store',    url: 'https://www.jpg.store' } },
+  sei:        { dex: { name: 'Astroport',   url: 'https://sei.astroport.fi' },    nft: { name: 'Pallet',       url: 'https://pallet.exchange' } },
+  celo:       { dex: { name: 'Uniswap',     url: 'https://app.uniswap.org' },     nft: null },
+  starknet:   { dex: { name: 'Ekubo',       url: 'https://app.ekubo.org' },       nft: { name: 'Unframed',     url: 'https://unframed.co' } },
+  zksync:     { dex: { name: 'SyncSwap',    url: 'https://syncswap.xyz' },        nft: { name: 'Element',      url: 'https://element.market' } },
+  gnosis:     { dex: { name: 'Balancer',    url: 'https://balancer.fi' },         nft: null },
+  osmosis:    { dex: { name: 'Osmosis',     url: 'https://app.osmosis.zone' },    nft: { name: 'Stargaze',     url: 'https://www.stargaze.zone' } },
+  stacks:     { dex: { name: 'ALEX',        url: 'https://app.alexlab.co' },      nft: { name: 'Gamma',        url: 'https://gamma.io' } },
+  injective:  { dex: { name: 'Helix',       url: 'https://helixapp.com' },        nft: null },
+  cronos:     { dex: { name: 'VVS Finance', url: 'https://vvs.finance' },         nft: null },
+  mantle:     { dex: { name: 'Merchant Moe',url: 'https://merchantmoe.com' },     nft: null },
+  flow:       { dex: { name: 'Increment',   url: 'https://app.increment.fi' },    nft: { name: 'NBA Top Shot', url: 'https://nbatopshot.com' } },
+  linea:      { dex: { name: 'Lynex',       url: 'https://www.lynex.fi' },        nft: { name: 'Element',      url: 'https://element.market' } },
+  unichain:   { dex: { name: 'Uniswap',     url: 'https://app.uniswap.org' },     nft: null },
+  ronin:      { dex: { name: 'Katana',      url: 'https://katana.roninchain.com' }, nft: { name: 'Mavis Market', url: 'https://marketplace.roninchain.com' } },
+  berachain:  { dex: { name: 'BEX',         url: 'https://bex.berachain.com' },   nft: null },
+  sonic:      { dex: { name: 'Shadow',      url: 'https://www.shadow.so' },       nft: null },
+};
+
+// Top NFT / Ordinals collections per chain (curated, verified marketplace links)
+const CHAIN_NFTS = {
+  ethereum: [
+    { name: 'CryptoPunks', url: 'https://opensea.io/collection/cryptopunks' },
+    { name: 'Bored Ape Yacht Club', url: 'https://opensea.io/collection/boredapeyachtclub' },
+    { name: 'Pudgy Penguins', url: 'https://opensea.io/collection/pudgypenguins' },
+  ],
+  solana: [
+    { name: 'Mad Lads', url: 'https://magiceden.io/marketplace/mad_lads' },
+    { name: 'Okay Bears', url: 'https://magiceden.io/marketplace/okay_bears' },
+    { name: 'Claynosaurz', url: 'https://magiceden.io/marketplace/claynosaurz' },
+  ],
+  bitcoin: [
+    { name: 'NodeMonkes', url: 'https://magiceden.io/ordinals/marketplace/nodemonkes' },
+    { name: 'Bitcoin Puppets', url: 'https://magiceden.io/ordinals/marketplace/bitcoin-puppets' },
+    { name: 'Runestone', url: 'https://magiceden.io/ordinals/marketplace/runestone' },
+  ],
+  polygon: [
+    { name: 'Courtyard', url: 'https://opensea.io/collection/courtyard-nft' },
+    { name: 'DraftKings Reignmakers', url: 'https://opensea.io/collection/reignmakers-football' },
+    { name: 'Lens Protocol', url: 'https://opensea.io/collection/lens-protocol-profiles' },
+  ],
+  base: [
+    { name: 'BasePaint', url: 'https://opensea.io/collection/basepaint' },
+    { name: 'tiny dinos', url: 'https://opensea.io/collection/tiny-dinos-eth' },
+    { name: 'The Bald Eagle', url: 'https://opensea.io/collection/onchain-gaias' },
+  ],
+  ronin: [
+    { name: 'Axie Infinity', url: 'https://marketplace.roninchain.com/collections/axie' },
+    { name: 'Pixels (Pixel Farm)', url: 'https://marketplace.roninchain.com/collections/pixel' },
+    { name: 'Wild Forest', url: 'https://marketplace.roninchain.com/' },
+  ],
+  avalanche: [
+    { name: 'Dokyo', url: 'https://joepegs.com/collections/avalanche/0x892d81221484f690c0d97d3c2057101377b96f0e' },
+    { name: 'Chikn', url: 'https://joepegs.com/' },
+    { name: 'The Kingdom', url: 'https://joepegs.com/' },
+  ],
+  aptos: [
+    { name: 'Aptos Monkeys', url: 'https://wapal.io/collection/Aptos-Monkeys' },
+    { name: 'Bruh Bears', url: 'https://wapal.io/' },
+    { name: 'Aptomingos', url: 'https://wapal.io/' },
+  ],
+  sui: [
+    { name: 'Prime Machin', url: 'https://www.tradeport.xyz/sui/collection/prime-machin' },
+    { name: 'Fuddies', url: 'https://www.tradeport.xyz/sui' },
+    { name: 'SuiFrens', url: 'https://www.tradeport.xyz/sui' },
+  ],
+};
+
+// CoinGecko ecosystem category per chain → for live top alt/meme tokens
+const CHAIN_CG_CATEGORY = {
+  ethereum: 'ethereum-ecosystem', solana: 'solana-ecosystem', base: 'base-ecosystem',
+  bsc: 'binance-smart-chain', arbitrum: 'arbitrum-ecosystem', polygon: 'polygon-ecosystem',
+  avalanche: 'avalanche-ecosystem', tron: 'tron-ecosystem', sui: 'sui-ecosystem',
+  aptos: 'aptos-ecosystem', near: 'near-protocol-ecosystem', opmainnet: 'optimism-ecosystem',
+  berachain: 'berachain-ecosystem', sei: 'sei-ecosystem', starknet: 'starknet-ecosystem',
+  hyperliquid: 'hyperliquid-ecosystem', cardano: 'cardano-ecosystem', ton: 'open-network-ton-ecosystem',
+};
+// CoinGecko meme-coin category per chain (preferred for "top meme/alt coins")
+const CHAIN_CG_MEME = {
+  solana: 'solana-meme-coins', ethereum: 'ethereum-meme-coins', base: 'base-meme-coins',
+  bsc: 'bnb-chain-meme-coins', tron: 'tron-meme-coins', ton: 'ton-meme-coins',
+  sui: 'sui-meme', avalanche: 'avalanche-meme-coins', arbitrum: 'arbitrum-meme-coins',
+  polygon: 'polygon-ecosystem-meme-coins', hyperliquid: 'hyperliquid-ecosystem',
+};
+let tokensCache = {}; // per-category cache
+const TOK_EXCLUDE = /tether|usd-coin|dai|stable|first-digital|ethena|pyusd|frax|wrapped|weth|wbtc|cbbtc|coinbase-wrapped|binance-peg|bridged|staked|steth|reth|jito-staked|marinade|msol|jitosol|bnsol|lido|liquid-staking|savings-dai|rocket-pool|global-dollar|world-liberty/i;
+function isStableish(t) {
+  if (!t) return true;
+  if (TOK_EXCLUDE.test(t.id)) return true;
+  if (/usd|dai/i.test(t.symbol || '')) return true;
+  if (t.current_price > 0.9 && t.current_price < 1.1 && /usd|dollar|stable|peg/i.test((t.id || '') + (t.symbol || ''))) return true;
+  return false;
+}
+async function fetchCgCategory(cat) {
+  if (!cat) return [];
+  const cached = tokensCache[cat];
+  if (cached && Date.now() - cached.ts < 10 * 60 * 1000) return cached.data;
+  try {
+    const mk = await fetchJson(cgUrl(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=${cat}&order=market_cap_desc&per_page=40&page=1`), 12000);
+    const arr = Array.isArray(mk) ? mk : [];
+    tokensCache[cat] = { ts: Date.now(), data: arr };
+    return arr;
+  } catch (e) { return []; }
+}
+async function chainTopTokens(row) {
+  const nkey = norm(row.name);
+  let list = (await fetchCgCategory(CHAIN_CG_MEME[nkey])).filter((t) => t && t.id !== row.gecko && !isStableish(t));
+  if (list.length < 3) {
+    const eco = (await fetchCgCategory(CHAIN_CG_CATEGORY[nkey])).filter((t) => t && t.id !== row.gecko && !isStableish(t));
+    const seen = new Set(list.map((t) => t.id));
+    for (const t of eco) if (!seen.has(t.id)) { list.push(t); seen.add(t.id); }
+  }
+  if (!list.length) return null;
+  return list.slice(0, 3).map((t) => ({ name: t.name, symbol: (t.symbol || '').toUpperCase(), price: t.current_price, change24h: t.price_change_percentage_24h, mcap: t.market_cap, url: `https://www.coingecko.com/en/coins/${t.id}` }));
+}
+
+let protoCache = { ts: 0, data: null };
+const PROTO_TTL = 15 * 60 * 1000;
+async function getProtocols() {
+  const now = Date.now();
+  if (!protoCache.data || now - protoCache.ts > PROTO_TTL) {
+    try { protoCache = { ts: now, data: await fetchJson('https://api.llama.fi/protocols', 25000) }; }
+    catch (e) { if (!protoCache.data) throw e; }
+  }
+  return protoCache.data;
+}
+
+app.get('/api/chain/:name', wrap(async (req, res) => {
+  try {
+    if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+    const target = String(req.params.name || '').toLowerCase();
+    const row = cache.data.chains.find((c) => c.name.toLowerCase() === target);
+    if (!row) return res.status(404).json({ error: 'unknown chain' });
+
+    let topProjects = [];
+    try {
+      const protos = await getProtocols();
+      const name = row.name;
+      const SKIP = new Set(['CEX', 'Chain', 'Bridge']);
+      topProjects = (Array.isArray(protos) ? protos : [])
+        .filter((p) => Array.isArray(p.chains) && p.chains.includes(name) && !SKIP.has(p.category))
+        .map((p) => ({
+          name: p.name, category: p.category || '', tvl: (p.chainTvls && p.chainTvls[name]) || p.tvl || 0,
+          description: p.description || null, url: p.url || null, twitter: p.twitter || null, logo: p.logo || null,
+        }))
+        .sort((a, b) => b.tvl - a.tvl)
+        .slice(0, 10);
+    } catch (e) { /* projects are best-effort */ }
+
+    let analysis = null;
+    try {
+      const rows = await dbQuery(`SELECT take, sentiment, trend, sources, profile, updated_at FROM chain_analysis WHERE chain = ${sqlStr(row.name)} LIMIT 1`);
+      if (rows[0]) { analysis = rows[0]; try { analysis.profile = rows[0].profile ? JSON.parse(rows[0].profile) : null; } catch (e) { analysis.profile = null; } }
+    } catch (e) { /* analysis is best-effort */ }
+
+    const nkey = norm(row.name);
+    const topNfts = CHAIN_NFTS[nkey] || null;
+
+    // live top meme/alt tokens on this chain (prefers CoinGecko meme category), cached 10m
+    let topTokens = null;
+    try { topTokens = await chainTopTokens(row); } catch (e) { /* non-fatal */ }
+
+    let risk = null;
+    try { const rr = await dbQuery(`SELECT level, summary, evidence, sources FROM risk_flags WHERE entity_type='chain' AND entity_name = ${sqlStr(row.name)} LIMIT 1`); if (rr[0]) risk = rr[0]; } catch (e) {}
+
+    res.json({ chain: row, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+}));
+
+// Graveyard: chains that launched recently and then collapsed (populated by the research agent)
+const TAG_LABELS = {
+  mercenary_tvl: 'Mercenary TVL', airdrop_farming: 'Airdrop farming', points_collapse: 'Points collapse',
+  token_unlock_dump: 'Token unlock dump', exploit_hack: 'Exploit / hack', team_abandonment: 'Team abandonment',
+  soft_rug: 'Soft rug', unsustainable_yield: 'Unsustainable yield', narrative_death: 'Narrative death',
+  no_real_users: 'No real users', wash_trading: 'Wash trading', vc_dump: 'VC dump',
+  competition: 'Out-competed', regulatory: 'Regulatory',
+};
+const FRAUDY = new Set(['soft_rug', 'exploit_hack', 'wash_trading', 'token_unlock_dump']);
+
+app.get('/api/dead', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT chain, launched, peak_tvl, current_tvl, drawdown_pct, peak_date, why, outlook, verdict, sources, profile, updated_at FROM dead_chains ORDER BY peak_tvl DESC`);
+    const chains = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
+
+    // aggregate trends across the graveyard
+    const tagCounts = {}; let ddSum = 0, ddN = 0, fraud = 0; const verdictCounts = {};
+    for (const c of chains) {
+      const tags = (c.profile && c.profile.cause_tags) || [];
+      tags.forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
+      if (tags.some((t) => FRAUDY.has(t))) fraud++;
+      if (c.drawdown_pct != null) { ddSum += c.drawdown_pct; ddN++; }
+      const v = (c.verdict || 'unknown').toLowerCase();
+      verdictCounts[v] = (verdictCounts[v] || 0) + 1;
+    }
+    const topTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => ({ tag: k, label: TAG_LABELS[k] || k, count: n }));
+
+    let narrative = null, successFactors = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k = 'trends' LIMIT 1`); if (m[0]) narrative = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    try { const s = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k = 'success_factors' LIMIT 1`); if (s[0]) successFactors = { text: s[0].v, updated_at: s[0].updated_at }; } catch (e) {}
+
+    const totalPeak = chains.reduce((a, c) => a + (c.peak_tvl || 0), 0);
+    const totalNow = chains.reduce((a, c) => a + (c.current_tvl || 0), 0);
+
+    res.json({
+      chains, count: chains.length,
+      trends: {
+        topTags, verdictCounts,
+        avgDrawdown: ddN ? +(ddSum / ddN).toFixed(1) : null,
+        fraudCount: fraud, totalPeakTvl: totalPeak, totalCurrentTvl: totalNow,
+        wipedOut: totalPeak > 0 ? +(((totalPeak - totalNow) / totalPeak) * 100).toFixed(1) : null,
+        narrative, successFactors,
+      },
+    });
+  } catch (e) {
+    res.json({ chains: [], count: 0, error: e.message });
+  }
+}));
+
+// Mid tier: alive-but-directionless chains
+app.get('/api/mid', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT chain, launched, tvl, verdict, why_stuck, outlook, profile, sources, updated_at FROM mid_chains ORDER BY tvl DESC`);
+    const chains = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
+    const verdictCounts = {};
+    const tagCounts = {};
+    for (const c of chains) {
+      const v = (c.verdict || 'unknown').toLowerCase(); verdictCounts[v] = (verdictCounts[v] || 0) + 1;
+      const tags = (c.profile && c.profile.success_factors_missing) || [];
+      tags.forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
+    }
+    const topGaps = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ tag: k, label: k.replace(/_/g, ' '), count: n }));
+    let framework = null;
+    try { const s = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k = 'success_factors' LIMIT 1`); if (s[0]) framework = { text: s[0].v, updated_at: s[0].updated_at }; } catch (e) {}
+    res.json({ chains, count: chains.length, verdictCounts, topGaps, framework });
+  } catch (e) {
+    res.json({ chains: [], count: 0, error: e.message });
+  }
+}));
+
+// ---------------------------------------------------------------------------
+// Dynamic tier classifier — buckets chains into thriving / mid / dying / dead
+// from LIVE data, so the leaderboards reflect current conditions.
+//   dead  = >=90% drawdown from all-time peak TVL (terminal)
+//   dying = down >=60% over the last 90 days (steep recent decline, not yet dead)
+//   thriving = currently in the live top-25 by activity
+//   mid   = everything else meaningful (>= $1M TVL)
+// ---------------------------------------------------------------------------
+let tiersCache = { ts: 0, data: null };
+let tiersBuilding = false;
+const TIERS_TTL = 45 * 60 * 1000;
+const toISO = (unix) => new Date(unix * 1000).toISOString().slice(0, 10);
+
+async function classifyChains() {
+  const all = await fetchJson(CHAINS_URL);
+  if (!Array.isArray(all)) throw new Error('chains feed unavailable');
+  if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+  const thrivingNames = new Set((cache.data.chains || []).map((c) => c.name));
+
+  const universe = all.filter((c) => c && c.name && (Number(c.tvl) || 0) >= 1e6)
+    .sort((a, b) => (Number(b.tvl) || 0) - (Number(a.tvl) || 0)).slice(0, 100);
+
+  const metrics = await pool(universe, async (c) => {
+    let hist = null;
+    try { hist = await fetchJson(`https://api.llama.fi/v2/historicalChainTvl/${encodeURIComponent(c.name)}`, 12000); } catch (e) {}
+    const series = Array.isArray(hist) ? hist.filter((p) => p && p.date).map((p) => ({ d: Number(p.date), v: Number(p.tvl) || 0 })) : [];
+    const cur = Number(c.tvl) || 0;
+    let peak = cur, peakDate = null, launched = null, ago90 = null, spanDays = 0;
+    if (series.length) {
+      launched = series[0].d;
+      spanDays = (series[series.length - 1].d - series[0].d) / 86400;
+      for (const p of series) if (p.v > peak) { peak = p.v; peakDate = p.d; }
+      const last = series[series.length - 1].d, target = last - 90 * 86400;
+      let closest = series[0];
+      for (const p of series) { if (p.d <= target) closest = p; else break; }
+      ago90 = closest.v;
+    }
+    const drawdown = peak > 0 ? ((peak - cur) / peak) * 100 : 0;
+    // 90d change only when there's ≥90d of history AND a non-trivial baseline (guards new-chain blowups)
+    let change90 = null;
+    if (spanDays >= 90 && ago90 && ago90 >= Math.max(5e5, peak * 0.02)) change90 = ((cur - ago90) / ago90) * 100;
+    return {
+      chain: c.name, symbol: c.tokenSymbol || null, tvl: cur, spanDays: Math.round(spanDays),
+      peak_tvl: peak, peak_date: peakDate ? toISO(peakDate) : null, current_tvl: cur,
+      drawdown_pct: +drawdown.toFixed(1), change_90d: change90 != null ? +change90.toFixed(1) : null,
+      launched: launched ? toISO(launched).slice(0, 7) : null,
+    };
+  }, 6);
+
+  // chains that migrated/rebranded (TVL moved elsewhere) — not genuine deaths
+  const MIGRATED = new Set(['fantom', 'terra', 'terraclassic']);
+  const b = { thriving: [], mid: [], dying: [], dead: [] };
+  for (const m of metrics) {
+    const key = norm(m.chain);
+    if (thrivingNames.has(m.chain)) b.thriving.push(m);
+    else if (m.spanDays >= 45 && m.drawdown_pct >= 90 && !MIGRATED.has(key)) b.dead.push(m);
+    else if (m.change_90d != null && m.change_90d <= -60) b.dying.push(m);
+    else b.mid.push(m);
+  }
+  b.mid.sort((x, y) => y.tvl - x.tvl);
+  b.dying.sort((x, y) => (x.change_90d ?? 0) - (y.change_90d ?? 0));
+  b.dead.sort((x, y) => y.peak_tvl - x.peak_tvl);
+  return b;
+}
+
+async function getTiers() {
+  const now = Date.now();
+  if (!tiersCache.data) tiersCache = { ts: now, data: await classifyChains() };
+  else if (now - tiersCache.ts > TIERS_TTL && !tiersBuilding) {
+    tiersBuilding = true;
+    classifyChains().then((d) => { tiersCache = { ts: Date.now(), data: d }; })
+      .catch((e) => console.error('tiers refresh:', e.message)).finally(() => { tiersBuilding = false; });
+  }
+  return tiersCache.data;
+}
+
+function parseProfileRow(r) { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { verdict: r.verdict, why: r.why, outlook: r.outlook, sources: r.sources, profile: p }; }
+async function profileMap() {
+  const out = {};
+  try { (await dbQuery(`SELECT chain, verdict, why, outlook, profile, sources FROM dead_chains`)).forEach((r) => { out[r.chain] = parseProfileRow(r); }); } catch (e) {}
+  try { (await dbQuery(`SELECT chain, verdict, why_stuck AS why, outlook, profile, sources FROM mid_chains`)).forEach((r) => { if (!out[r.chain]) out[r.chain] = parseProfileRow(r); }); } catch (e) {}
+  return out;
+}
+
+app.get('/api/tiers', wrap(async (req, res) => {
+  try {
+    const b = await getTiers();
+    const pm = await profileMap();
+    const attach = (arr, limit) => arr.slice(0, limit).map((m) => ({ ...m, research: pm[m.chain] || null }));
+    // "Dying watch" — steepest 90-day decliners among still-alive chains (auto-updating)
+    const declining = [...b.mid, ...b.dying]
+      .filter((m) => m.change_90d != null && m.change_90d <= -15)
+      .sort((x, y) => x.change_90d - y.change_90d)
+      .slice(0, 20)
+      .map((m) => ({ ...m, research: pm[m.chain] || null }));
+    let narrative = null, successFactors = null;
+    try { const m = await dbQuery(`SELECT v FROM graveyard_meta WHERE k='trends' LIMIT 1`); if (m[0]) narrative = m[0].v; } catch (e) {}
+    try { const s = await dbQuery(`SELECT v FROM graveyard_meta WHERE k='success_factors' LIMIT 1`); if (s[0]) successFactors = s[0].v; } catch (e) {}
+    res.json({
+      updatedAt: new Date(tiersCache.ts).toISOString(),
+      counts: { thriving: b.thriving.length, mid: b.mid.length, dying: b.dying.length, dead: b.dead.length },
+      mid: attach(b.mid, 25), dying: attach(b.dying, 25), dead: attach(b.dead, 25), declining,
+      narrative, successFactors,
+    });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+}));
+
+// NFT & Ordinals lifecycle library
+app.get('/api/nft', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT slug, name, chain, category, status, profile, sources, updated_at FROM nft_collections ORDER BY name`);
+    const collections = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
+    let analysis = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='nft_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    // aggregate lifecycle stats from profiles
+    const nums = (f) => collections.map((c) => c.profile && c.profile[f]).filter((x) => typeof x === 'number' && isFinite(x));
+    const avg = (arr) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1) : null;
+    const statusCounts = {};
+    collections.forEach((c) => { const s = (c.status || 'unknown').toLowerCase(); statusCounts[s] = (statusCounts[s] || 0) + 1; });
+    const riskMap = {};
+    try { (await dbQuery(`SELECT entity_name, level, summary, evidence, sources FROM risk_flags WHERE entity_type='nft'`)).forEach((r) => { riskMap[r.entity_name] = r; }); } catch (e) {}
+    collections.forEach((c) => { c.risk = riskMap[c.name] || null; });
+    // broad live-market aggregate from nft_market (hundreds of collections, real CoinGecko data)
+    let market = null;
+    try {
+      const mk = await dbQuery(`SELECT floor_usd, mcap_usd, vol24h_usd FROM nft_market WHERE mcap_usd > 0`);
+      if (mk.length > 20) {
+        const median = (arr) => { const s = arr.filter((x) => x > 0).sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
+        market = {
+          count: mk.length,
+          medianFloorUsd: median(mk.map((r) => r.floor_usd || 0)),
+          medianMcapUsd: median(mk.map((r) => r.mcap_usd || 0)),
+          total24hUsd: mk.reduce((a, r) => a + (r.vol24h_usd || 0), 0),
+        };
+      }
+    } catch (e) {}
+
+    res.json({
+      collections, count: collections.length, analysis, statusCounts, market,
+      agg: {
+        avgLifespanDays: avg(nums('lifespan_days')),
+        avgHolderRetentionPct: avg(nums('holder_retention_pct')),
+        avgMintRaiseUsd: avg(nums('mint_raise_usd')),
+        avgSecondaryUsd: avg(nums('secondary_volume_usd')),
+      },
+    });
+  } catch (e) {
+    res.json({ collections: [], count: 0, error: e.message });
+  }
+}));
+
+// Decentralized storage / document-verification infrastructure
+app.get('/api/infra', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT slug, name, category, status, profile, sources, updated_at FROM infra_chains ORDER BY name`);
+    const chains = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
+    let analysis = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='infra_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    const catCounts = {};
+    chains.forEach((c) => { const k = (c.category || 'other').toLowerCase(); catCounts[k] = (catCounts[k] || 0) + 1; });
+    res.json({ chains, count: chains.length, analysis, catCounts });
+  } catch (e) {
+    res.json({ chains: [], count: 0, error: e.message });
+  }
+}));
+
+// TradFi bridge: treasury companies, miners, crypto ETFs
+app.get('/api/markets', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT slug, name, ticker, type, status, profile, sources, updated_at FROM market_entities ORDER BY type, name`);
+    const entities = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
+    let analysis = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='markets_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    const byType = { treasury: [], miner: [], etf: [] };
+    entities.forEach((e) => { const t = (e.type || '').toLowerCase(); if (byType[t]) byType[t].push(e); });
+    res.json({ entities, count: entities.length, byType, analysis });
+  } catch (e) {
+    res.json({ entities: [], count: 0, error: e.message });
+  }
+}));
+
+// Stablecoin rankings — live circulating from DefiLlama + enrichment (issuer/type/backing/audits)
+let stablesRankCache = { ts: 0, data: null };
+const PEG_MECH = { fiatbacked: 'Fiat-backed', 'fiat-backed': 'Fiat-backed', crypto: 'Crypto-backed', 'crypto-backed': 'Crypto-backed', algorithmic: 'Algorithmic' };
+app.get('/api/stablecoins', wrap(async (req, res) => {
+  try {
+    const now = Date.now();
+    if (!stablesRankCache.data || now - stablesRankCache.ts > 10 * 60 * 1000) {
+      const j = await fetchJson('https://stablecoins.llama.fi/stablecoins?includePrices=true', 20000);
+      const assets = (j && j.peggedAssets) || [];
+      const list = assets.map((a) => ({
+        name: a.name, symbol: a.symbol, gecko: a.gecko_id || null,
+        pegType: a.pegType || null, pegMechanism: PEG_MECH[(a.pegMechanism || '').toLowerCase()] || a.pegMechanism || null,
+        circulating: (a.circulating && (a.circulating.peggedUSD || Object.values(a.circulating)[0])) || 0,
+        price: a.price || null, chains: (a.chains || []).slice(0, 6),
+        change7d: a.circulatingPrevWeek ? null : null,
+      })).filter((s) => s.circulating > 1e6).sort((x, y) => y.circulating - x.circulating).slice(0, 50);
+      stablesRankCache = { ts: now, data: list };
+    }
+    let metaMap = {};
+    try { (await dbQuery(`SELECT slug, symbol, profile, sources FROM stablecoin_meta`)).forEach((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} metaMap[(r.symbol || '').toUpperCase()] = { profile: p, sources: r.sources }; }); } catch (e) {}
+    let analysis = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='stablecoin_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    const stablecoins = stablesRankCache.data.map((s, i) => ({ rank: i + 1, ...s, meta: metaMap[(s.symbol || '').toUpperCase()] || null }));
+    const totalMcap = stablecoins.reduce((a, s) => a + (s.circulating || 0), 0);
+    res.json({ stablecoins, count: stablecoins.length, totalMcap, analysis });
+  } catch (e) {
+    res.json({ stablecoins: [], count: 0, error: e.message });
+  }
+}));
+
+// Geographic adoption / regulation library
+app.get('/api/geo', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT slug, name, region, kind, profile, sources, updated_at FROM geo_regions ORDER BY region, name`);
+    const regions = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
+    let analysis = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='geo_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    res.json({ regions, count: regions.length, analysis });
+  } catch (e) {
+    res.json({ regions: [], count: 0, error: e.message });
+  }
+}));
+
+// RWA & DePIN library
+app.get('/api/rwa', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT slug, name, category, status, profile, sources, updated_at FROM rwa_depin ORDER BY category, name`);
+    const items = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
+    let analysis = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='rwa_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    const byCat = {};
+    items.forEach((i) => { const k = (i.category || 'other'); (byCat[k] = byCat[k] || []).push(i); });
+    res.json({ items, count: items.length, byCat, analysis });
+  } catch (e) {
+    res.json({ items: [], count: 0, error: e.message });
+  }
+}));
+
+// US crypto-policy map — per-state stance + federal legislation
+app.get('/api/uspolicy', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT abbr, name, stance, profile, sources, updated_at FROM us_states`);
+    const states = {};
+    rows.forEach((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} states[r.abbr] = { ...r, profile: p }; });
+    let federal = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='us_federal' LIMIT 1`); if (m[0]) { try { federal = JSON.parse(m[0].v); } catch (e) { federal = { text: m[0].v }; } federal.updated_at = m[0].updated_at; } } catch (e) {}
+    res.json({ states, count: rows.length, federal });
+  } catch (e) {
+    res.json({ states: {}, count: 0, error: e.message });
+  }
+}));
+
+// News aggregator — merges crypto RSS feeds, cached 10m
+const NEWS_FEEDS = [
+  { src: 'CoinDesk', url: 'https://www.coindesk.com/arc/outboundfeeds/rss/' },
+  { src: 'Cointelegraph', url: 'https://cointelegraph.com/rss' },
+  { src: 'Decrypt', url: 'https://decrypt.co/feed' },
+  { src: 'The Block', url: 'https://www.theblock.co/rss.xml' },
+  { src: 'Bitcoin Magazine', url: 'https://bitcoinmagazine.com/feed' },
+  { src: 'DL News', url: 'https://www.dlnews.com/arc/outboundfeeds/rss/' },
+];
+let newsCache = { ts: 0, data: null };
+function decodeXml(s) { return String(s || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&#8217;/g, "'").replace(/&#8216;/g, "'").replace(/&nbsp;/g, ' ').replace(/<[^>]+>/g, '').trim(); }
+function parseRss(xml, src) {
+  const items = [];
+  const blocks = xml.split(/<item[\s>]/i).slice(1);
+  for (const b of blocks.slice(0, 20)) {
+    const t = b.match(/<title>([\s\S]*?)<\/title>/i);
+    const l = b.match(/<link>([\s\S]*?)<\/link>/i) || b.match(/<link[^>]*href="([^"]+)"/i);
+    const d = b.match(/<pubDate>([\s\S]*?)<\/pubDate>/i) || b.match(/<dc:date>([\s\S]*?)<\/dc:date>/i);
+    const title = t ? decodeXml(t[1]) : null;
+    let link = l ? decodeXml(l[1]) : null;
+    if (title && link) items.push({ title, link, src, ts: d ? Date.parse(decodeXml(d[1])) || 0 : 0 });
+  }
+  return items;
+}
+app.get('/api/news', wrap(async (req, res) => {
+  try {
+    const now = Date.now();
+    if (!newsCache.data || now - newsCache.ts > 10 * 60 * 1000) {
+      const results = await Promise.allSettled(NEWS_FEEDS.map(async (f) => {
+        const r = await fetch(f.url, { headers: { 'user-agent': 'Mozilla/5.0 chain-monitor' }, signal: AbortSignal.timeout(12000) });
+        return parseRss(await r.text(), f.src);
+      }));
+      let all = [];
+      results.forEach((r) => { if (r.status === 'fulfilled') all = all.concat(r.value); });
+      all.sort((a, b) => b.ts - a.ts);
+      newsCache = { ts: now, data: all.slice(0, 60) };
+    }
+    res.json({ items: newsCache.data, count: newsCache.data.length, updatedAt: new Date(newsCache.ts).toISOString() });
+  } catch (e) {
+    res.json({ items: [], count: 0, error: e.message });
+  }
+}));
+
+// Scammer fund-flow tracker
+app.get('/api/traces', wrap(async (req, res) => {
+  try {
+    const rows = await dbQuery(`SELECT slug, name, category, amount_usd, profile, sources, updated_at FROM scam_traces ORDER BY amount_usd DESC`);
+    const cases = rows.map((r) => { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { ...r, profile: p }; });
+    let analysis = null;
+    try { const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='traces_analysis' LIMIT 1`); if (m[0]) analysis = { text: m[0].v, updated_at: m[0].updated_at }; } catch (e) {}
+    res.json({ cases, count: cases.length, analysis });
+  } catch (e) {
+    res.json({ cases: [], count: 0, error: e.message });
+  }
+}));
+
+// Country crypto power rankings
+app.get('/api/power', wrap(async (req, res) => {
+  try {
+    const m = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k='power_rankings' LIMIT 1`);
+    if (!m[0]) return res.json({ countries: [], count: 0 });
+    let obj = {}; try { obj = JSON.parse(m[0].v); } catch (e) {}
+    res.json({ countries: obj.countries || [], count: (obj.countries || []).length, updatedAt: m[0].updated_at });
+  } catch (e) {
+    res.json({ countries: [], count: 0, error: e.message });
+  }
+}));
+
+// ---------------------------------------------------------------------------
+// x402 monetization — agent-payable API. Gated endpoints return HTTP 402 with
+// payment requirements; a valid X-PAYMENT header unlocks the data.
+//   Go-live needs: X402_PAY_TO (receiving wallet) + a facilitator for on-chain
+//   verification. Until then it runs in demo mode (accepts any X-PAYMENT header).
+// ---------------------------------------------------------------------------
+// Facilitator decision: Coinbase CDP facilitator on Base mainnet, USDC.
+// Gasless (EIP-3009), built-in KYT/OFAC screening, free 1k tx/mo. Go-live needs:
+//   X402_PAY_TO = your Base receiving wallet
+//   CDP_API_KEY_ID + CDP_API_KEY_SECRET (from portal.cdp.coinbase.com) for the facilitator SDK
+const X402 = {
+  get payTo() { return ENV.X402_PAY_TO || '0xee321Ac2315e6b60c2dEE4E989767C79b73e6f0d'; },
+  get network() { return ENV.X402_NETWORK || 'base'; },
+  get asset() { return ENV.X402_ASSET || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; }, // USDC on Base
+  get facilitator() { return ENV.X402_FACILITATOR || 'coinbase-cdp'; },
+};
+const AGENT_ENDPOINTS = {
+  '/api/agent/summary': { price: 5000, desc: 'Market posture + top signals across all chains' },      // 0.005 USDC
+  '/api/agent/chain': { price: 10000, desc: 'Full sourced profile + metrics + signals for one chain' }, // 0.01
+  '/api/agent/signals': { price: 20000, desc: 'Live signal feed (momentum, flows, anomalies)' },       // 0.02
+  '/api/agent/risk': { price: 50000, desc: 'Scam / bad-actor risk assessment with cited evidence' },   // 0.05 (compliance)
+};
+const USDC_DP = 1e6;
+function require402(res, resource, priceAtomic, desc) {
+  res.status(402).json({
+    x402Version: 1,
+    error: 'payment_required',
+    accepts: [{
+      scheme: 'exact', network: X402.network, maxAmountRequired: String(priceAtomic),
+      resource, description: desc, mimeType: 'application/json',
+      payTo: X402.payTo, asset: X402.asset, maxTimeoutSeconds: 60,
+    }],
+  });
+}
+// Free preview quota: each client gets FREE_LIMIT calls/month, then x402 payment required.
+const FREE_LIMIT = 1;
+const freeQuota = {}; // ip -> { count, monthKey }
+function monthKey() { const d = new Date(); return d.getUTCFullYear() + '-' + d.getUTCMonth(); }
+function x402Gate(req, res, baseResource, priceAtomic, desc) {
+  const pay = req.headers['x-payment'];
+  if (pay) return true; // paid — TODO(go-live): verify via CDP facilitator before serving
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'anon';
+  const mk = monthKey();
+  let q = freeQuota[ip];
+  if (!q || q.monthKey !== mk) { q = freeQuota[ip] = { count: 0, monthKey: mk }; }
+  q.count++;
+  if (q.count <= FREE_LIMIT) { res.setHeader('X-Free-Calls-Remaining', String(FREE_LIMIT - q.count)); return true; }
+  require402(res, baseResource, priceAtomic, desc);
+  return false;
+}
+
+// Free discovery manifest — how agents learn what's payable and for how much
+app.get('/api/agent/manifest', wrap((req, res) => {
+  res.json({
+    name: 'Chaindump', description: 'Onchain intelligence — chains, assets, markets, policy & forensics.',
+    x402Version: 1, freeCallsPerMonth: FREE_LIMIT,
+    payment: { network: X402.network, asset: X402.asset, payTo: X402.payTo, currency: 'USDC', mode: X402.payTo.startsWith('0x000') ? 'demo' : 'live' },
+    entrypoints: Object.entries(AGENT_ENDPOINTS).map(([path, v]) => ({ path, priceUsd: v.price / USDC_DP, description: v.desc })),
+  });
+}));
+
+app.get('/api/agent/summary', wrap(async (req, res) => {
+  if (!x402Gate(req, res, '/api/agent/summary', AGENT_ENDPOINTS['/api/agent/summary'].price, AGENT_ENDPOINTS['/api/agent/summary'].desc)) return;
+  if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+  const c = cache.data.chains || [];
+  const all = c.flatMap((x) => x.signals || []);
+  const rk = { critical: 3, notable: 2, info: 1 };
+  all.sort((a, b) => (rk[b.severity] - rk[a.severity]) || (b.confidence - a.confidence));
+  const t = cache.data.totals || {};
+  res.json({
+    schema_version: '2.0.0', data_as_of: cache.data.updatedAt,
+    market: { total_tvl_usd: t.tvl, total_volume_24h_usd: t.volume24h, total_fees_24h_usd: t.fees24h, chains_tracked: c.length },
+    leaders: c.slice(0, 5).map((x) => ({ chain: x.name, rank: x.rank, tvl_usd: x.tvl, activity_score: x.score })),
+    top_signals: all.slice(0, 12),
+    signal_counts: { critical: all.filter((s) => s.severity === 'critical').length, notable: all.filter((s) => s.severity === 'notable').length, total: all.length },
+    provenance: { sources: ['defillama', 'coingecko', 'growthepie'], note: 'Every signal carries its own evidence + method + confidence (0–1). Full feed at /api/agent/signals.' },
+  });
+}));
+app.get('/api/agent/chain/:key', wrap(async (req, res) => {
+  if (!x402Gate(req, res, '/api/agent/chain', AGENT_ENDPOINTS['/api/agent/chain'].price, AGENT_ENDPOINTS['/api/agent/chain'].desc)) return;
+  if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+  const row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === String(req.params.key).toLowerCase());
+  if (!row) return res.status(404).json({ error: 'unknown_chain' });
+  let analysis = null;
+  try { const r = await dbQuery(`SELECT take, sentiment, sources, profile FROM chain_analysis WHERE chain=${sqlStr(row.name)} LIMIT 1`); if (r[0]) analysis = r[0]; } catch (e) {}
+  res.json({ schema_version: '1.0.0', data_as_of: cache.data.updatedAt, chain: row, analysis, provenance: { sources: ['defillama', 'growthepie', 'coingecko'] } });
+}));
+app.get('/api/agent/signals', wrap(async (req, res) => {
+  if (!x402Gate(req, res, '/api/agent/signals', AGENT_ENDPOINTS['/api/agent/signals'].price, AGENT_ENDPOINTS['/api/agent/signals'].desc)) return;
+  if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+  const all = (cache.data.chains || []).flatMap((c) => c.signals || []);
+  const rk = { critical: 3, notable: 2, info: 1 };
+  const dir = String(req.query.direction || '').toLowerCase();
+  const minConf = Number(req.query.min_confidence) || 0;
+  let out = all.filter((s) => (!dir || s.direction === dir) && s.confidence >= minConf);
+  out.sort((a, b) => (rk[b.severity] - rk[a.severity]) || (b.confidence - a.confidence));
+  res.json({
+    schema_version: '2.0.0', data_as_of: cache.data.updatedAt,
+    universe: 'top 50 chains by composite activity',
+    signal_types: ['capital_flow_7d', 'inorganic_volume', 'volume_accel', 'mercenary_tvl', 'real_yield', 'valuation', 'tvl_fee_divergence', 'price_usage_divergence'],
+    count: out.length, signals: out,
+    provenance: { sources: ['defillama', 'coingecko', 'growthepie'], methodology: 'Each signal includes evidence + method + confidence(0–1) + severity(critical|notable|info). Filter with ?direction=bullish|bearish|warning and ?min_confidence=0.6.' },
+  });
+}));
+app.get('/api/agent/risk/:entity', wrap(async (req, res) => {
+  if (!x402Gate(req, res, '/api/agent/risk', AGENT_ENDPOINTS['/api/agent/risk'].price, AGENT_ENDPOINTS['/api/agent/risk'].desc)) return;
+  const name = String(req.params.entity);
+  let rows = [];
+  try { rows = await dbQuery(`SELECT entity_type, entity_name, level, summary, evidence, sources FROM risk_flags WHERE lower(entity_name)=lower(${sqlStr(name)})`); } catch (e) {}
+  res.json({ schema_version: '1.0.0', entity: name, flagged: rows.length > 0, risk: rows[0] || { level: 'clean', summary: 'No credible scam/bad-actor concerns found in our dataset.' }, all_matches: rows });
+}));
+
+// Trace lookup — paste an address / tx / entity / case name; find where it appears across traced cases
+app.get('/api/trace-lookup', wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim().toLowerCase();
+  if (q.length < 3) return res.json({ query: q, matches: [], risk: [] });
+  try {
+    const rows = await dbQuery(`SELECT slug, name, category, amount_usd, profile FROM scam_traces`);
+    const matches = [];
+    for (const r of rows) {
+      let p = {}; try { p = JSON.parse(r.profile || '{}'); } catch (e) {}
+      const hits = [];
+      (p.hops || []).forEach((h) => {
+        const blob = `${h.from||''} ${h.to||''} ${h.txhash||''} ${h.note||''}`.toLowerCase();
+        if (blob.includes(q)) hits.push({ type: 'hop', detail: `${h.from||''} → ${h.to||''} · ${h.amount||''} ${h.asset||''}`, txurl: h.txurl || null });
+      });
+      (p.entities || []).forEach((e) => {
+        const blob = `${e.name||e.label||''} ${e.address||''} ${e.role||''}`.toLowerCase();
+        if (blob.includes(q)) hits.push({ type: 'entity', detail: `${e.name||e.label||''}${e.role?` (${e.role})`:''}${e.address?` — ${e.address}`:''}` });
+      });
+      const nameHit = r.name.toLowerCase().includes(q) || (p.summary || '').toLowerCase().includes(q);
+      if (hits.length || nameHit) matches.push({ slug: r.slug, name: r.name, category: r.category, amount_usd: r.amount_usd, nameHit, hits: hits.slice(0, 8) });
+    }
+    let risk = [];
+    try { risk = await dbQuery(`SELECT entity_type, entity_name, level, summary FROM risk_flags WHERE lower(entity_name) LIKE ${sqlStr('%' + q + '%')} LIMIT 8`); } catch (e) {}
+    res.json({ query: q, matches, risk });
+  } catch (e) {
+    res.json({ query: q, matches: [], risk: [], error: e.message });
+  }
+}));
+
+// Scam connection graph — merged fund-flow web across all cases; flags shared/suspect hubs
+app.get('/api/scam-graph', wrap(async (req, res) => {
+  try {
+    const [traceRows, addrRows, flowRows, wlRows] = await Promise.all([
+      dbQuery(`SELECT slug, name, profile FROM scam_traces`),
+      dbQuery(`SELECT address, chain, case_slug, role, label, entity, entity_id FROM scam_addresses`).catch(() => []),
+      dbQuery(`SELECT case_slug, from_addr, to_addr, from_label, to_label, asset, amount_usd, tx_url, note, sources FROM scam_flows`).catch(() => []),
+      dbQuery(`SELECT address_a, chain_a, address_b, chain_b, link_type, entity, case_slug, tx_url, evidence FROM wallet_links`).catch(() => []),
+    ]);
+    const nameBySlug = {}; traceRows.forEach((r) => { nameBySlug[r.slug] = r.name; });
+    // culpable ACTORS vs neutral INFRASTRUCTURE (tools, not blamed)
+    const ACTOR = /exploiter|hacker|attacker|drainer|scammer|thief|fraud|lazarus|dprk|north korea|insider|rug|perp|deployer|launderer/i;
+    const INFRA = /tornado|mixer|bridge|thorchain|railgun|sinbad|chipmixer|renbridge|tumbler|\bdex\b|swap|exchange|\bcex\b|binance|huobi|okx|deposit/i;
+    const key = (a) => String(a || '').trim().toLowerCase();
+    const short = (a) => { const s = String(a || ''); return /^0x[a-f0-9]{8,}/i.test(s) ? s.slice(0, 6) + '…' + s.slice(-4) : s.slice(0, 24); };
+    const nodes = {}, nodeCases = {}, edges = [], deg = {};
+    function ensure(addr, label, chain, role, entity_id, slug) {
+      const id = key(addr); if (!id) return null;
+      if (!nodes[id]) nodes[id] = { id, address: addr, label: label || short(addr), chain: chain || '', role: role || '', entity_id: entity_id || '' };
+      else { if (label && (!nodes[id].label || /^0x/i.test(nodes[id].label))) nodes[id].label = label; if (chain && !nodes[id].chain) nodes[id].chain = chain; if (role && !nodes[id].role) nodes[id].role = role; if (entity_id && !nodes[id].entity_id) nodes[id].entity_id = entity_id; }
+      if (slug) (nodeCases[id] = nodeCases[id] || new Set()).add(nameBySlug[slug] || slug);
+      return id;
+    }
+    addrRows.forEach((a) => ensure(a.address, a.label, a.chain, a.role, a.entity_id, a.case_slug));
+    // fund-flow edges (transactions)
+    flowRows.forEach((f, i) => {
+      const s = ensure(f.from_addr, f.from_label, '', '', '', f.case_slug);
+      const t = ensure(f.to_addr, f.to_label, '', '', '', f.case_slug);
+      if (s && t) { edges.push({ id: 'f' + i, source: s, target: t, kind: 'flow', caseName: nameBySlug[f.case_slug] || f.case_slug, amount: f.amount_usd ? '$' + Math.round(f.amount_usd).toLocaleString() : '', asset: f.asset || '', txurl: f.tx_url || null, note: f.note || '', sources: f.sources || '' }); deg[s] = (deg[s] || 0) + 1; deg[t] = (deg[t] || 0) + 1; }
+    });
+    // wallet-linkage edges (entity resolution: current <-> past)
+    wlRows.forEach((w, i) => {
+      const s = ensure(w.address_a, null, w.chain_a, '', w.entity, w.case_slug);
+      const t = ensure(w.address_b, null, w.chain_b, '', w.entity, w.case_slug);
+      if (s && t) { edges.push({ id: 'l' + i, source: s, target: t, kind: 'link', linkType: w.link_type || 'linked', caseName: w.entity || nameBySlug[w.case_slug] || '', note: w.evidence || '', txurl: w.tx_url || null }); deg[s] = (deg[s] || 0) + 1; deg[t] = (deg[t] || 0) + 1; }
+    });
+    // entity clusters: same entity_id across >1 address = same actor over time/chains
+    const entityCount = {};
+    Object.values(nodes).forEach((n) => { if (n.entity_id) entityCount[n.entity_id] = (entityCount[n.entity_id] || 0) + 1; });
+    // A connection web must show CONNECTIONS: only emit wallets that
+    // participate in at least one real edge (a traced transaction or link).
+    // Otherwise bulk-loaded addresses with no edges render as a meaningless
+    // scattered cloud. If there are no edges at all, fall back to all nodes.
+    const connected = new Set();
+    edges.forEach((e) => { connected.add(e.source); connected.add(e.target); });
+    const hasEdges = edges.length > 0;
+    const casesWithFlow = new Set([...flowRows, ...wlRows].map((r) => r.case_slug).filter(Boolean));
+    const out = Object.values(nodes)
+      .filter((n) => !hasEdges || connected.has(n.id))
+      .map((n) => {
+        const cs = [...(nodeCases[n.id] || [])];
+        const roleActor = ACTOR.test(n.role) || ACTOR.test(n.label);
+        const roleInfra = !roleActor && (INFRA.test(n.role) || INFRA.test(n.label));
+        const clustered = n.entity_id && entityCount[n.entity_id] > 1;
+        return { id: n.id, label: n.label, address: n.address, chain: n.chain, role: n.role, entity: n.entity_id, cluster: clustered, cases: cs, shared: cs.length > 1 || clustered, actor: roleActor, infra: roleInfra, degree: deg[n.id] || 0 };
+      });
+    res.json({ nodes: out, edges, caseCount: traceRows.length, addressCount: addrRows.length, flowCount: flowRows.length, linkCount: wlRows.length, casesMapped: casesWithFlow.size, hiddenIsolated: Object.keys(nodes).length - out.length });
+  } catch (e) {
+    res.json({ nodes: [], edges: [], error: e.message });
+  }
+}));
+
+app.get('/api/health', wrap((req, res) => res.json({ ok: true })));
+
+export default app;

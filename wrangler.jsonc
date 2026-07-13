@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "chaindump",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  }
+  // Runtime secrets/vars (set via `wrangler secret put <NAME>` or the dashboard, not here):
+  //   COINGECKO_API_KEY  - optional, raises CoinGecko rate limits
+  //   DASHBOARD_BASE      - base URL of the analyst-take dashboard service (SQLite backend), if hosted
+  //   DASHBOARD_TOKEN     - bearer token for DASHBOARD_BASE
+  //   ARTIFACT_GROUP      - dashboard "group" name, defaults to "main"
+  //   X402_PAY_TO         - receiving wallet for the paid agent API (Base/USDC)
+  //   X402_NETWORK, X402_ASSET, X402_FACILITATOR - x402 payment config overrides
+}
