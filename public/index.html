@@ -424,6 +424,24 @@
   .ofachit-h { color:#e06a6a; font-weight:800; font-size:14px; letter-spacing:.03em; }
   .ofachit-b { color:var(--fg); font-size:13px; margin-top:5px; line-height:1.5; }
   .ofachit-a { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; color:var(--fg); background:var(--bg); border:1px solid var(--border); border-radius:7px; padding:6px 9px; margin-top:8px; word-break:break-all; }
+  /* ── ⌘K command palette ── */
+  .cmdk-trigger { display:inline-flex; align-items:center; gap:8px; background:var(--surface-1); border:1px solid var(--border); color:var(--text-lo); font-family:var(--font-ui); font-size:12.5px; padding:7px 10px; border-radius:var(--r-md); cursor:pointer; box-shadow:var(--lit-edge); transition:border-color var(--dur) var(--ease), color var(--dur) var(--ease); white-space:nowrap; }
+  .cmdk-trigger:hover { border-color:var(--border-strong); color:var(--text); }
+  .cmdk-trigger .cmdk-tico { font-size:13px; }
+  .cmdk-kbd { font-family:var(--font-mono); font-size:10.5px; color:var(--text-faint); border:1px solid var(--border); border-radius:var(--r-sm); padding:1px 5px; background:var(--bg-subtle); }
+  .cmdk-overlay { position:fixed; inset:0; z-index:200; background:rgba(3,5,8,.62); backdrop-filter:blur(2px); display:flex; align-items:flex-start; justify-content:center; padding-top:12vh; }
+  .cmdk-overlay[hidden] { display:none; }
+  .cmdk { width:min(560px,92vw); max-height:64vh; display:flex; flex-direction:column; background:var(--surface-2); border:1px solid var(--border-strong); border-radius:var(--r-lg); box-shadow:0 0 0 1px var(--border-strong), 0 16px 48px -16px rgba(0,0,0,.85), var(--lit-edge); overflow:hidden; }
+  .cmdk-input { width:100%; background:transparent; border:none; border-bottom:1px solid var(--border); color:var(--text-hi); font-family:var(--font-ui); font-size:15px; padding:15px 16px; outline:none; }
+  .cmdk-input::placeholder { color:var(--text-faint); }
+  .cmdk-list { overflow-y:auto; padding:6px; }
+  .cmdk-cat { font-size:10px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--text-faint); padding:8px 10px 4px; }
+  .cmdk-item { display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:var(--r-sm); color:var(--text); font-size:13.5px; cursor:pointer; }
+  .cmdk-item .cmdk-ico { color:var(--text-faint); font-size:12px; width:14px; text-align:center; }
+  .cmdk-item.sel { background:var(--accent-bg); color:var(--text-hi); box-shadow:inset 2px 0 0 0 var(--accent); }
+  .cmdk-item.sel .cmdk-ico { color:var(--accent); }
+  .cmdk-empty { color:var(--text-lo); font-size:13px; padding:16px; text-align:center; }
+  @media(max-width:900px){ .cmdk-overlay { padding-top:8vh; } }
 </style>
 </head>
 <body>
@@ -433,7 +451,10 @@
       <h1>Chaindump<span class="dot">.</span></h1>
       <div class="sub">Onchain intelligence across chains, assets, markets, policy &amp; forensics — every claim sourced. <span class="muted">chaindump.xyz</span></div>
     </div>
-    <div class="status"><span class="pulse"></span><span id="status">loading…</span></div>
+    <div style="display:flex; align-items:center; gap:14px">
+      <button id="cmdkTrigger" class="cmdk-trigger" aria-label="Search — jump to a view or chain"><span class="cmdk-tico">⌕</span> Search <kbd class="cmdk-kbd">⌘K</kbd></button>
+      <div class="status"><span class="pulse"></span><span id="status">loading…</span></div>
+    </div>
   </header>
 
   <div id="err"></div>
@@ -853,6 +874,57 @@ function switchView(view, push){
   if (view === 'uspolicy' && !usLoaded) loadUs();
 }
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
+
+// ---- ⌘K command palette ----
+const cmdk = { open:false, items:[], filtered:[], sel:0 };
+function cmdkBuild(){
+  const views = [...document.querySelectorAll('.tab')].map(t => ({ type:'view', id:t.dataset.view, label:t.textContent.trim(), cat:'Views' }));
+  const chains = (state.chains||[]).map(c => ({ type:'chain', id:c.name, label:c.name + (c.symbol?' · '+c.symbol:''), cat:'Chains' }));
+  cmdk.items = [...views, ...chains];
+}
+function cmdkRender(){
+  const q = document.getElementById('cmdkInput').value.trim().toLowerCase();
+  cmdk.filtered = (q ? cmdk.items.filter(it => it.label.toLowerCase().includes(q) || it.id.toLowerCase().includes(q)) : cmdk.items).slice(0, 60);
+  if (cmdk.sel >= cmdk.filtered.length) cmdk.sel = Math.max(0, cmdk.filtered.length - 1);
+  const list = document.getElementById('cmdkList');
+  if (!cmdk.filtered.length){ list.innerHTML = '<div class="cmdk-empty">No matches</div>'; return; }
+  let html = '', lastCat = null;
+  cmdk.filtered.forEach((it, i) => {
+    if (it.cat !== lastCat){ html += `<div class="cmdk-cat">${esc(it.cat)}</div>`; lastCat = it.cat; }
+    html += `<div class="cmdk-item${i===cmdk.sel?' sel':''}" data-i="${i}"><span class="cmdk-ico">${it.type==='chain'?'◈':'▸'}</span>${esc(it.label)}</div>`;
+  });
+  list.innerHTML = html;
+  const sel = list.querySelector('.cmdk-item.sel'); if (sel) sel.scrollIntoView({ block:'nearest' });
+}
+function cmdkOpen(){ cmdkBuild(); cmdk.open = true; cmdk.sel = 0; const o = document.getElementById('cmdk'); o.hidden = false; const inp = document.getElementById('cmdkInput'); inp.value = ''; cmdkRender(); inp.focus(); }
+function cmdkClose(){ cmdk.open = false; document.getElementById('cmdk').hidden = true; }
+function cmdkActivate(it){
+  if (!it) return; cmdkClose();
+  if (it.type === 'view'){ switchView(it.id); }
+  else if (it.type === 'chain'){
+    switchView('live'); state.expanded = it.id; loadDetail(it.id); pushEntity('chain', it.id);
+    setTimeout(() => { const row = document.querySelector(`tr.crow[data-name="${CSS.escape(it.id)}"]`); if (row) row.scrollIntoView({ behavior:'smooth', block:'center' }); }, 90);
+  }
+}
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k'){ e.preventDefault(); cmdk.open ? cmdkClose() : cmdkOpen(); return; }
+  if (!cmdk.open) return;
+  if (e.key === 'Escape'){ e.preventDefault(); cmdkClose(); }
+  else if (e.key === 'ArrowDown'){ e.preventDefault(); cmdk.sel = Math.min(cmdk.sel + 1, cmdk.filtered.length - 1); cmdkRender(); }
+  else if (e.key === 'ArrowUp'){ e.preventDefault(); cmdk.sel = Math.max(cmdk.sel - 1, 0); cmdkRender(); }
+  else if (e.key === 'Enter'){ e.preventDefault(); cmdkActivate(cmdk.filtered[cmdk.sel]); }
+});
+// All palette wiring is delegated on `document` — no getElementById at attach
+// time. (The #cmdk markup is parsed AFTER this script, so element-specific
+// addEventListener here would hit null and throw, halting the rest of boot.)
+document.addEventListener('input', (e) => { if (e.target.id === 'cmdkInput'){ cmdk.sel = 0; cmdkRender(); } });
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#cmdkTrigger')){ cmdkOpen(); return; }
+  if (e.target.id === 'cmdk'){ cmdkClose(); return; } // backdrop
+  const item = e.target.closest('.cmdk-item');
+  const overlay = document.getElementById('cmdk');
+  if (item && overlay && overlay.contains(item)) cmdkActivate(cmdk.filtered[+item.dataset.i]);
+});
 
 const MID_VERDICT = { stalling:'dead', drifting:'declining', pivoting:'spec', quietly_building:'recover' };
 function renderMid(data){
@@ -1982,5 +2054,11 @@ setInterval(() => {
   setTimeout(() => window.scrollTo(0, y), 60);
 }, 60000);
 </script>
+<div id="cmdk" class="cmdk-overlay" hidden>
+  <div class="cmdk" role="dialog" aria-modal="true" aria-label="Command palette">
+    <input id="cmdkInput" class="cmdk-input" placeholder="Jump to a view or chain…" autocomplete="off" autocapitalize="off" spellcheck="false" />
+    <div id="cmdkList" class="cmdk-list"></div>
+  </div>
+</div>
 </body>
 </html>
