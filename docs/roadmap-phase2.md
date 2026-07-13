@@ -91,20 +91,23 @@ Verify **every** scheduled job fires and writes fresh data:
   within the hour).
 - ✅ **growthepie DAA/master** live-retry → D1 last-good — both keys present and
   recent; fallback path working.
-- ⚠️ **NFT catalog re-index** — **seed-only, NOT wired into cron** (`nft_catalog`,
-  1,972 rows, `indexed_at` frozen at seed time). Source is CoinGecko `/nfts/list`.
-  **Remediation:** add `refreshNftCatalog(env)` gated ~weekly (e.g. 1-in-2016
-  ticks) and upsert; keep `indexed_at`.
-- 🔴 **OFAC `sanctioned_addresses`** — **seed-only, NOT wired (newly-found gap).**
-  925 addrs frozen at seed time. This backs live wallet screening in the Scam
-  Tracker, so a stale SDN snapshot = **missed sanctioned wallets = compliance
-  risk**. Source: 0xB10C OFAC mirror (per-chain text files). **Remediation:** add
-  `refreshSanctioned(env)` gated daily (1-in-288 ticks), fetch + upsert, stamp
-  `updated_at`. Highest-priority Phase B fix.
-- **TDD note:** these two refreshers are the natural moment to stand up the Vitest
-  harness (CLAUDE.md §1.1 gap) — the parse/upsert-shape functions are pure and
-  testable; write the failing test first.
+- ✅ **NFT catalog re-index** — **FIXED.** `refreshNftCatalog(env)` gated weekly
+  (1-in-2016), pages CoinGecko `/nfts/list`, upserts + prunes de-listed. Verified
+  live: **1,973** collections re-indexed, all `indexed_at` fresh. (Gotcha found +
+  fixed: an `order=` param caused unstable paging that silently skipped 187/1973
+  — removed it.)
+- ✅ **OFAC `sanctioned_addresses`** — **FIXED (was the compliance gap).**
+  `refreshSanctioned(env)` gated daily (1-in-288), fetches the 0xB10C SDN mirror
+  per chain, upserts + prunes de-listed addresses (fail-safe per chain — a failed
+  fetch never blanks a chain's screening set). Verified live: **925→929 addrs,
+  14→18 chains** (added BSV/BTG/XRP/XVG), all `updated_at` fresh.
+- ✅ **Vitest harness stood up** (closes CLAUDE.md §1.1 gap): `npm test` →
+  `src/lib/{ofac,nft}.js` pure helpers with `test/{ofac,nft}.test.js` (15 tests).
+- **Ops:** token-guarded `POST /api/admin/refresh?job=sanctioned|nft|all`
+  (404 unless the `ADMIN_TOKEN` secret is set; requires `Authorization: Bearer`).
+  Manual re-seed / verify trigger for the slow jobs.
 Confirmed via D1 `updated_at`/`indexed_at`/`ts` freshness per table (2026-07-13).
+**Phase B complete.**
 
 ## Phase C — Build & deploy the redesign
 Migrate the live app into the committed design system (`design/`): adopt the
