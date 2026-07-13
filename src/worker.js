@@ -998,6 +998,24 @@ async function classifyChains() {
   return b;
 }
 
+// Complete { chainName: tier } map across all buckets — for the live board to
+// badge each row with our own classification (progressive-enhancement fetch).
+function tierMapFrom(b) {
+  const map = {};
+  for (const tier of ['thriving', 'mid', 'dying', 'dead']) for (const m of (b[tier] || [])) map[m.chain] = tier;
+  return map;
+}
+
+// Our curated editorial verdicts (the Dead & Dying / Stuck-Mid case studies) take
+// precedence over the live activity classifier, so the board badge matches the
+// forensic sections (e.g. Cardano reads "mid" on the board, not "thriving").
+async function curatedTierMap() {
+  const map = {};
+  try { (await dbQuery(`SELECT chain FROM dead_chains`)).forEach((r) => { map[r.chain] = 'dead'; }); } catch (e) {}
+  try { (await dbQuery(`SELECT chain FROM mid_chains`)).forEach((r) => { if (!map[r.chain]) map[r.chain] = 'mid'; }); } catch (e) {}
+  return map;
+}
+
 async function getTiers() {
   const now = Date.now();
   if (!tiersCache.data) tiersCache = { ts: now, data: await classifyChains() };
@@ -1034,6 +1052,7 @@ app.get('/api/tiers', wrap(async (req, res) => {
     res.json({
       updatedAt: new Date(tiersCache.ts).toISOString(),
       counts: { thriving: b.thriving.length, mid: b.mid.length, dying: b.dying.length, dead: b.dead.length },
+      tierMap: { ...tierMapFrom(b), ...(await curatedTierMap()) },
       mid: attach(b.mid, 25), dying: attach(b.dying, 25), dead: attach(b.dead, 25), declining,
       narrative, successFactors,
     });
