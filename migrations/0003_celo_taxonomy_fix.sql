@@ -1,0 +1,11 @@
+-- Celo is seeded in BOTH dead_chains (verdict='declining') and mid_chains
+-- (verdict='pivoting', current, richer profile: 840k DAU, #1 L2 by DAU,
+-- Stripe/Bridge integration, live buyback-and-burn proposal). Showing both
+-- at once contradicts itself across the "Dead & Dying" and "Stuck / Mid"
+-- tabs. mid_chains is the accurate, current read (it migrated to an L2 with
+-- genuine usage, not a collapse) -- keep that one, drop the dead_chains row.
+--
+-- ROLLBACK: re-run the Celo INSERT INTO dead_chains block from
+-- migrations/0001_init.sql (verdict='declining', peak_tvl=1153283962) if
+-- this needs to be reverted.
+DELETE FROM dead_chains WHERE chain = 'Celo';

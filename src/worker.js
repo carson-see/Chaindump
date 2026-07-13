@@ -40,6 +40,10 @@ const FEES_URL   = 'https://api.llama.fi/overview/fees?excludeTotalDataChart=tru
 const STABLES_URL = 'https://stablecoins.llama.fi/stablecoinchains';
 const GP_FUND_URL = 'https://api.growthepie.xyz/v1/fundamentals.json';
 const GP_MASTER_URL = 'https://api.growthepie.xyz/v1/master.json';
+// The CloudFront-fronted fundamentals.json 403s Workers' default fetch UA
+// (confirmed via prod logs) while the smaller master.json on the same host
+// doesn't — a browser-like UA clears it.
+const GP_HEADERS = { 'user-agent': 'Mozilla/5.0 (compatible; chaindump/1.0; +https://chaindump.xyz)' };
 const CG_PRICE = 'https://api.coingecko.com/api/v3/simple/price';
 // CoinGecko API key (free "Demo" key or Pro) — greatly raises rate limits so prices load reliably.
 // Set COINGECKO_API_KEY in the environment. Demo keys use the public host + x_cg_demo_api_key.
@@ -66,12 +70,12 @@ function escapeHtml(s) {
 }
 
 // fetch JSON with timeout; never throws the whole snapshot down
-async function fetchJson(url, ms = 15000) {
+async function fetchJson(url, ms = 15000, extraHeaders = {}) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), ms);
   try {
-    const r = await fetch(url, { headers: { accept: 'application/json' }, signal: ctl.signal });
-    if (!r.ok) throw new Error(`${r.status}`);
+    const r = await fetch(url, { headers: { accept: 'application/json', ...extraHeaders }, signal: ctl.signal });
+    if (!r.ok) throw new Error(`${r.status} ${(await r.text().catch(() => '')).slice(0, 200)}`);
     return await r.json();
   } finally {
     clearTimeout(t);
@@ -151,6 +155,16 @@ async function dbQuery(sql, params = []) {
 }
 let masterCache = { ts: 0, data: null };
 const MASTER_TTL = 6 * 60 * 60 * 1000;
+// growthepie's fundamentals.json 403s from Cloudflare's edge (confirmed via
+// prod logs: same code path that succeeds from a normal residential/cloud IP
+// gets blocked here — looks like a WAF rule against CDN/hosting-provider
+// traffic, not something a User-Agent header fixes). Keep the last GOOD
+// result and reuse it on failure instead of nulling every chain's
+// activeAddresses on every 403'd tick. If this is a permanent block rather
+// than transient, daaCache.data will simply never update past whatever the
+// last successful fetch was — worth checking growthepie for an alternative
+// endpoint if this hasn't recovered after a few days.
+let daaCache = { ts: 0, data: {} };
 
 async function getMaster() {
   const now = Date.now();
@@ -161,12 +175,23 @@ async function getMaster() {
   return masterCache.data;
 }
 
+// Every buildSnapshot fetch degrades silently on failure (falls back to a
+// default and moves on) — that's the right behavior for resilience, but it
+// means a failing upstream shows up only as "some field is null" days later
+// with zero trace of why. Log the reason so Workers Logs can show it.
+function logSettled(name, r) {
+  if (r.status === 'rejected') console.error(`[buildSnapshot] ${name} failed:`, r.reason && r.reason.message || r.reason);
+  else if (r.value == null) console.error(`[buildSnapshot] ${name} returned null/empty`);
+}
+
 async function buildSnapshot() {
   // --- cheap global fetches (partial failure tolerated) ---
   const [chainsR, dexsR, feesR, stablesR, gpFundR, cgSeed, gpMaster] = await Promise.allSettled([
     fetchJson(CHAINS_URL), fetchJson(DEXS_URL), fetchJson(FEES_URL),
-    fetchJson(STABLES_URL), fetchJson(GP_FUND_URL, 25000), Promise.resolve(null), getMaster(),
+    fetchJson(STABLES_URL), fetchJson(GP_FUND_URL, 25000, GP_HEADERS), Promise.resolve(null), getMaster(),
   ]);
+  [['chains', chainsR], ['dexs', dexsR], ['fees', feesR], ['stables', stablesR], ['gpFund', gpFundR], ['gpMaster', gpMaster]]
+    .forEach(([name, r]) => logSettled(name, r));
   const val = (r, d) => (r.status === 'fulfilled' && r.value != null ? r.value : d);
 
   const chains = val(chainsR, []);
@@ -175,7 +200,9 @@ async function buildSnapshot() {
   const volAgg = aggregateBreakdown(val(dexsR, {}));
   const feeAgg = aggregateBreakdown(val(feesR, {}));
   const masterMap = gpMaster.status === 'fulfilled' ? gpMaster.value : {};
-  const daaByOrigin = latestByOrigin(val(gpFundR, []), 'daa');
+  const freshDaa = latestByOrigin(val(gpFundR, []), 'daa');
+  if (Object.keys(freshDaa).length) daaCache = { ts: Date.now(), data: freshDaa };
+  const daaByOrigin = daaCache.data;
 
   // stablecoin mcap by normalized chain name
   const stableByChain = {};
@@ -432,6 +459,17 @@ const DESCRIPTIONS = {
   starknet: 'ZK rollup using the Cairo VM for scalable, low-cost Ethereum execution.',
   zksync: 'ZK rollup (zkEVM) scaling Ethereum with low fees and a growing DeFi ecosystem.',
   gnosis: 'Stable-payments-focused EVM chain (xDai) with strong community and prediction-market roots.',
+  osmosis: 'Cosmos SDK app-chain and the ecosystem’s primary DEX/liquidity hub, connecting IBC-linked chains.',
+  stacks: 'Bitcoin L2 (Proof of Transfer) bringing smart contracts and DeFi to Bitcoin without modifying its base layer.',
+  injective: 'Cosmos SDK L1 built for finance — an on-chain order book, derivatives and cross-chain trading infrastructure.',
+  cronos: 'EVM-compatible chain in the Crypto.com ecosystem, focused on DeFi and consumer payments integration.',
+  mantle: 'Ethereum L2 (modular rollup) backed by the BitDAO/Mantle treasury, focused on DeFi and lower fees.',
+  flow: 'L1 built for consumer apps, NFTs and gaming, known for the NBA Top Shot collectibles ecosystem.',
+  linea: 'zkEVM Ethereum L2 built by Consensys, aiming for full EVM equivalence with ZK-proof scaling.',
+  unichain: 'Uniswap Labs’ own Ethereum L2 (OP Stack), built to optimize DEX trading and cross-chain liquidity.',
+  ronin: 'EVM sidechain purpose-built for gaming, originally created for Axie Infinity and its NFT marketplace.',
+  berachain: 'EVM L1 using a novel Proof-of-Liquidity consensus that ties validator rewards to on-chain liquidity provision.',
+  sonic: 'High-throughput EVM L1 (formerly Fantom) focused on low-latency execution and developer incentives.',
 };
 
 // Curated "most reliable" DEX + NFT marketplace per chain (keyed by norm()).
@@ -470,6 +508,14 @@ const LINKS = {
   berachain:  { dex: { name: 'BEX',         url: 'https://bex.berachain.com' },   nft: null },
   sonic:      { dex: { name: 'Shadow',      url: 'https://www.shadow.so' },       nft: null },
 };
+
+// LINKS and DESCRIPTIONS drifted out of sync before (11 chains had a LINKS
+// entry but no DESCRIPTIONS entry) — warn once at cold start instead of
+// silently shipping a blank description card next time a chain is added.
+{
+  const missing = Object.keys(LINKS).filter((k) => !(k in DESCRIPTIONS));
+  if (missing.length) console.error('[parity] LINKS chains missing a DESCRIPTIONS entry:', missing.join(', '));
+}
 
 // Top NFT / Ordinals collections per chain (curated, verified marketplace links)
 const CHAIN_NFTS = {
@@ -744,7 +790,7 @@ async function classifyChains() {
   }, 6);
 
   // chains that migrated/rebranded (TVL moved elsewhere) — not genuine deaths
-  const MIGRATED = new Set(['fantom', 'terra', 'terraclassic']);
+  const MIGRATED = new Set(['fantom', 'terra', 'terraclassic', 'celo']);
   const b = { thriving: [], mid: [], dying: [], dead: [] };
   for (const m of metrics) {
     const key = norm(m.chain);
@@ -979,10 +1025,19 @@ app.get('/api/news', wrap(async (req, res) => {
     if (!newsCache.data || now - newsCache.ts > 10 * 60 * 1000) {
       const results = await Promise.allSettled(NEWS_FEEDS.map(async (f) => {
         const r = await fetch(f.url, { headers: { 'user-agent': 'Mozilla/5.0 chain-monitor' }, signal: AbortSignal.timeout(12000) });
-        return parseRss(await r.text(), f.src);
+        // previously any non-2xx (block/rate-limit) still fell through to
+        // parseRss() on error-page HTML and silently produced 0 items —
+        // no signal that the source ever failed. Fail loud instead.
+        if (!r.ok) throw new Error(`${f.src} ${r.status}`);
+        const items = parseRss(await r.text(), f.src);
+        if (!items.length) throw new Error(`${f.src} parsed 0 items`);
+        return items;
       }));
       let all = [];
-      results.forEach((r) => { if (r.status === 'fulfilled') all = all.concat(r.value); });
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') all = all.concat(r.value);
+        else console.error(`[news] ${NEWS_FEEDS[i].src} failed:`, r.reason && r.reason.message || r.reason);
+      });
       all.sort((a, b) => b.ts - a.ts);
       newsCache = { ts: now, data: all.slice(0, 60) };
     }
@@ -1227,27 +1282,77 @@ app.get('/api/health', wrap((req, res) => res.json({ ok: true })));
 // freshness bounded by the cron interval, not per-request cache luck) and
 // appends a time-series row per chain, the backbone for flow/delta signals.
 // ---------------------------------------------------------------------------
+// Chaindump-owned 7d deltas for metrics no upstream API pre-computes (stablecoin
+// share-of-TVL migration, active-address trend) — computed once here, off the
+// request hot path, and baked into the cached snapshot blob every request reads.
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const MIN_DELTA_SPAN_MS = 6 * 60 * 60 * 1000; // don't compute noisy deltas from <6h of history
+async function computeSnapshotDeltas(env, now) {
+  const out = {};
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT chain, ts, tvl, stables, active_addresses FROM chain_snapshots WHERE ts >= ? ORDER BY chain, ts ASC`
+    ).bind(now - SEVEN_DAYS_MS).all();
+    const byChain = {};
+    for (const r of results || []) (byChain[r.chain] = byChain[r.chain] || []).push(r);
+    for (const chain in byChain) {
+      const rows = byChain[chain];
+      const oldest = rows[0], newest = rows[rows.length - 1];
+      if (newest.ts - oldest.ts < MIN_DELTA_SPAN_MS) continue;
+      const d = {};
+      if (oldest.tvl > 0 && newest.tvl > 0 && oldest.stables != null && newest.stables != null) {
+        d.stableShareDelta7d = +(((newest.stables / newest.tvl) - (oldest.stables / oldest.tvl)) * 100).toFixed(2);
+      }
+      if (oldest.active_addresses > 0 && newest.active_addresses != null) {
+        d.activeAddressesDelta7d = +(((newest.active_addresses - oldest.active_addresses) / oldest.active_addresses) * 100).toFixed(1);
+      }
+      if (Object.keys(d).length) out[chain] = d;
+    }
+  } catch (e) { console.error('[computeSnapshotDeltas] failed:', e.message); }
+  return out;
+}
+
+// Unbounded growth guard — bounded delete (D1 has no LIMIT on DELETE, so page
+// by rowid) run only occasionally, not worth its own cron tick's CPU every time.
+async function pruneOldSnapshots(env, now) {
+  try {
+    const { meta } = await env.DB.prepare(
+      `DELETE FROM chain_snapshots WHERE id IN (SELECT id FROM chain_snapshots WHERE ts < ? LIMIT 2000)`
+    ).bind(now - 90 * 24 * 60 * 60 * 1000).run();
+    if (meta && meta.changes) console.error(`[pruneOldSnapshots] deleted ${meta.changes} rows older than 90d`);
+  } catch (e) { console.error('[pruneOldSnapshots] failed:', e.message); }
+}
+
 async function handleScheduled(event, env, ctx) {
   if (!ENV.__init) { Object.assign(ENV, env || {}); ENV.__init = true; }
   const data = await buildSnapshot();
   const ts = Date.now();
+
+  if (env.DB) {
+    const rows = data.chains || [];
+    const stmt = env.DB.prepare(
+      `INSERT INTO chain_snapshots (ts, chain, tvl, volume24h, fees24h, stables, active_addresses, token_price, token_mcap, score)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const batch = rows.map((c) => stmt.bind(
+      ts, c.name, c.tvl ?? null, c.volume24h ?? null, c.fees24h ?? null, c.stables ?? null,
+      c.activeAddresses ?? null, c.tokenPrice ?? null, c.tokenMcap ?? null, c.score ?? null
+    ));
+    if (batch.length) await env.DB.batch(batch);
+
+    const deltas = await computeSnapshotDeltas(env, ts);
+    for (const c of rows) Object.assign(c, deltas[c.name] || {});
+
+    // roughly every 4 hours (1-in-48 five-minute ticks) is plenty for a 90-day prune
+    if (Math.floor(ts / (5 * 60 * 1000)) % 48 === 0) await pruneOldSnapshots(env, ts);
+  }
+
   cache = { ts, data };
   if (!env.DB) return;
   await env.DB.prepare(
     `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
      ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
   ).bind(JSON.stringify(data), ts).run();
-
-  const rows = data.chains || [];
-  const stmt = env.DB.prepare(
-    `INSERT INTO chain_snapshots (ts, chain, tvl, volume24h, fees24h, stables, active_addresses, token_price, token_mcap, score)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const batch = rows.map((c) => stmt.bind(
-    ts, c.name, c.tvl ?? null, c.volume24h ?? null, c.fees24h ?? null, c.stables ?? null,
-    c.activeAddresses ?? null, c.tokenPrice ?? null, c.tokenMcap ?? null, c.score ?? null
-  ));
-  if (batch.length) await env.DB.batch(batch);
 }
 
 export default {
