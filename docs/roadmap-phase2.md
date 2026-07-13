@@ -168,14 +168,19 @@ TypeScript, streamable HTTP, comprehensive API coverage. Wraps the existing
 `/api/agent/*` surface + the new data.
 
 ## Phase G — Claude Agent SDK app  *(after MCP, per Carson via new-sdk-app skill)*
-Carson delegated the technical decisions ("I'm not technical"). **Scoped calls
-(RTE/team, revisit at build time):**
+Carson delegated the technical decisions ("I'm not technical"). Canonical spec:
+**Google Drive "Chaindump" folder** → *"Chaindump — Agent SDK App (Research Desk)"*
+(read 2026-07-13; matches this section). **Scoped calls (RTE/team, revisit at
+build time):**
 - **Purpose:** an autonomous **Chaindump research desk** — keeps the forensic /
-  graveyard / policy / RWA data fresh and sourced, running the same verified
-  research loop we do by hand (discover → research → adversarial fact-check →
-  cite → persist; no fabrication). Formalizes the existing
-  `discovery-workflow.js` / `execute-workflow.js` prototypes into a real,
-  scheduled agent.
+  graveyard / policy / RWA **and trend/analysis** content fresh and sourced
+  (Carson 2026-07-13: "trend analysis pages as well as any analysis stuff needs
+  to be kept up to date"), running the same verified research loop we do by hand
+  (discover → research → adversarial fact-check → cite → persist; no fabrication).
+  Also does **proactive hunting** — surface a *new* dying chain / scam pattern /
+  policy change as a signal, not just refresh existing rows. Formalizes the
+  existing `discovery-workflow.js` / `execute-workflow.js` prototypes into a real,
+  scheduled agent. Dogfoods the Phase F MCP (the desk's tools = our MCP server).
 - **Why it pairs with Phase F:** the Agent SDK app is the *brain that uses
   tools*; the MCP server (F) is the *tools*. The desk agent consumes the
   chain-intel MCP server + web research, so build F first, then G on top of it.
