@@ -67,14 +67,34 @@ Research ways to improve content, usability, and the product; propose + implemen
 enhancements. (Signals feed, capital-rotation view, richer agent API — see
 ROADMAP.md P1/P2.)
 
-## Phase F — MCP server (chain-intel)  *(the last build, per Carson via mcp-builder skill)*
+## Phase F — MCP server (chain-intel)  *(per Carson via mcp-builder skill)*
 Scope + build an MCP server exposing Chaindump's intelligence (chains, signals,
 graveyard, scam screening, RWA/DePIN, policy) as agent tools, following the
 `anthropic-skills:mcp-builder` workflow (research → implement → test → evals).
 TypeScript, streamable HTTP, comprehensive API coverage. Wraps the existing
-`/api/agent/*` surface + the new data. Do this **after everything else above**.
+`/api/agent/*` surface + the new data.
 
-## Phase G — Full UAT clickthrough (Chrome) — THE VERY LAST STEP
+## Phase G — Claude Agent SDK app  *(after MCP, per Carson via new-sdk-app skill)*
+Carson delegated the technical decisions ("I'm not technical"). **Scoped calls
+(RTE/team, revisit at build time):**
+- **Purpose:** an autonomous **Chaindump research desk** — keeps the forensic /
+  graveyard / policy / RWA data fresh and sourced, running the same verified
+  research loop we do by hand (discover → research → adversarial fact-check →
+  cite → persist; no fabrication). Formalizes the existing
+  `discovery-workflow.js` / `execute-workflow.js` prototypes into a real,
+  scheduled agent.
+- **Why it pairs with Phase F:** the Agent SDK app is the *brain that uses
+  tools*; the MCP server (F) is the *tools*. The desk agent consumes the
+  chain-intel MCP server + web research, so build F first, then G on top of it.
+- **Tech:** TypeScript (`@anthropic-ai/claude-agent-sdk`, latest), npm, its own
+  subdir (e.g. `agent-desk/`). Runs as a scheduled Node process (Cloud Run job
+  or scheduled GitHub Action) — NOT in the Worker (SDK needs a Node runtime).
+  Writes to the same D1 via the Worker's authenticated write path, with human
+  review gating on anything naming individuals (same accuracy bar as the manual
+  passes).
+- Latest SDK version + verifier agent (`agent-sdk-verifier-ts`) at build time.
+
+## Phase H — Full UAT clickthrough (Chrome) — THE VERY LAST STEP
 After ALL of the above, the complete manual UAT via the browser as the final
 gate: each tab loads, every card/folder/search/deep-link works, no console
 errors, responsive at 1280px + 375px, agent-discovery endpoints resolve.

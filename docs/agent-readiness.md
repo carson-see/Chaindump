@@ -80,6 +80,10 @@ content-type before UAT.
     - https://webmachinelearning.github.io/webmcp/
 
 ## Notes
+- **Carson granted permission (2026-07-13) to use Claude in Chrome for anything
+  needed during this phase** — e.g. running the isitagentready.com audit against
+  chaindump.xyz to confirm each item flips to pass, testing crawler/agent
+  behavior, or verifying `Accept: text/markdown` negotiation from a real browser.
 - Most `.well-known/*` and robots/sitemap are cheap Worker routes — batch them.
 - The api-catalog + mcp-server-card + agent-skills-index should reference the
   real `/api/agent/*` surface and the Phase F MCP server, so sequence them so
