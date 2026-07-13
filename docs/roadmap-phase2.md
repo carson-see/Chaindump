@@ -109,20 +109,21 @@ Verify **every** scheduled job fires and writes fresh data:
 Confirmed via D1 `updated_at`/`indexed_at`/`ts` freshness per table (2026-07-13).
 **Phase B complete.**
 
-## Phase C — Build & deploy the redesign  *(in progress: 1–2 of 3 done)*
+## Phase C — Build & deploy the redesign  *(core done; optional polish remains)*
 Migrate the live app into the committed design system (`design/`): adopt the
-tokens, then the shell (grouped rail, ⌘K), then per-view components, wired to the
-real APIs.
+tokens, then the shell (grouped rail, ⌘K), then per-view components.
 - ✅ **Step 1 — token adoption** (deep-dark + Signal Amber + Sora/JetBrains Mono;
   legacy vars remapped onto `design-tokens.css`). Shipped, verified.
-- ✅ **Step 2 — ⌘K command palette** (open via ⌘K/Ctrl+K or the header Search
-  button; filter across all views + live chains; ↑/↓ + Enter, Esc/backdrop close).
-  Shipped, verified. Grouped rail already existed.
-- ⏳ **Step 3 — per-view component polish** (remaining): apply JetBrains Mono to
-  numerics/addresses (mind column widths); refine table/card density view-by-view.
-- **Idea to fold in (step 3):** label the "Top 50" live chains by **our own tier**
-  — thriving / stuck-mid / dead-dying — from our rankings, so the live board and
-  the forensic sections share one classification + color language.
+- ✅ **Step 2 — ⌘K command palette** (⌘K/Ctrl+K or header Search; filter views +
+  live chains; ↑/↓ + Enter, Esc/backdrop). Shipped, verified. Grouped rail existed.
+- ✅ **Step 3 headline — tier-label the Top 50** (thriving/mid/dying/dead badges;
+  curated verdicts win so the board matches the forensic sections). Shipped.
+  Also: JetBrains Mono on the KPI stat values.
+- ✅ **Perf (bonus, from Carson's "very slow" report):** cytoscape (~365KB) was
+  render-blocking on every page → now lazy-loaded only for the scam graph. Fonts
+  made non-blocking. Big mobile win.
+- ⏳ **Optional remaining polish (low priority, ongoing):** fuller JetBrains Mono
+  on table numerics/addresses (mind column widths); per-view card/table density.
 
 ### ⚠ Operational lessons (session 2 — heed these)
 - **Deploy cadence:** rapid back-to-back `wrangler deploy`s caused user-facing
