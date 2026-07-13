@@ -109,13 +109,36 @@ Verify **every** scheduled job fires and writes fresh data:
 Confirmed via D1 `updated_at`/`indexed_at`/`ts` freshness per table (2026-07-13).
 **Phase B complete.**
 
-## Phase C — Build & deploy the redesign
+## Phase C — Build & deploy the redesign  *(in progress: 1–2 of 3 done)*
 Migrate the live app into the committed design system (`design/`): adopt the
 tokens, then the shell (grouped rail, ⌘K), then per-view components, wired to the
 real APIs.
-- **Idea to fold in:** label the "Top 50" live chains by **our own tier** —
-  thriving / stuck-mid / dead-dying — from our rankings, so the live board and
-  the forensic sections share one classification.
+- ✅ **Step 1 — token adoption** (deep-dark + Signal Amber + Sora/JetBrains Mono;
+  legacy vars remapped onto `design-tokens.css`). Shipped, verified.
+- ✅ **Step 2 — ⌘K command palette** (open via ⌘K/Ctrl+K or the header Search
+  button; filter across all views + live chains; ↑/↓ + Enter, Esc/backdrop close).
+  Shipped, verified. Grouped rail already existed.
+- ⏳ **Step 3 — per-view component polish** (remaining): apply JetBrains Mono to
+  numerics/addresses (mind column widths); refine table/card density view-by-view.
+- **Idea to fold in (step 3):** label the "Top 50" live chains by **our own tier**
+  — thriving / stuck-mid / dead-dying — from our rankings, so the live board and
+  the forensic sections share one classification + color language.
+
+### ⚠ Operational lessons (session 2 — heed these)
+- **Deploy cadence:** rapid back-to-back `wrangler deploy`s caused user-facing
+  **"Website can't be reached"** blips on mobile (brief edge switch during each
+  version swap, then Chrome mobile caches the failure until a hard retry). **Do
+  moderate-sized deploys, verify locally/at runtime first, and batch feature work
+  behind PRs** (Carson's directive). One good deploy > five iterative ones.
+- **Inline-script + late markup gotcha:** `public/index.html`'s big inline
+  `<script>` runs mid-parse, BEFORE markup placed near `</body>`. Any
+  `getElementById('x').addEventListener` for such late elements throws at load and
+  **halts the rest of boot** (this un-rendered the live board on interim deploys).
+  Wire late elements via **`document`-level delegation**, or place their markup
+  before the script. (This is how the ⌘K palette is wired.)
+- **Fonts:** Google Fonts `<link>` must stay **non-render-blocking**
+  (`media=print` → `onload media=all`) so a blocked/slow font host never blanks
+  the page. Already applied.
 
 ## Phase D — Agent-readiness / AI-discovery infrastructure  *(after redesign, before UAT)*
 Make Chaindump discoverable + usable by AI agents. Full checklist with specs,
