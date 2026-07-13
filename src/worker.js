@@ -138,8 +138,7 @@ function latestByOrigin(fundamentals, metricKey) {
 // Snapshot builder
 // ---------------------------------------------------------------------------
 let cache = { ts: 0, data: null };
-let rebuilding = false;
-const TTL = 60 * 1000;              // upstream refresh cadence (stale-while-revalidate)
+const TTL = 60 * 1000;              // per-isolate re-read interval for the D1 snapshot cache
 
 // ---- D1-backed analyst takes / research data (bound directly, no HTTP hop) ----
 // Pass `params` + `?` placeholders for anything derived from a request (route
@@ -322,6 +321,29 @@ async function buildSnapshot() {
   };
 }
 
+// Read the cron-refreshed snapshot from D1 (instant, no live upstream calls on
+// the hot path). Falls back to a live build only on a cold/empty cache — and
+// best-effort primes the cache so subsequent requests don't repeat the miss.
+async function loadSnapshot() {
+  if (ENV.DB) {
+    try {
+      const row = await ENV.DB.prepare(`SELECT data, updated_at FROM snapshot_cache WHERE key='chains'`).first();
+      if (row && row.data) return { data: JSON.parse(row.data), ts: row.updated_at };
+    } catch (e) { /* table may not exist yet or a D1 hiccup — fall through to a live build */ }
+  }
+  const data = await buildSnapshot();
+  const ts = Date.now();
+  if (ENV.DB) {
+    try {
+      await ENV.DB.prepare(
+        `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
+         ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
+      ).bind(JSON.stringify(data), ts).run();
+    } catch (e) { /* best-effort priming, not fatal */ }
+  }
+  return { data, ts };
+}
+
 function fmtShort(n) {
   n = Number(n) || 0; const a = Math.abs(n);
   if (a >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -372,15 +394,8 @@ function computeSignals(r, peers) {
 app.get('/api/chains', wrap(async (req, res) => {
   try {
     const now = Date.now();
-    if (!cache.data) {
-      cache = { ts: now, data: await buildSnapshot() };
-    } else if (now - cache.ts > TTL && !rebuilding) {
-      // stale-while-revalidate: serve cached instantly, refresh in the background
-      rebuilding = true;
-      buildSnapshot()
-        .then((d) => { cache = { ts: Date.now(), data: d }; })
-        .catch((e) => console.error('bg refresh:', e.message))
-        .finally(() => { rebuilding = false; });
+    if (!cache.data || now - cache.ts > TTL) {
+      cache = await loadSnapshot();
     }
     res.json({ ...cache.data, cachedAgeMs: Date.now() - cache.ts });
   } catch (e) {
@@ -566,7 +581,7 @@ async function getProtocols() {
 
 app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
-    if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+    if (!cache.data) cache = await loadSnapshot();
     const target = String(req.params.name || '').toLowerCase();
     const row = cache.data.chains.find((c) => c.name.toLowerCase() === target);
     if (!row) return res.status(404).json({ error: 'unknown chain' });
@@ -695,7 +710,7 @@ const toISO = (unix) => new Date(unix * 1000).toISOString().slice(0, 10);
 async function classifyChains() {
   const all = await fetchJson(CHAINS_URL);
   if (!Array.isArray(all)) throw new Error('chains feed unavailable');
-  if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+  if (!cache.data) cache = await loadSnapshot();
   const thrivingNames = new Set((cache.data.chains || []).map((c) => c.name));
 
   const universe = all.filter((c) => c && c.name && (Number(c.tvl) || 0) >= 1e6)
@@ -1065,7 +1080,7 @@ app.get('/api/agent/manifest', wrap((req, res) => {
 
 app.get('/api/agent/summary', wrap(async (req, res) => {
   if (!x402Gate(req, res, '/api/agent/summary', AGENT_ENDPOINTS['/api/agent/summary'].price, AGENT_ENDPOINTS['/api/agent/summary'].desc)) return;
-  if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+  if (!cache.data) cache = await loadSnapshot();
   const c = cache.data.chains || [];
   const all = c.flatMap((x) => x.signals || []);
   const rk = { critical: 3, notable: 2, info: 1 };
@@ -1082,7 +1097,7 @@ app.get('/api/agent/summary', wrap(async (req, res) => {
 }));
 app.get('/api/agent/chain/:key', wrap(async (req, res) => {
   if (!x402Gate(req, res, '/api/agent/chain', AGENT_ENDPOINTS['/api/agent/chain'].price, AGENT_ENDPOINTS['/api/agent/chain'].desc)) return;
-  if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+  if (!cache.data) cache = await loadSnapshot();
   const row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === String(req.params.key).toLowerCase());
   if (!row) return res.status(404).json({ error: 'unknown_chain' });
   let analysis = null;
@@ -1091,7 +1106,7 @@ app.get('/api/agent/chain/:key', wrap(async (req, res) => {
 }));
 app.get('/api/agent/signals', wrap(async (req, res) => {
   if (!x402Gate(req, res, '/api/agent/signals', AGENT_ENDPOINTS['/api/agent/signals'].price, AGENT_ENDPOINTS['/api/agent/signals'].desc)) return;
-  if (!cache.data) cache = { ts: Date.now(), data: await buildSnapshot() };
+  if (!cache.data) cache = await loadSnapshot();
   const all = (cache.data.chains || []).flatMap((c) => c.signals || []);
   const rk = { critical: 3, notable: 2, info: 1 };
   const dir = String(req.query.direction || '').toLowerCase();
@@ -1207,4 +1222,35 @@ app.get('/api/scam-graph', wrap(async (req, res) => {
 
 app.get('/api/health', wrap((req, res) => res.json({ ok: true })));
 
-export default app;
+// ---------------------------------------------------------------------------
+// Cron Trigger — refreshes the D1 snapshot cache off the request path (real
+// freshness bounded by the cron interval, not per-request cache luck) and
+// appends a time-series row per chain, the backbone for flow/delta signals.
+// ---------------------------------------------------------------------------
+async function handleScheduled(event, env, ctx) {
+  if (!ENV.__init) { Object.assign(ENV, env || {}); ENV.__init = true; }
+  const data = await buildSnapshot();
+  const ts = Date.now();
+  cache = { ts, data };
+  if (!env.DB) return;
+  await env.DB.prepare(
+    `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
+     ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
+  ).bind(JSON.stringify(data), ts).run();
+
+  const rows = data.chains || [];
+  const stmt = env.DB.prepare(
+    `INSERT INTO chain_snapshots (ts, chain, tvl, volume24h, fees24h, stables, active_addresses, token_price, token_mcap, score)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const batch = rows.map((c) => stmt.bind(
+    ts, c.name, c.tvl ?? null, c.volume24h ?? null, c.fees24h ?? null, c.stables ?? null,
+    c.activeAddresses ?? null, c.tokenPrice ?? null, c.tokenMcap ?? null, c.score ?? null
+  ));
+  if (batch.length) await env.DB.batch(batch);
+}
+
+export default {
+  fetch: app.fetch,
+  scheduled: handleScheduled,
+};

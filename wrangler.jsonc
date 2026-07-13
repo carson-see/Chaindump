@@ -21,6 +21,9 @@
   ],
   "observability": {
     "enabled": true
+  },
+  "triggers": {
+    "crons": ["*/5 * * * *"]
   }
   // Runtime secrets/vars (set via `wrangler secret put <NAME>` or the dashboard, not here):
   //   COINGECKO_API_KEY  - optional, raises CoinGecko rate limits
