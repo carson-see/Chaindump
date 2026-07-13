@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <base href="/" />
 <title>Chaindump — Onchain Intelligence</title>
-<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<!-- cytoscape (~365KB) is lazy-loaded on demand by ensureCytoscape(), only when
+     the Scam Tracker "Connection web" graph is opened — it must NOT block the
+     render path of every page. -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <!-- Non-render-blocking: page paints immediately with the system-font fallback
@@ -61,7 +63,7 @@
   .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:20px 0 16px; }
   .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
   .card .label { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
-  .card .val { font-size:21px; font-weight:700; margin-top:5px; font-variant-numeric:tabular-nums; }
+  .card .val { font-size:21px; font-weight:600; margin-top:5px; font-family:var(--font-mono); font-variant-numeric:tabular-nums; letter-spacing:-0.01em; }
   .card .val.v{color:var(--accent)} .card .val.t{color:var(--accent2)} .card .val.f{color:var(--purple)} .card .val.u{color:var(--green)}
 
   .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
@@ -1692,9 +1694,26 @@ function renderTraces(data){
     <div id="tracelookup"></div>${panel}<div class="gwrap" style="grid-template-columns:1fr">${cards}</div>`;
   if (state.traceResults) renderTraceResults(state.traceResults);
 }
+// Load cytoscape (~365KB) on demand — only the Scam Tracker graph needs it, so
+// it stays off the critical path for every other page.
+let _cytoLoad = null;
+function ensureCytoscape(){
+  if (typeof cytoscape !== 'undefined') return Promise.resolve();
+  if (_cytoLoad) return _cytoLoad;
+  _cytoLoad = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js';
+    s.onload = resolve;
+    s.onerror = () => { _cytoLoad = null; reject(new Error('cytoscape load failed')); };
+    document.head.appendChild(s);
+  });
+  return _cytoLoad;
+}
 async function renderScamWeb(){
-  const host = document.getElementById('scamweb'); if (!host) return;
-  if (typeof cytoscape === 'undefined') { host.innerHTML = '<div class="skel">Graph library loading… reload if this persists.</div>'; return; }
+  let host = document.getElementById('scamweb'); if (!host) return;
+  host.innerHTML = '<div class="skel">Loading graph…</div>';
+  try { await ensureCytoscape(); } catch(e){ host.innerHTML = '<div class="skel">Couldn\'t load the graph library — check your connection and retry.</div>'; return; }
+  host = document.getElementById('scamweb'); if (!host) return; // re-fetch: view may have re-rendered during the async load
   let g = state.scamGraph;
   if (!g) { try { g = await fetch('api/scam-graph').then(r=>r.json()); state.scamGraph = g; } catch(e){ host.innerHTML = '<div class="skel">Couldn\'t load graph.</div>'; return; } }
   if (!g.nodes || !g.nodes.length) { host.innerHTML = '<div class="skel">No traced flows yet.</div>'; return; }
@@ -1702,6 +1721,7 @@ async function renderScamWeb(){
     ...g.nodes.map(n => ({ data: { id: n.id, label: n.label, kind: n.actor ? 'actor' : n.infra ? 'infra' : n.shared ? 'shared' : 'norm', deg: n.degree, cases: (n.cases||[]).join(', ') } })),
     ...g.edges.map((e, i) => ({ data: { id: 'e'+i, source: e.source, target: e.target, txurl: e.txurl, label: [e.amount, e.asset].filter(Boolean).join(' '), caseName: e.caseName, note: e.note, sources: e.sources } })),
   ].filter(el => el.data.source === undefined || (g.nodes.find(n=>n.id===el.data.source) && g.nodes.find(n=>n.id===el.data.target)));
+  host.innerHTML = ''; // clear the "Loading graph…" placeholder before cytoscape mounts
   const cy = cytoscape({
     container: host, elements: els,
     style: [
