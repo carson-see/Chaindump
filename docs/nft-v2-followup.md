@@ -13,9 +13,18 @@ studies" (content) deferred by Carson to a separate effort.
    hand-curated lifecycle deep-dives (in the `nft_collections` table). Keep the
    depth/detail of the existing cards (mint economics, holder/founder
    engagement, royalties, lifespan, community history) — that detail is
-   explicitly liked. Add more collections across more chains, successful and
-   failed. This is research/content generation (likely a multi-agent pass with
-   sourcing), not a UI change.
+   explicitly liked. Research/content generation (verified multi-agent pass).
+
+   **Angle Carson wants (2026-07-13):** cover the full lifecycle spectrum, with
+   the *why* as the payload (our value is analysis + aggregation, not a list):
+   - **Persisted** — projects still alive/relevant. WHY? active community?
+     shipped products? successful pivots?
+   - **Dead / dying** — the collapses and what killed them.
+   - **Successful beyond web3** — collections/IP that broke out into mainstream
+     brands, products, media (e.g. the Pudgy Penguins toys-at-Walmart arc) —
+     what made them transcend the NFT floor.
+   Group/tag case studies along this spectrum so the section reads as an
+   analysis of NFT outcomes, not a directory.
 
 3. ✅ **DONE — Group by chain instead of one flat list** — the catalog is now
    collapsible chain folders (Ethereum 802 ▸, Solana 356 ▸, Ordinals 171 ▸,
