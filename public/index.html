@@ -357,6 +357,19 @@
   .catbtn:disabled { opacity:.4; cursor:default; }
   .catbtn:not(:disabled):hover { border-color:var(--accent2); }
   @media(max-width:760px){ .catstats{grid-template-columns:repeat(2,1fr)} }
+  /* NFT catalog — chain folders */
+  .chainfolders { display:flex; flex-direction:column; gap:8px; }
+  .chainfolder { border:1px solid var(--border); border-radius:11px; overflow:hidden; background:var(--surface); }
+  .chainfolder.open { border-color:var(--border-strong,var(--border)); }
+  .folderhead { display:flex; align-items:center; gap:11px; padding:13px 16px; cursor:pointer; user-select:none; }
+  .folderhead:hover { background:var(--bg); }
+  .foldercaret { color:var(--muted); font-size:12px; width:12px; }
+  .folderico { font-size:16px; }
+  .foldername { flex:1; font-weight:700; color:var(--fg); font-size:14px; }
+  .foldercount { color:var(--muted2); font-size:12.5px; background:var(--bg); border:1px solid var(--border); border-radius:20px; padding:2px 10px; }
+  .folderbody { padding:4px 14px 16px; }
+  .folderbody .gwrap { grid-template-columns:repeat(2,1fr); gap:12px; }
+  @media(max-width:680px){ .folderbody .gwrap{grid-template-columns:1fr} }
   /* RWA / DePIN live rankings */
   .rllist { display:flex; flex-direction:column; border:1px solid var(--border); border-radius:12px; overflow:hidden; }
   .rlrow { display:flex; align-items:center; gap:12px; padding:10px 14px; border-bottom:1px solid var(--border); font-size:13.5px; }
@@ -470,7 +483,7 @@
 </div>
 
 <script>
-let state = { chains: [], sortKey: 'rank', dir: 1, q: '', expanded: null, details: {}, graveExpanded: null, graveData: null, midExpanded: null, midData: null, nftExpanded: null, nftData: null, infraExpanded: null, infraData: null, graveFilter: 'all', marketsExpanded: null, marketsData: null, stablesExpanded: null, stablesData: null, geoExpanded: null, geoData: null, rwaExpanded: null, rwaData: null, usData: null, usSelected: null, newsData: null, powerData: null, powerExpanded: null, tracesData: null, tracesExpanded: null, activeView: 'live', traceQuery: '', traceResults: null, tracesMode: 'cases', scamGraph: null, catalog: { q: '', chain: '', page: 1, data: null, expanded: null, detailCache: {}, loading: false } };
+let state = { chains: [], sortKey: 'rank', dir: 1, q: '', expanded: null, details: {}, graveExpanded: null, graveData: null, midExpanded: null, midData: null, nftExpanded: null, nftData: null, infraExpanded: null, infraData: null, graveFilter: 'all', marketsExpanded: null, marketsData: null, stablesExpanded: null, stablesData: null, geoExpanded: null, geoData: null, rwaExpanded: null, rwaData: null, usData: null, usSelected: null, newsData: null, powerData: null, powerExpanded: null, tracesData: null, tracesExpanded: null, activeView: 'live', traceQuery: '', traceResults: null, tracesMode: 'cases', scamGraph: null, catalog: { q: '', page: 1, facets: null, total: 0, openChains: {}, searchData: null, expanded: null, detailCache: {}, loading: false }, nftCaseQuery: '' };
 
 const fmtUsd = (n) => n == null ? '—' : (n < 0 ? '-' : '') + '$' + Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(Math.abs(n));
 const fmtNum = (n) => n == null ? '—' : Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
@@ -907,7 +920,9 @@ function renderNft(data){
     </div><div class="gnar muted" style="margin-bottom:10px">Note: the stats above are across the ${data.collections.length} in-depth case studies (blue-chips + notable failures), not a market average — a broader live dataset of hundreds of collections is loading.</div>`}
     ${data.analysis?accordion('Lifecycle analysis — what the data says', data.analysis.text, true):'<div class="gnar muted">Aggregate analysis compiling…</div>'}
   </div>`;
-  const cards = data.collections.map(c => {
+  const caseQ = state.nftCaseQuery || '';
+  const caseList = caseQ ? data.collections.filter(c => (c.name||'').toLowerCase().includes(caseQ) || (c.chain||'').toLowerCase().includes(caseQ) || (c.status||'').toLowerCase().includes(caseQ)) : data.collections;
+  const cards = caseList.map(c => {
     const p = c.profile || {};
     const open = state.nftExpanded === c.slug;
     const icon = CHAIN_ICON[(c.chain||'').toLowerCase()] || '◆';
@@ -942,103 +957,169 @@ function renderNft(data){
       <div class="gexpand">${open?'Hide details ▲':'Full lifecycle ▾'}</div>
     </div>`;
   }).join('');
-  el.innerHTML = `<div class="gvintro">NFT &amp; Ordinals lifecycle library — ${data.collections.length} in-depth case studies across mint economics, holder/founder engagement, royalties, and lifespan.</div>${panel}<div class="dsec" style="margin:20px 0 10px">Deep-dive case studies</div><div class="gwrap">${cards}</div>
-  <div class="dsec" style="margin:28px 0 4px">Browse the full catalog</div>
-  <div class="gnar muted" style="margin-bottom:12px">Every NFT &amp; Ordinals collection tracked across chains — search by name, filter by chain, open any card for live floor, market cap, 24h volume and holders.</div>
+  el.innerHTML = `<div class="gvintro">NFT &amp; Ordinals lifecycle library — ${data.collections.length} in-depth case studies across mint economics, holder/founder engagement, royalties, and lifespan.</div>${panel}<div class="dsec" style="margin:20px 0 10px">Deep-dive case studies</div>
+  <div class="catbar"><input id="casesearch" class="catsearch" placeholder="Search case studies by name, chain or status…" value="${esc(caseQ)}" /></div>
+  <div class="gwrap">${cards || '<div class="skel">No case studies match.</div>'}</div>
+  <div class="dsec" style="margin:28px 0 4px">Browse the full catalog by chain</div>
+  <div class="gnar muted" style="margin-bottom:12px">Every NFT &amp; Ordinals collection tracked, grouped by chain — open a chain to browse its collections, or search across all chains. Each card opens live floor, market cap, 24h volume and holders.</div>
   <div id="nftcatalog"></div>`;
   renderCatalog();
-  if (!state.catalog.data) loadCatalog();
+  if (!state.catalog.facets) loadCatalog();
 }
 
-// ---- Live NFT catalog: searchable / filterable / paginated ----
+// ---- Live NFT catalog: group-by-chain folders + cross-chain search ----
+function catCardHtml(c, cat){
+  const open = cat.expanded === c.id;
+  const det = cat.detailCache[c.id];
+  const icon = CHAIN_ICON[(c.chain||'').toLowerCase()] || '◆';
+  let detHtml = '';
+  if (open) {
+    if (det === 'loading') detHtml = `<div class="gexp"><div class="skel">Loading live data…</div></div>`;
+    else if (det && det.error) detHtml = `<div class="gexp"><div class="muted">Live data unavailable for this collection.</div></div>`;
+    else if (det) detHtml = `<div class="gexp catexp">
+      ${det.thumb?`<img class="catthumb" src="${esc(det.thumb)}" alt="" onerror="this.remove()"/>`:''}
+      <div class="catstats">
+        <div class="catstat"><span>${det.floorUsd!=null?fmtUsd(det.floorUsd):'—'}</span><label>Floor${det.nativeSymbol&&det.floorNative!=null?` · ${det.floorNative} ${esc(det.nativeSymbol)}`:''}</label></div>
+        <div class="catstat"><span>${det.mcapUsd!=null?fmtUsd(det.mcapUsd):'—'}</span><label>Market cap</label></div>
+        <div class="catstat"><span>${det.vol24hUsd!=null?fmtUsd(det.vol24hUsd):'—'}</span><label>24h volume</label></div>
+        <div class="catstat"><span>${det.holders!=null?fmtNum(det.holders):'—'}</span><label>Holders</label></div>
+        <div class="catstat"><span>${det.supply!=null?fmtNum(det.supply):'—'}</span><label>Supply</label></div>
+        ${det.floorChange24h!=null?`<div class="catstat"><span class="${det.floorChange24h>=0?'up':'down'}">${det.floorChange24h>=0?'▲':'▼'} ${Math.abs(det.floorChange24h)}%</span><label>Floor 24h</label></div>`:''}
+      </div>
+      ${det.desc?`<div class="gbody" style="margin-top:8px">${esc(det.desc)}</div>`:''}
+      <div class="catlinks">${det.coingecko?`<a href="${esc(det.coingecko)}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a>`:''}${det.homepage?` · <a href="${esc(det.homepage)}" target="_blank" rel="noopener noreferrer">Website ↗</a>`:''}${det.twitter?` · <a href="${esc(det.twitter)}" target="_blank" rel="noopener noreferrer">X ↗</a>`:''}</div>
+    </div>`;
+  }
+  return `<div class="gcard catcard ${open?'open':''}" data-id="${esc(c.id)}">
+    <div class="ghead"><div class="gname">${icon} ${esc(c.name)}${c.symbol?` <span class="muted" style="font-weight:400">${esc(c.symbol)}</span>`:''}</div></div>
+    <div class="gmeta">${esc(chainLabel(c.chain))}</div>
+    ${detHtml}
+    <div class="gexpand">${open?'Hide ▲':'Live floor, mcap, holders ▾'}</div>
+  </div>`;
+}
 function renderCatalog(){
   const el = document.getElementById('nftcatalog');
   if (!el) return;
   const cat = state.catalog;
-  const d = cat.data;
-  const chainOpts = (d && d.chains || []).map(f => `<option value="${esc(f.chain)}" ${cat.chain===f.chain?'selected':''}>${esc(chainLabel(f.chain))} (${f.n})</option>`).join('');
   const controls = `<div class="catbar">
-    <input id="catsearch" class="catsearch" placeholder="Search ${d?d.total:''} collections…" value="${esc(cat.q)}" />
-    <select id="catchain" class="catchain"><option value="">All chains</option>${chainOpts}</select>
+    <input id="catsearch" class="catsearch" placeholder="Search ${cat.total?cat.total.toLocaleString():''} collections across all chains…" value="${esc(cat.q)}" />
   </div>`;
   let body;
-  if (!d) { body = `<div class="skel">Loading catalog…</div>`; }
-  else if (!d.collections.length) { body = `<div class="skel">No collections match.</div>`; }
-  else {
-    const cards = d.collections.map(c => {
-      const open = cat.expanded === c.id;
-      const det = cat.detailCache[c.id];
-      const icon = CHAIN_ICON[(c.chain||'').toLowerCase()] || '◆';
-      let detHtml = '';
-      if (open) {
-        if (det === 'loading') detHtml = `<div class="gexp"><div class="skel">Loading live data…</div></div>`;
-        else if (det && det.error) detHtml = `<div class="gexp"><div class="muted">Live data unavailable for this collection.</div></div>`;
-        else if (det) detHtml = `<div class="gexp catexp">
-          ${det.thumb?`<img class="catthumb" src="${esc(det.thumb)}" alt="" onerror="this.remove()"/>`:''}
-          <div class="catstats">
-            <div class="catstat"><span>${det.floorUsd!=null?fmtUsd(det.floorUsd):'—'}</span><label>Floor${det.nativeSymbol&&det.floorNative!=null?` · ${det.floorNative} ${esc(det.nativeSymbol)}`:''}</label></div>
-            <div class="catstat"><span>${det.mcapUsd!=null?fmtUsd(det.mcapUsd):'—'}</span><label>Market cap</label></div>
-            <div class="catstat"><span>${det.vol24hUsd!=null?fmtUsd(det.vol24hUsd):'—'}</span><label>24h volume</label></div>
-            <div class="catstat"><span>${det.holders!=null?fmtNum(det.holders):'—'}</span><label>Holders</label></div>
-            <div class="catstat"><span>${det.supply!=null?fmtNum(det.supply):'—'}</span><label>Supply</label></div>
-            ${det.floorChange24h!=null?`<div class="catstat"><span class="${det.floorChange24h>=0?'up':'down'}">${det.floorChange24h>=0?'▲':'▼'} ${Math.abs(det.floorChange24h)}%</span><label>Floor 24h</label></div>`:''}
-          </div>
-          ${det.desc?`<div class="gbody" style="margin-top:8px">${esc(det.desc)}</div>`:''}
-          <div class="catlinks">${det.coingecko?`<a href="${esc(det.coingecko)}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a>`:''}${det.homepage?` · <a href="${esc(det.homepage)}" target="_blank" rel="noopener noreferrer">Website ↗</a>`:''}${det.twitter?` · <a href="${esc(det.twitter)}" target="_blank" rel="noopener noreferrer">X ↗</a>`:''}</div>
-        </div>`;
-      }
-      return `<div class="gcard catcard ${open?'open':''}" data-id="${esc(c.id)}">
-        <div class="ghead"><div class="gname">${icon} ${esc(c.name)}${c.symbol?` <span class="muted" style="font-weight:400">${esc(c.symbol)}</span>`:''}</div></div>
-        <div class="gmeta">${esc(chainLabel(c.chain))}</div>
-        ${detHtml}
-        <div class="gexpand">${open?'Hide ▲':'Live floor, mcap, holders ▾'}</div>
+  if (cat.q) {
+    // search mode: flat cross-chain results
+    const d = cat.searchData;
+    if (!d) body = `<div class="skel">Searching…</div>`;
+    else if (!d.collections.length) body = `<div class="skel">No collections match “${esc(cat.q)}”.</div>`;
+    else {
+      const cards = d.collections.map(c => catCardHtml(c, cat)).join('');
+      const pg = `<div class="catpager">
+        <button class="catbtn" ${cat.page<=1?'disabled':''} data-pg="prev">← Prev</button>
+        <span class="muted">Page ${d.page} of ${d.pages||1} · ${d.total} match${d.total===1?'':'es'} across all chains</span>
+        <button class="catbtn" ${cat.page>=(d.pages||1)?'disabled':''} data-pg="next">Next →</button>
       </div>`;
-    }).join('');
-    const pg = `<div class="catpager">
-      <button class="catbtn" ${cat.page<=1?'disabled':''} data-pg="prev">← Prev</button>
-      <span class="muted">Page ${d.page} of ${d.pages||1} · ${d.total} collections</span>
-      <button class="catbtn" ${cat.page>=(d.pages||1)?'disabled':''} data-pg="next">Next →</button>
-    </div>`;
-    body = `<div class="gwrap">${cards}</div>${pg}`;
+      body = `<div class="gwrap">${cards}</div>${pg}`;
+    }
+  } else if (!cat.facets) {
+    body = `<div class="skel">Loading catalog…</div>`;
+  } else {
+    // folder mode: each chain is a collapsible folder, collections lazy-loaded inside
+    body = `<div class="chainfolders">` + cat.facets.map(f => {
+      const oc = cat.openChains[f.chain];
+      const open = !!oc;
+      const icon = CHAIN_ICON[(f.chain||'').toLowerCase()] || '◆';
+      let inner = '';
+      if (open) {
+        if (oc.loading && !oc.data) inner = `<div class="skel" style="padding:16px">Loading…</div>`;
+        else if (oc.data) {
+          const cards = (oc.data.collections||[]).map(c => catCardHtml(c, cat)).join('');
+          const shown = (oc.data.page||1) * (oc.data.perPage||30);
+          const more = (oc.data.page < oc.data.pages)
+            ? `<div class="catpager"><button class="catbtn" data-more="${esc(f.chain)}">Load more (${Math.min(shown, oc.data.total)} of ${oc.data.total})</button></div>`
+            : `<div class="muted" style="text-align:center;padding:8px;font-size:12px">All ${oc.data.total} shown</div>`;
+          inner = `<div class="folderbody"><div class="gwrap">${cards}</div>${more}</div>`;
+        }
+      }
+      return `<div class="chainfolder ${open?'open':''}">
+        <div class="folderhead" data-folder="${esc(f.chain)}">
+          <span class="foldercaret">${open?'▾':'▸'}</span>
+          <span class="folderico">${icon}</span>
+          <span class="foldername">${esc(chainLabel(f.chain))}</span>
+          <span class="foldercount">${f.n.toLocaleString()}</span>
+        </div>
+        ${inner}
+      </div>`;
+    }).join('') + `</div>`;
   }
   el.innerHTML = controls + body;
 }
 let catSearchTimer = null;
-async function loadCatalog(){
+async function loadCatalogFacets(){
   const cat = state.catalog;
-  cat.loading = true;
   try {
-    const url = `api/nft-catalog?page=${cat.page}&q=${encodeURIComponent(cat.q)}&chain=${encodeURIComponent(cat.chain)}`;
-    cat.data = await fetch(url).then(r=>r.json());
-  } catch(e) { cat.data = { collections: [], total: 0, chains: [], error: e.message }; }
-  cat.loading = false;
+    const d = await fetch('/api/nft-catalog?per=10&page=1').then(r=>r.json());
+    cat.facets = d.chains || []; cat.total = d.total || 0;
+  } catch(e) { cat.facets = []; }
   renderCatalog();
 }
+async function loadCatalogSearch(){
+  const cat = state.catalog;
+  try { cat.searchData = await fetch(`/api/nft-catalog?q=${encodeURIComponent(cat.q)}&page=${cat.page}`).then(r=>r.json()); }
+  catch(e){ cat.searchData = { collections:[], total:0 }; }
+  renderCatalog();
+}
+async function toggleChainFolder(chain){
+  const cat = state.catalog;
+  if (cat.openChains[chain]) { delete cat.openChains[chain]; renderCatalog(); return; }
+  cat.openChains[chain] = { loading: true, data: null };
+  renderCatalog();
+  try { cat.openChains[chain] = { loading: false, data: await fetch(`/api/nft-catalog?chain=${encodeURIComponent(chain)}&page=1&per=30`).then(r=>r.json()) }; }
+  catch(e){ cat.openChains[chain] = { loading:false, data:{collections:[],total:0,pages:1,page:1,perPage:30} }; }
+  renderCatalog();
+}
+async function chainFolderMore(chain){
+  const cat = state.catalog; const oc = cat.openChains[chain]; if (!oc || !oc.data) return;
+  try {
+    const d = await fetch(`/api/nft-catalog?chain=${encodeURIComponent(chain)}&page=${(oc.data.page||1)+1}&per=30`).then(r=>r.json());
+    oc.data.collections = (oc.data.collections||[]).concat(d.collections||[]); oc.data.page = d.page;
+  } catch(e){}
+  renderCatalog();
+}
+async function loadCatalog(){ await loadCatalogFacets(); }
 async function loadCatalogDetail(id){
   const cat = state.catalog;
   if (cat.detailCache[id] && cat.detailCache[id] !== 'loading') { renderCatalog(); return; }
   cat.detailCache[id] = 'loading'; renderCatalog();
-  try { cat.detailCache[id] = await fetch('api/nft-collection/'+encodeURIComponent(id)).then(r=>r.json()); }
+  try { cat.detailCache[id] = await fetch('/api/nft-collection/'+encodeURIComponent(id)).then(r=>r.json()); }
   catch(e) { cat.detailCache[id] = { error: true }; }
   renderCatalog();
 }
 document.getElementById('nftview').addEventListener('input', (e) => {
   if (e.target.id === 'catsearch') {
     state.catalog.q = e.target.value.trim(); state.catalog.page = 1;
-    clearTimeout(catSearchTimer); catSearchTimer = setTimeout(loadCatalog, 280);
+    clearTimeout(catSearchTimer); catSearchTimer = setTimeout(() => { if (state.catalog.q) loadCatalogSearch(); else renderCatalog(); }, 280);
+  } else if (e.target.id === 'casesearch') {
+    state.nftCaseQuery = e.target.value.trim().toLowerCase();
+    const caret = e.target.selectionStart;
+    clearTimeout(catSearchTimer); catSearchTimer = setTimeout(() => {
+      renderNft(state.nftData);
+      const inp = document.getElementById('casesearch');
+      if (inp) { inp.focus(); try { inp.setSelectionRange(caret, caret); } catch(e){} }
+    }, 200);
   }
 });
-document.getElementById('nftview').addEventListener('change', (e) => {
-  if (e.target.id === 'catchain') { state.catalog.chain = e.target.value; state.catalog.page = 1; loadCatalog(); }
-});
 document.getElementById('nftview').addEventListener('click', (e) => {
+  const fh = e.target.closest('.folderhead');
+  if (fh) { toggleChainFolder(fh.dataset.folder); return; }
+  const more = e.target.closest('[data-more]');
+  if (more) { chainFolderMore(more.dataset.more); return; }
   const pg = e.target.closest('[data-pg]');
-  if (pg) { state.catalog.page += pg.dataset.pg === 'next' ? 1 : -1; loadCatalog(); window.scrollTo({top: document.getElementById('nftcatalog').offsetTop - 20, behavior:'smooth'}); return; }
+  if (pg) { state.catalog.page += pg.dataset.pg === 'next' ? 1 : -1; loadCatalogSearch(); window.scrollTo({top: document.getElementById('nftcatalog').offsetTop - 20, behavior:'smooth'}); return; }
   const card = e.target.closest('.catcard');
   if (card) {
     const id = card.dataset.id;
-    state.catalog.expanded = state.catalog.expanded === id ? null : id;
-    if (state.catalog.expanded) loadCatalogDetail(id); else renderCatalog();
+    const opening = state.catalog.expanded !== id;
+    state.catalog.expanded = opening ? id : null;
+    if (opening) { loadCatalogDetail(id); pushEntity('collection', id); } else renderCatalog();
   }
 });
 async function loadNft(){
