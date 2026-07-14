@@ -15,6 +15,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { gateProposal, sanitizeSlug, buildRecord } from "./proposal.js";
 
 const MCP_URL = process.env.CHAINDUMP_MCP_URL || "https://chaindump-mcp-270018525501.us-central1.run.app/mcp";
 const QUEUE_DIR = process.env.DESK_QUEUE_DIR || "./proposals";
@@ -46,7 +47,7 @@ async function tryPostProposal(record: unknown): Promise<boolean> {
 async function persistProposal(dataset: string, slug: string, record: unknown): Promise<string> {
   if (await tryPostProposal(record)) return "the review queue (/api/desk/propose)";
   await mkdir(QUEUE_DIR, { recursive: true });
-  const safeSlug = slug.replace(/[^a-z0-9-]/gi, "-").slice(0, 80);
+  const safeSlug = sanitizeSlug(slug);
   await writeFile(join(QUEUE_DIR, `${dataset}.${safeSlug}.json`), JSON.stringify(record, null, 2), "utf8");
   return `a local file (${QUEUE_DIR})`;
 }
@@ -76,8 +77,8 @@ const queueProposal = tool(
     confidence: z.number().min(0).max(1).describe("0-1 confidence in the finding."),
   },
   async (args) => {
-    const needsHumanReview = args.names_individuals || args.confidence < 0.75;
-    const record = { ...args, needs_human_review: needsHumanReview, queued_at: new Date().toISOString() };
+    const record = buildRecord(args, new Date().toISOString());
+    const needsHumanReview = record.needs_human_review;
     const persisted = await persistProposal(args.dataset, args.slug, record);
     return {
       content: [
