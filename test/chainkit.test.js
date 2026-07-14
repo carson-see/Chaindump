@@ -272,7 +272,7 @@ describe('review fixes (adversarial)', () => {
       { name: 'Target', tvl: 1e9, volume24h: 1e8, fees24h: 1e5, stables: 3e8 },
       { name: 'Only', tvl: 9e8, volume24h: 9e7, fees24h: 9e4, stables: 2.9e8 },
     ];
-    expect(similarChains('Target', universe, { k: 6 }).length).toBe(1);
+    expect(similarChains('Target', universe, { k: 6 })).toHaveLength(1);
   });
   it('hysteresis is idempotent — feeding its own output back as prior yields the same list', () => {
     const universe = [

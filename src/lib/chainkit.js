@@ -118,8 +118,8 @@ export function resolveCategory(name, derived) {
 // otherwise "basic". Premortem M3: a top-50 chain whose enrichment fetch failed
 // must not be labelled full.
 export function coverageTier(row) {
-  const enriched = ['feeYield', 'turnover', 'pf'].filter((k) => row && row[k] != null).length;
-  return (Array.isArray(row && row.signals) || enriched >= 2) ? 'full' : 'basic';
+  const enriched = ['feeYield', 'turnover', 'pf'].filter((k) => row?.[k] != null).length;
+  return (Array.isArray(row?.signals) || enriched >= 2) ? 'full' : 'basic';
 }
 
 // ---- data-driven similarity ---------------------------------------------
@@ -134,7 +134,11 @@ const lg = (x) => Math.log10(Math.max(0, Number(x) || 0) + 1);
 // Coerce to a finite number or null. NaN/Infinity/undefined → null (unknown),
 // never a measured 0 — otherwise a bad upstream value would fabricate similarity
 // and skew the standardization stats (review H2).
-const num = (x) => { if (x == null) return null; const n = Number(x); return Number.isFinite(n) ? n : null; };
+const num = (x) => {
+  if (x == null) return null;
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+};
 
 // Raw (pre-standardization) feature values. null = unknown (caller passes null,
 // never 0, for absent metrics). feeYield/turnover derive from tvl+fees+vol so
@@ -142,13 +146,16 @@ const num = (x) => { if (x == null) return null; const n = Number(x); return Num
 export function rawFeatures(c) {
   const tvl = num(c.tvl), fees = num(c.fees24h), vol = num(c.volume24h);
   const stables = num(c.stables), fY = num(c.feeYield), tO = num(c.turnover);
+  const hasTvl = tvl != null && tvl > 0;
+  const derivedFeeYield = hasTvl && fees != null ? (fees * 365) / tvl * 100 : null;
+  const derivedTurnover = hasTvl && vol != null ? vol / tvl : null;
   return {
-    ltvl: tvl != null && tvl > 0 ? lg(tvl) : null,
+    ltvl: hasTvl ? lg(tvl) : null,
     lvol: vol != null ? lg(vol) : null,
     lfee: fees != null ? lg(fees) : null,
-    feeYield: fY != null ? fY : (tvl != null && tvl > 0 && fees != null ? (fees * 365) / tvl * 100 : null),
-    turnover: tO != null ? tO : (tvl != null && tvl > 0 && vol != null ? vol / tvl : null),
-    stablesShare: tvl != null && tvl > 0 && stables != null ? stables / tvl : null,
+    feeYield: fY != null ? fY : derivedFeeYield,
+    turnover: tO != null ? tO : derivedTurnover,
+    stablesShare: hasTvl && stables != null ? stables / tvl : null,
   };
 }
 
@@ -178,6 +185,14 @@ function euclidean(a, b) {
   let s = 0;
   for (let i = 0; i < a.length; i++) s += (a[i] - b[i]) ** 2;
   return Math.sqrt(s);
+}
+
+// Peer ordering: same-category tier first, then nearest by distance, then a
+// stable key tiebreak so results are deterministic across runs.
+function byTier(a, b) {
+  if (a.sameCategory !== b.sameCategory) return a.sameCategory ? -1 : 1;
+  if (a.distance !== b.distance) return a.distance - b.distance;
+  return a.key.localeCompare(b.key);
 }
 
 // Rank ALL candidates for a target (pre-hysteresis, pre-slice). Category is a
@@ -216,11 +231,7 @@ export function rankCandidates(targetName, chains) {
     });
   }
   // hard tier: category peers first, then metric; deterministic within tier
-  out.sort((a, b) => {
-    if (a.sameCategory !== b.sameCategory) return a.sameCategory ? -1 : 1;
-    if (a.distance !== b.distance) return a.distance - b.distance;
-    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
-  });
+  out.sort(byTier);
   return out;
 }
 
@@ -251,12 +262,7 @@ export function applyHysteresis(ranked, priorKeys, k, margin) {
     const challenger = result[weakestIdx];
     if (sim(challenger) - sim(inc) <= margin) result[weakestIdx] = inc; // not a clear win → keep incumbent
   }
-  // re-sort to preserve tier + distance ordering after any swaps
-  result.sort((a, b) => {
-    if (a.sameCategory !== b.sameCategory) return a.sameCategory ? -1 : 1;
-    if (a.distance !== b.distance) return a.distance - b.distance;
-    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
-  });
+  result.sort(byTier); // preserve tier + distance ordering after any swaps
   return result.slice(0, k);
 }
 
