@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 import { prefersMarkdown } from './lib/negotiate.js';
+import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck } from './lib/x402.js';
 
 const ENV = {};
 const app = new Hono();
@@ -1462,43 +1463,82 @@ app.get('/api/power', wrap(async (req, res) => {
 // Gasless (EIP-3009), built-in KYT/OFAC screening, free 1k tx/mo. Go-live needs:
 //   X402_PAY_TO = your Base receiving wallet
 //   CDP_API_KEY_ID + CDP_API_KEY_SECRET (from portal.cdp.coinbase.com) for the facilitator SDK
-const X402 = {
-  get payTo() { return ENV.X402_PAY_TO || '0xee321Ac2315e6b60c2dEE4E989767C79b73e6f0d'; },
-  get network() { return ENV.X402_NETWORK || 'base'; },
-  get asset() { return ENV.X402_ASSET || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; }, // USDC on Base
-  get facilitator() { return ENV.X402_FACILITATOR || 'coinbase-cdp'; },
-};
+// Payment config, resolved from env at call time. No hardcoded payTo fallback:
+// with X402_PAY_TO unset, payTo is null → isLiveMode() is false → we run in demo
+// mode and never bill. X402_FACILITATOR must be an http(s) URL to go live (the
+// default 'coinbase-cdp' sentinel keeps us in demo until a facilitator is wired).
+function x402Config() {
+  return {
+    payTo: ENV.X402_PAY_TO || null,
+    network: ENV.X402_NETWORK || 'base',
+    asset: ENV.X402_ASSET || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
+    facilitator: ENV.X402_FACILITATOR || 'coinbase-cdp',
+  };
+}
 const AGENT_ENDPOINTS = {
   '/api/agent/summary': { price: 5000, desc: 'Market posture + top signals across all chains' },      // 0.005 USDC
   '/api/agent/chain': { price: 10000, desc: 'Full sourced profile + metrics + signals for one chain' }, // 0.01
   '/api/agent/signals': { price: 20000, desc: 'Live signal feed (momentum, flows, anomalies)' },       // 0.02
   '/api/agent/risk': { price: 50000, desc: 'Scam / bad-actor risk assessment with cited evidence' },   // 0.05 (compliance)
 };
-const USDC_DP = 1e6;
-function require402(res, resource, priceAtomic, desc) {
+// 402 body advertising what a caller must pay. `error` is 'payment_required' when
+// no/again-needed payment (discovery), 'payment_invalid' when a payment was
+// supplied but failed structural or facilitator verification.
+function require402(res, resource, priceAtomic, desc, opts = {}) {
+  const cfg = x402Config();
   res.status(402).json({
     x402Version: 1,
-    error: 'payment_required',
-    accepts: [{
-      scheme: 'exact', network: X402.network, maxAmountRequired: String(priceAtomic),
-      resource, description: desc, mimeType: 'application/json',
-      payTo: X402.payTo, asset: X402.asset, maxTimeoutSeconds: 60,
-    }],
+    error: opts.error || 'payment_required',
+    ...(opts.reason ? { reason: opts.reason } : {}),
+    accepts: [paymentRequirements(resource, priceAtomic, desc, cfg)],
   });
+}
+// POST to the facilitator (verify/settle). Throws on a non-2xx so the gate can
+// fail closed. Isolated here so it's the single network seam the gate depends on.
+async function facilitatorPost(base, path, body) {
+  const url = base.replace(/\/+$/, '') + path;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error('facilitator ' + path + ' -> ' + r.status);
+  return await r.json();
 }
 // Free preview quota: each client gets FREE_LIMIT calls/month, then x402 payment required.
 const FREE_LIMIT = 1;
 const freeQuota = {}; // ip -> { count, monthKey }
-function monthKey() { const d = new Date(); return d.getUTCFullYear() + '-' + d.getUTCMonth(); }
-function x402Gate(req, res, baseResource, priceAtomic, desc) {
-  const pay = req.headers['x-payment'];
-  // SECURITY(go-live blocker): a non-empty X-PAYMENT is currently trusted without
-  // on-chain verification. Before enabling real billing, verify the payment via the
-  // CDP facilitator here — otherwise any client sends `X-PAYMENT: x` for free access.
-  if (pay) return true;
-  // Key the free quota on Cloudflare's trusted client IP. X-Forwarded-For is
-  // client-supplied (leftmost value spoofable), so it must NOT be trusted for
-  // rate limiting — an attacker could rotate it to get unlimited free calls.
+function monthKey() { return monthKeyFromDate(new Date()); }
+// Gate an agent endpoint. Returns true to let the handler run, false after it
+// has written a 402. Async because live mode calls the facilitator.
+//   demo mode (no wallet/facilitator): X-PAYMENT is IGNORED — never a bypass —
+//     and access is granted only within the free monthly quota.
+//   live mode: require a structurally-valid X-PAYMENT for the exact payTo/amount,
+//     then verify + settle it via the facilitator before serving.
+async function x402Gate(req, res, baseResource, priceAtomic, desc) {
+  const cfg = x402Config();
+  if (isLiveMode(cfg)) {
+    const header = req.headers['x-payment'];
+    if (!header) { require402(res, baseResource, priceAtomic, desc); return false; }
+    const payment = decodePaymentHeader(header);
+    const requirements = paymentRequirements(baseResource, priceAtomic, desc, cfg);
+    const chk = structuralCheck(payment, requirements);
+    if (!chk.ok) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: chk.reason }); return false; }
+    let verify;
+    try { verify = await facilitatorPost(cfg.facilitator, '/verify', { x402Version: 1, paymentPayload: payment, paymentRequirements: requirements }); }
+    catch (e) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: 'verify_unavailable' }); return false; }
+    if (!verify || verify.isValid !== true) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: (verify && verify.invalidReason) || 'verify_rejected' }); return false; }
+    let settle;
+    try { settle = await facilitatorPost(cfg.facilitator, '/settle', { x402Version: 1, paymentPayload: payment, paymentRequirements: requirements }); }
+    catch (e) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: 'settle_unavailable' }); return false; }
+    if (!settle || settle.success !== true) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: 'settle_failed' }); return false; }
+    if (settle.transaction) res.setHeader('X-PAYMENT-RESPONSE', String(settle.transaction));
+    return true;
+  }
+  // Demo mode: never trust X-PAYMENT. Key the free quota on Cloudflare's trusted
+  // client IP. X-Forwarded-For is client-supplied (leftmost value spoofable), so
+  // it must NOT be trusted — an attacker could rotate it for unlimited free calls.
   const ip = req.headers['cf-connecting-ip'] || req.ip || 'anon';
   const mk = monthKey();
   let q = freeQuota[ip];
@@ -1511,16 +1551,18 @@ function x402Gate(req, res, baseResource, priceAtomic, desc) {
 
 // Free discovery manifest — how agents learn what's payable and for how much
 app.get('/api/agent/manifest', wrap((req, res) => {
+  const cfg = x402Config();
+  const live = isLiveMode(cfg);
   res.json({
     name: 'Chaindump', description: 'Onchain intelligence — chains, assets, markets, policy & forensics.',
     x402Version: 1, freeCallsPerMonth: FREE_LIMIT,
-    payment: { network: X402.network, asset: X402.asset, payTo: X402.payTo, currency: 'USDC', mode: X402.payTo.startsWith('0x000') ? 'demo' : 'live' },
+    payment: { network: cfg.network, asset: cfg.asset, payTo: live ? cfg.payTo : null, currency: 'USDC', mode: live ? 'live' : 'demo' },
     entrypoints: Object.entries(AGENT_ENDPOINTS).map(([path, v]) => ({ path, priceUsd: v.price / USDC_DP, description: v.desc })),
   });
 }));
 
 app.get('/api/agent/summary', wrap(async (req, res) => {
-  if (!x402Gate(req, res, '/api/agent/summary', AGENT_ENDPOINTS['/api/agent/summary'].price, AGENT_ENDPOINTS['/api/agent/summary'].desc)) return;
+  if (!(await x402Gate(req, res, '/api/agent/summary', AGENT_ENDPOINTS['/api/agent/summary'].price, AGENT_ENDPOINTS['/api/agent/summary'].desc))) return;
   if (!cache.data) cache = await loadSnapshot();
   const c = cache.data.chains || [];
   const all = c.flatMap((x) => x.signals || []);
@@ -1537,7 +1579,7 @@ app.get('/api/agent/summary', wrap(async (req, res) => {
   });
 }));
 app.get('/api/agent/chain/:key', wrap(async (req, res) => {
-  if (!x402Gate(req, res, '/api/agent/chain', AGENT_ENDPOINTS['/api/agent/chain'].price, AGENT_ENDPOINTS['/api/agent/chain'].desc)) return;
+  if (!(await x402Gate(req, res, '/api/agent/chain', AGENT_ENDPOINTS['/api/agent/chain'].price, AGENT_ENDPOINTS['/api/agent/chain'].desc))) return;
   if (!cache.data) cache = await loadSnapshot();
   const row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === String(req.params.key).toLowerCase());
   if (!row) return res.status(404).json({ error: 'unknown_chain' });
@@ -1546,7 +1588,7 @@ app.get('/api/agent/chain/:key', wrap(async (req, res) => {
   res.json({ schema_version: '1.0.0', data_as_of: cache.data.updatedAt, chain: row, analysis, provenance: { sources: ['defillama', 'growthepie', 'coingecko'] } });
 }));
 app.get('/api/agent/signals', wrap(async (req, res) => {
-  if (!x402Gate(req, res, '/api/agent/signals', AGENT_ENDPOINTS['/api/agent/signals'].price, AGENT_ENDPOINTS['/api/agent/signals'].desc)) return;
+  if (!(await x402Gate(req, res, '/api/agent/signals', AGENT_ENDPOINTS['/api/agent/signals'].price, AGENT_ENDPOINTS['/api/agent/signals'].desc))) return;
   if (!cache.data) cache = await loadSnapshot();
   const all = (cache.data.chains || []).flatMap((c) => c.signals || []);
   const rk = { critical: 3, notable: 2, info: 1 };
@@ -1563,7 +1605,7 @@ app.get('/api/agent/signals', wrap(async (req, res) => {
   });
 }));
 app.get('/api/agent/risk/:entity', wrap(async (req, res) => {
-  if (!x402Gate(req, res, '/api/agent/risk', AGENT_ENDPOINTS['/api/agent/risk'].price, AGENT_ENDPOINTS['/api/agent/risk'].desc)) return;
+  if (!(await x402Gate(req, res, '/api/agent/risk', AGENT_ENDPOINTS['/api/agent/risk'].price, AGENT_ENDPOINTS['/api/agent/risk'].desc))) return;
   const name = String(req.params.entity);
   let rows = [];
   try { rows = await dbQuery(`SELECT entity_type, entity_name, level, summary, evidence, sources FROM risk_flags WHERE lower(entity_name)=lower(?)`, [name]); } catch (e) {}
