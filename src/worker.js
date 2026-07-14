@@ -1495,6 +1495,14 @@ function require402(res, resource, priceAtomic, desc, opts = {}) {
     accepts: [paymentRequirements(resource, priceAtomic, desc, cfg)],
   });
 }
+// Transient facilitator outage (network error / timeout / 5xx). This is NOT a
+// payment problem — returning 402 would wrongly tell the caller to re-pay when
+// their authorization may be fine (or already settled). 503 is retryable and
+// leaves the payment authorization reusable.
+function facilitatorUnavailable(res, stage) {
+  res.status(503).json({ x402Version: 1, error: 'facilitator_unavailable', stage, retryable: true });
+  return false;
+}
 // POST to the facilitator (verify/settle). Throws on a non-2xx so the gate can
 // fail closed. Isolated here so it's the single network seam the gate depends on.
 async function facilitatorPost(base, path, body) {
@@ -1540,11 +1548,11 @@ async function verifyLivePayment(req, res, baseResource, priceAtomic, desc, cfg)
   const body = { x402Version: 1, paymentPayload: payment, paymentRequirements: requirements };
   let verify;
   try { verify = await facilitatorPost(cfg.facilitator, '/verify', body); }
-  catch { return deny('verify_unavailable'); }
+  catch { return facilitatorUnavailable(res, 'verify'); } // transient → 503 retryable, not a payment rejection
   if (verify?.isValid !== true) return deny(verify?.invalidReason || 'verify_rejected');
   let settle;
   try { settle = await facilitatorPost(cfg.facilitator, '/settle', body); }
-  catch { return deny('settle_unavailable'); }
+  catch { return facilitatorUnavailable(res, 'settle'); }
   if (settle?.success !== true) return deny('settle_failed');
   if (settle.transaction) res.setHeader('X-PAYMENT-RESPONSE', String(settle.transaction));
   return true;

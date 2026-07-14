@@ -27,8 +27,16 @@
 
 The shipped gate settles the payment at the gate, before the route runs. That is
 replay-safe (settling consumes the EIP-3009 nonce on-chain) but has a UX flaw:
-**if the route handler throws after settlement (e.g. `loadSnapshot` fails), the
-agent was charged but gets a 500 with no data.**
+**if the route handler throws OR 404s after settlement, the agent was charged but
+gets no data.** Two concrete cases in the current code:
+- `GET /api/agent/chain/:key` for an unknown chain: the gate verifies + settles,
+  then the handler returns `404 unknown_chain` — **charged, nothing delivered.**
+- Any handler that throws after the gate (e.g. `loadSnapshot` fails) → `500`,
+  **charged, nothing delivered.**
+
+This is a **go-live blocker** (harmless today: live mode is disabled until the
+facilitator + secrets are wired, so the gate is fail-closed to demo and never
+settles). The fix is the reordering below.
 
 Preferred flow, per metered request:
 

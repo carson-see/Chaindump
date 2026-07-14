@@ -154,6 +154,35 @@ describe('x402 gate — live mode (X402_PAY_TO + X402_FACILITATOR set)', () => {
     expect((await res.json()).reason).toBe('settle_failed');
   });
 
+  it('facilitator /verify transport failure → 503 retryable (not a 402 re-pay), settle not attempted', async () => {
+    const calls = [];
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      calls.push(String(url));
+      throw new Error('network down'); // transient outage on /verify
+    }));
+    const worker = await freshWorker();
+    const res = await worker.fetch(riskRequest({ xPayment: validPaymentHeader() }), LIVE_ENV, ctx());
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toBe('facilitator_unavailable');
+    expect(body.stage).toBe('verify');
+    expect(body.retryable).toBe(true);
+    expect(calls).toEqual([FACILITATOR + '/verify']); // never reached settle
+  });
+
+  it('facilitator /settle transport failure → 503 retryable (payment verified but not settled)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).endsWith('/verify')) return new Response(JSON.stringify({ isValid: true }), { status: 200 });
+      throw new Error('network down'); // transient outage on /settle
+    }));
+    const worker = await freshWorker();
+    const res = await worker.fetch(riskRequest({ xPayment: validPaymentHeader() }), LIVE_ENV, ctx());
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.error).toBe('facilitator_unavailable');
+    expect(body.stage).toBe('settle');
+  });
+
   it('manifest reports live mode with the configured payTo', async () => {
     stubFacilitator({ verify: { isValid: true }, settle: { success: true } });
     const worker = await freshWorker();
