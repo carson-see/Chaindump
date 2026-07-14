@@ -279,6 +279,19 @@
   .peername { font-weight:600; font-size:13.5px; white-space:nowrap; }
   .peername::after { content:' ↗'; color:var(--muted); font-weight:400; }
   .peerreason { font-size:11.5px; color:var(--muted); text-align:right; }
+  /* proactive signals — measured observations, shown with method + confidence */
+  .siglead { font-size:12px; color:var(--muted); margin-bottom:10px; }
+  .sigwrap { display:flex; flex-direction:column; gap:8px; }
+  .sigrow { border:1px solid var(--border); border-left-width:3px; border-radius:9px; padding:10px 12px; background:var(--bg-subtle); }
+  .sigrow.good { border-left-color:var(--green); }
+  .sigrow.watch { border-left-color:var(--warn); }
+  .sigrow.info { border-left-color:var(--border-lit); }
+  .sighead { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+  .siglabel { font-weight:600; font-size:13px; color:var(--muted2); }
+  .sigconf { font-size:10.5px; color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .sigsum { font-size:12.5px; color:var(--muted); margin-top:5px; line-height:1.45; }
+  .sigmeth { font-size:11px; color:var(--muted); margin-top:6px; }
+  .sigmeth b { color:var(--muted2); font-weight:600; }
   .notable { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:0 0 14px; }
   .notable:empty { display:none; }
   .nlabel { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--yellow); margin-right:2px; }
@@ -769,6 +782,24 @@ function analystHtml(d){
     ${p.outlook?`<div class="dsec">Outlook — bull / base / bear</div>${proseBox(p.outlook)}`:''}`;
 }
 
+// Proactive signals — the typed risk/success factors computeSignals() already
+// produces. Shown as measured observations with method + evidence + confidence
+// (never as verdicts); neutral styling, no alarm on interpretive signals.
+function signalsInner(c) {
+  const sigs = Array.isArray(c.signals) ? c.signals : [];
+  if (!sigs.length) return '';
+  const sevRank = { critical: 3, notable: 2, info: 1 };
+  const lane = (s) => s.direction === 'bullish' ? 'good' : (s.direction === 'bearish' || s.direction === 'warning') ? 'watch' : 'info';
+  const rows = [...sigs]
+    .sort((a, b) => (sevRank[b.severity] || 0) - (sevRank[a.severity] || 0) || ((b.confidence || 0) - (a.confidence || 0)))
+    .map((s) => {
+      const conf = s.confidence != null ? `<span class="sigconf">confidence ${Math.round(s.confidence * 100)}%</span>` : '';
+      const ev = s.evidence ? `<div class="sigmeth"><b>Evidence</b> — ${esc(Object.entries(s.evidence).map(([k, v]) => `${k}: ${v}`).join(' · '))}</div>` : '';
+      const meth = s.method ? `<div class="sigmeth"><b>Method</b> — ${esc(s.method)}</div>` : '';
+      return `<div class="sigrow ${lane(s)}"><div class="sighead"><span class="siglabel">${esc(s.label)}</span>${conf}</div>${s.summary ? `<div class="sigsum">${esc(s.summary)}</div>` : ''}${ev}${meth}</div>`;
+    }).join('');
+  return `<div class="siglead">Measured observations from live on-chain data — each with its method, evidence and confidence. These are metrics, not verdicts.</div><div class="sigwrap">${rows}</div>`;
+}
 // Related-chains section — peers with a plain-English reason, clickable to open.
 // Every peer is a chain in the current list, so navigation never dead-ends.
 function relatedInner(c) {
@@ -817,7 +848,9 @@ function detailHtml(c) {
   const ecosystem = markets + tokensSection + nftsSection + `<div class="dsec">Top apps on this chain</div>${projects}`;
   const related = relatedInner(c);
   const relatedAcc = related ? accordionHtml('Related chains — similar value prop & profile', related, false) : '';
-  return `<div class="detail">${head}${d&&d.risk?riskBanner(d.risk):''}${verdict}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${relatedAcc}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
+  const signals = signalsInner(c);
+  const signalsAcc = signals ? accordionHtml('Signals — what\'s changing & why', signals, true) : '';
+  return `<div class="detail">${head}${d&&d.risk?riskBanner(d.risk):''}${verdict}${signalsAcc}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${relatedAcc}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
 }
 
 function logoBig(c){ const slug=c.name.toLowerCase().trim().replace(/\s+/g,'-'); return `<span class="logo big" style="background:${hueFor(c.name)}">${esc(c.name[0].toUpperCase())}<img src="https://icons.llamao.fi/icons/chains/rsz_${encodeURIComponent(slug)}.jpg" alt="" onerror="this.remove()"></span>`; }
