@@ -1,23 +1,30 @@
 # x402 real-billing gate — design note
 
-> Status: **not built.** The agent API runs in **demo mode** —
-> [`x402Gate()`](../src/worker.js) trusts any non-empty `X-PAYMENT` header
-> (`if (pay) return true;`). There is no facilitator call, no on-chain
-> verification, no settlement, and no `verifyPayment()` function. This note
-> captures the correct design so real billing is built right the first time.
+> Status: **real verification shipped in PR #9** —
+> [`x402Gate()`](../src/worker.js) now runs `verifyLivePayment()` in live mode:
+> it structurally checks the `X-PAYMENT` header, then calls the facilitator
+> `/verify` **then `/settle` before serving** (verify → settle → serve), and
+> fails closed to demo mode when `X402_PAY_TO`/facilitator are unset (no
+> hardcoded payTo fallback). This note captures the **next refinement**: moving
+> to verify → serve → settle with a durable nonce store, and the go-live
+> prerequisites that remain.
 
-## Go-live prerequisites (blockers)
+## Go-live prerequisites (remaining)
 
-- `X402_PAY_TO` — real Base receiving wallet (never the hardcoded fallback; make
-  it **fail-closed** — demo mode when unset, never a default payout address).
-- Coinbase CDP facilitator creds: `CDP_API_KEY_ID` + `CDP_API_KEY_SECRET`.
-- A durable nonce store (see below).
+- `X402_PAY_TO` — real Base receiving wallet, set as a Worker secret. **Done in
+  code:** #9 removed the hardcoded fallback and fails closed to demo when unset,
+  so a misconfigured deploy can never bill a stale address. Still need the secret
+  actually set for live mode.
+- Coinbase CDP facilitator creds: `CDP_API_KEY_ID` + `CDP_API_KEY_SECRET`, and
+  `X402_FACILITATOR` pointed at a real `https://` facilitator URL.
+- A durable nonce store — **not yet built** (see below); today replay is guarded
+  only by on-chain settlement consuming the EIP-3009 nonce.
 
-## Ordering: verify → serve → settle (NOT verify → settle → serve)
+## Next: verify → serve → settle (refine the shipped verify → settle → serve)
 
-The obvious implementation settles the payment at the gate, before the route
-runs. That is replay-safe (settling consumes the EIP-3009 nonce on-chain) but
-has a UX flaw: **if the route handler throws after settlement (e.g.
+As shipped in #9, the gate settles the payment before the route runs. That is
+replay-safe (settling consumes the EIP-3009 nonce on-chain) but has a UX flaw:
+**if the route handler throws after settlement (e.g.
 `loadSnapshot` fails), the agent was charged but gets a 500 with no data.**
 
 Preferred flow, per metered request:

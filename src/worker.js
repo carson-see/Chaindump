@@ -1456,8 +1456,6 @@ app.get('/api/power', wrap(async (req, res) => {
 // payment requirements; a valid X-PAYMENT header unlocks the data.
 //   Go-live needs: X402_PAY_TO (receiving wallet) + a facilitator for on-chain
 //   verification. Until then it runs in demo mode (accepts any X-PAYMENT header).
-//   Real-billing gate design (verify -> serve -> settle + nonce store):
-//   docs/x402-billing-design.md.
 // ---------------------------------------------------------------------------
 // Facilitator decision: Coinbase CDP facilitator on Base mainnet, USDC.
 // Gasless (EIP-3009), built-in KYT/OFAC screening, free 1k tx/mo. Go-live needs:
