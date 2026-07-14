@@ -1670,12 +1670,24 @@ app.get('/api/health', wrap((req, res) => res.json({ ok: true })));
 // Twitter/Discord/Slack. The client reads the path and opens the right view.
 // ---------------------------------------------------------------------------
 const OG_DESC_FALLBACK = 'Onchain intelligence — chains, assets, markets, policy & forensics. What is changing, why, and what to do about it.';
-function ogHtml(html, { title, desc, url }) {
+// Serialize JSON-LD safely for inlining in a <script> (neutralize "</script>").
+function jsonLd(obj) { return JSON.stringify(obj).replace(/</g, '\\u003c'); }
+function ogHtml(html, { title, desc, url, ld }) {
   const t = escapeHtml(title || 'Chaindump — Onchain Intelligence');
   const d = escapeHtml(desc || OG_DESC_FALLBACK);
   const u = escapeHtml(url || 'https://chaindump.xyz/');
+  // Base structured-data graph: Organization + WebSite, present on every page so
+  // AI engines and search can attribute claims to Chaindump. Per-page nodes (a
+  // chain Dataset, a scam Report, etc.) are appended via the optional `ld` arg.
+  const graph = [
+    { '@type': 'Organization', '@id': ORIGIN + '/#org', name: 'Chaindump', url: ORIGIN + '/', description: OG_DESC_FALLBACK, logo: ORIGIN + '/favicon.svg' },
+    { '@type': 'WebSite', '@id': ORIGIN + '/#site', name: 'Chaindump', url: ORIGIN + '/', description: OG_DESC_FALLBACK, inLanguage: 'en', publisher: { '@id': ORIGIN + '/#org' } },
+  ];
+  if (ld) graph.push(ld);
+  const structured = jsonLd({ '@context': 'https://schema.org', '@graph': graph });
   const tags = `<title>${t}</title>
 <meta name="description" content="${d}">
+<link rel="canonical" href="${u}">
 <meta property="og:title" content="${t}">
 <meta property="og:description" content="${d}">
 <meta property="og:type" content="website">
@@ -1683,7 +1695,8 @@ function ogHtml(html, { title, desc, url }) {
 <meta property="og:site_name" content="Chaindump">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="${t}">
-<meta name="twitter:description" content="${d}">`;
+<meta name="twitter:description" content="${d}">
+<script type="application/ld+json">${structured}</script>`;
   return html.replace(/<title>[\s\S]*?<\/title>/, tags);
 }
 async function spaShell(env, req) {
@@ -1769,6 +1782,43 @@ const ROBOTS_TXT = [
 ].join('\n');
 
 app.get('/robots.txt', (c) => c.text(ROBOTS_TXT, 200, { 'cache-control': 'public, max-age=3600' }));
+
+// llms.txt (llmstxt.org) — a compact, link-first map of the site for LLMs and
+// AI-search crawlers. Built from VIEW_OG so it never drifts from the real views.
+app.get('/llms.txt', (c) => {
+  const label = (v) => (VIEW_OG[v][0] || '').replace(/ — Chaindump$/, '');
+  const line = (v) => `- [${label(v)}](${ORIGIN}/${v}): ${VIEW_OG[v][1]}`;
+  const contentViews = ['live', 'mid', 'grave', 'traces', 'stables', 'nft', 'rwa', 'infra', 'markets', 'geo', 'uspolicy', 'power', 'news'].filter((v) => VIEW_OG[v]);
+  const body = [
+    '# Chaindump',
+    '',
+    '> Real-time blockchain intelligence — analysis and aggregation with provenance across chains, assets, markets, policy and on-chain forensics. Chaindump answers "what is changing, why, and what to do about it", not "what is biggest". Every material figure cites a resolving, authoritative source.',
+    '',
+    'Chaindump is a public-data product. Its differentiation is sourced analysis, not raw numbers: each view pairs live metrics with a written analyst take and an explicit provenance trail.',
+    '',
+    '## Views',
+    ...contentViews.map(line),
+    '',
+    '## Entity deep-links',
+    '- Chain profile: ' + ORIGIN + '/chain/{name} (e.g. ' + ORIGIN + '/chain/ethereum) — live TVL, volume, fundamentals and analyst take.',
+    '- Scam case: ' + ORIGIN + '/scam/{slug} — traced wallets, fund-flow and sources.',
+    '- NFT collection: ' + ORIGIN + '/collection/{id} — live floor, market cap, volume, holders.',
+    '',
+    '## For agents',
+    '- [Agent API (x402)](' + ORIGIN + '/api): versioned, provenance-tagged JSON API, payable per-call via x402 (USDC on Base).',
+    '- [API catalog](' + ORIGIN + '/.well-known/api-catalog)',
+    '- [Agent skills index](' + ORIGIN + '/.well-known/agent-skills/index.json)',
+    '- [MCP server card](' + ORIGIN + '/.well-known/mcp/server-card.json) — Chaindump intelligence as MCP tools.',
+    '',
+    '## Sources & method',
+    'DefiLlama (TVL), CoinGecko (prices), OFAC SDN via the 0xB10C mirror (sanctions screening, 900+ addresses across 18 chains), growthepie (active addresses), and government / mainstream / NPO sources for policy. Claims that name a private individual as a wrongdoer are human-reviewed before publication, never auto-generated.',
+    '',
+    '## Usage policy',
+    'AI assistants may read Chaindump to answer and cite (Content-Signal: search=yes, ai-input=yes) but not to train models (ai-train=no). See ' + ORIGIN + '/robots.txt.',
+    '',
+  ].join('\n');
+  return c.text(body, 200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=3600' });
+});
 
 app.get('/sitemap.xml', async (c) => {
   const urls = [`${ORIGIN}/`, ...Object.keys(VIEW_OG).map((v) => `${ORIGIN}/${v}`)];
@@ -1884,8 +1934,10 @@ app.get('/', wrap(async (req, res) => {
 app.notFound(async (c) => {
   const url = new URL(c.req.url);
   const p = url.pathname;
-  const wantsHtml = (c.req.header('accept') || '').includes('text/html');
-  const isPage = c.req.method === 'GET' && wantsHtml
+  // Any extensionless GET that isn't an API/well-known path is a page route —
+  // serve the SPA shell regardless of Accept so browsers AND crawlers/agents
+  // (which often send Accept: */*) get the app, never a bare 404.
+  const isPage = c.req.method === 'GET'
     && !p.startsWith('/api/') && !p.startsWith('/.well-known/')
     && !/\.[a-z0-9]+$/i.test(p); // has a file extension → treat as a missing asset
   if (isPage) {
