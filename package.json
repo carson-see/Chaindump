@@ -17,6 +17,7 @@
   "devDependencies": {
     "@eslint/js": "9.39.5",
     "eslint": "9.39.5",
+    "tla-precheck": "0.1.7",
     "vitest": "2.1.9",
     "wrangler": "^4.4.0"
   },
