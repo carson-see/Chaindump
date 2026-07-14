@@ -268,6 +268,17 @@
   .reflink { margin-top:6px; font-size:11.5px; }
   .reflink a { color:var(--accent2); text-decoration:none; }
   .reflink a:hover { text-decoration:underline; }
+  /* chain linking — category chip + related-chains peers */
+  .catchip { display:inline-block; margin-left:8px; padding:2px 9px; border:1px solid var(--border-lit); border-radius:999px; font-size:10.5px; letter-spacing:.02em; color:var(--accent); background:rgba(245,181,68,0.08); vertical-align:middle; font-weight:600; }
+  .peerintro { font-size:12.5px; color:var(--muted); margin-bottom:10px; }
+  .peerintro b { color:var(--muted2); font-weight:600; }
+  .peerwrap { display:flex; flex-direction:column; gap:7px; }
+  .peerchip { display:flex; align-items:baseline; justify-content:space-between; gap:12px; width:100%; text-align:left; padding:9px 12px; border:1px solid var(--border); border-radius:9px; background:var(--bg-subtle); color:var(--muted2); cursor:pointer; font:inherit; transition:border-color .12s ease, background .12s ease; }
+  .peerchip:hover { border-color:var(--border-lit); background:var(--bg); }
+  .peerchip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .peername { font-weight:600; font-size:13.5px; white-space:nowrap; }
+  .peername::after { content:' ↗'; color:var(--muted); font-weight:400; }
+  .peerreason { font-size:11.5px; color:var(--muted); text-align:right; }
   .notable { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:0 0 14px; }
   .notable:empty { display:none; }
   .nlabel { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--yellow); margin-right:2px; }
@@ -758,11 +769,22 @@ function analystHtml(d){
     ${p.outlook?`<div class="dsec">Outlook — bull / base / bear</div>${proseBox(p.outlook)}`:''}`;
 }
 
+// Related-chains section — peers with a plain-English reason, clickable to open.
+// Every peer is a chain in the current list, so navigation never dead-ends.
+function relatedInner(c) {
+  const r = c.related;
+  if (!r || !Array.isArray(r.peers) || !r.peers.length) return '';
+  const intro = r.categoryLabel
+    ? `<div class="peerintro">Grouped as <b>${esc(r.categoryLabel)}</b> — chains with a similar role or on-chain profile:</div>`
+    : `<div class="peerintro">Chains with a similar on-chain profile:</div>`;
+  const chips = r.peers.map((p) => `<button class="peerchip" data-peer="${esc(p.name)}" title="${esc(p.reason)}"><span class="peername">${esc(p.name)}</span><span class="peerreason">${esc(p.reason)}</span></button>`).join('');
+  return `${intro}<div class="peerwrap">${chips}</div>`;
+}
 function detailHtml(c) {
   const d = state.details[c.name];
   const reflink = `<div class="reflink"><a href="https://defillama.com/chain/${encodeURIComponent(c.name)}" target="_blank" rel="noopener noreferrer">Verify on DefiLlama ↗</a>${c.gecko?` · <a href="https://www.coingecko.com/en/coins/${encodeURIComponent(c.gecko)}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a>`:''}</div>`;
   const priceBadge = c.tokenPrice!=null ? `<span class="hprice">$${fmtTok(c.tokenPrice)}${c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''}</span>` : '';
-  const head = `<div class="dtitle">${logoBig(c)}<div><div class="dname">${esc(c.name)}${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${priceBadge}</div><div class="ddesc" id="desc-${cssId(c.name)}">${d&&d.description?esc(d.description):'<span class="muted">Loading overview…</span>'}</div>${reflink}</div></div>`;
+  const head = `<div class="dtitle">${logoBig(c)}<div><div class="dname">${esc(c.name)}${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${priceBadge}${c.categoryLabel?`<span class="catchip" title="Value-prop category — how Chaindump groups this chain">${esc(c.categoryLabel)}</span>`:''}</div><div class="ddesc" id="desc-${cssId(c.name)}">${d&&d.description?esc(d.description):'<span class="muted">Loading overview…</span>'}</div>${reflink}</div></div>`;
   const stats = `<div class="statgrid">
     ${statH('Active Addresses 24h', fmtNum(c.activeAddresses), 'Daily active addresses (growthepie) — a proxy for real users. EVM chains only; others show —.')}
     ${statH('24h DEX Volume', fmtUsd(c.volume24h)+(c.volChange1d!=null?' '+delta(c.volChange1d):''), 'Decentralized-exchange trading volume in the last 24h (DefiLlama). Excludes centralized exchanges.')}
@@ -793,7 +815,9 @@ function detailHtml(c) {
   const verdict = `<div class="verdictstrip"><div class="vscore">${idx}<span>/100</span></div><div class="vmeta">${sent?`<span class="sent ${sent.toLowerCase().replace(/[^a-z]/g,'')}">${esc(sent)}</span>`:''}<div class="vline">${esc(vline)}</div></div></div>`;
   const snapshot = stats + momentumHtml(c) + fundamentalsHtml(c);
   const ecosystem = markets + tokensSection + nftsSection + `<div class="dsec">Top apps on this chain</div>${projects}`;
-  return `<div class="detail">${head}${d&&d.risk?riskBanner(d.risk):''}${verdict}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
+  const related = relatedInner(c);
+  const relatedAcc = related ? accordionHtml('Related chains — similar value prop & profile', related, false) : '';
+  return `<div class="detail">${head}${d&&d.risk?riskBanner(d.risk):''}${verdict}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${relatedAcc}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
 }
 
 function logoBig(c){ const slug=c.name.toLowerCase().trim().replace(/\s+/g,'-'); return `<span class="logo big" style="background:${hueFor(c.name)}">${esc(c.name[0].toUpperCase())}<img src="https://icons.llamao.fi/icons/chains/rsz_${encodeURIComponent(slug)}.jpg" alt="" onerror="this.remove()"></span>`; }
@@ -865,6 +889,14 @@ document.getElementById('notable').addEventListener('click', (e) => {
 
 document.getElementById('rows').addEventListener('click', (e) => {
   if (e.target.closest('a')) return; // let market links open normally
+  const peer = e.target.closest('.peerchip');
+  if (peer) { // navigate to a related chain instead of toggling the current row
+    const pname = peer.dataset.peer;
+    state.expanded = pname; loadDetail(pname); pushEntity('chain', pname);
+    const prow = document.querySelector(`tr.crow[data-name="${CSS.escape(pname)}"]`);
+    if (prow) prow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
   const tr = e.target.closest('tr.crow');
   if (!tr) return;
   const name = tr.dataset.name;

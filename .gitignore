@@ -3,3 +3,8 @@ node_modules/
 .wrangler/
 *.log
 .DS_Store
+
+# tla-precheck generated artifacts
+.generated-machines/
+*_TTrace_*.tla
+*.dot

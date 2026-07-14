@@ -7,13 +7,17 @@
     "deploy": "wrangler deploy",
     "start": "node server.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "eslint src/lib test"
   },
   "dependencies": {
     "express": "^4.21.0",
     "hono": "^4.6.14"
   },
   "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "eslint": "9.39.5",
+    "tla-precheck": "0.1.7",
     "vitest": "2.1.9",
     "wrangler": "^4.4.0"
   },
