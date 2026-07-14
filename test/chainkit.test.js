@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   norm, CHAIN_CATEGORY, chainCategory, categoryLabel, deriveCategory, resolveCategory,
-  coverageTier, FEATURES, MIN_BASIS, rawFeatures, standardize, rankCandidates, applyHysteresis,
+  coverageTier, FEATURES, MIN_BASIS, CLOSE_Z, rawFeatures, standardize, rankCandidates, applyHysteresis,
   similarChains, relatedBlock,
 } from '../src/lib/chainkit.js';
 
@@ -206,6 +206,87 @@ describe('applyHysteresis (peer stability across refreshes)', () => {
     ];
     const out = applyHysteresis(ranked2, ['a', 'b', 'old'], 3, 0.05).map((c) => c.key);
     expect(out).toEqual(['a', 'b', 'x']); // old displaced by a clear win
+  });
+});
+
+// ---- review findings : adversarial regression tests ---------------------
+describe('review fixes (adversarial)', () => {
+  it('H1: a FAR same-category peer says "same category", never "close on"', () => {
+    const universe = [
+      { name: 'Target', category: 'l2-optimistic', tvl: 1e9, volume24h: 1e8, fees24h: 1e5, stables: 3e8 },
+      { name: 'PeerNear', category: 'l2-optimistic', tvl: 9e8, volume24h: 9e7, fees24h: 9e4, stables: 2.9e8 },
+      { name: 'FarSameCat', category: 'l2-optimistic', tvl: 1e6, volume24h: 1e3, fees24h: 10, stables: 1e5 },
+    ];
+    const peers = similarChains('Target', universe, { k: 5 });
+    const far = peers.find((p) => p.name === 'FarSameCat');
+    expect(far).toBeTruthy();
+    expect(far.reason).not.toMatch(/close on/i); // was the honesty bug
+    expect(far.reason).toMatch(/same category/i);
+  });
+  it('H2: a NaN/Infinity metric is treated as absent (null), never a measured 0', () => {
+    const f = rawFeatures({ tvl: 1e9, fees24h: 1e5, volume24h: NaN, stables: Infinity });
+    expect(f.lvol).toBeNull();
+    expect(f.stablesShare).toBeNull();
+    // and it must not enter the basis / claim similarity
+    const chains = [
+      { name: 'A', category: null, tvl: 1e9, volume24h: NaN, fees24h: 1e5, stables: 3e8 },
+      { name: 'B', category: null, tvl: 1e9, volume24h: 1e8, fees24h: 1e5, stables: 3e8 },
+    ];
+    const [peer] = similarChains('A', chains, { k: 2 });
+    expect(peer.basis).not.toContain('lvol');
+  });
+  it('M4: names that normalize to the same key do not produce duplicate peers', () => {
+    const universe = [
+      { name: 'Target', tvl: 1e9, volume24h: 1e8, fees24h: 1e5, stables: 3e8 },
+      { name: 'Optimism', tvl: 2e9, volume24h: 8e8, fees24h: 2e5, stables: 2e9 },
+      { name: 'OP Mainnet', tvl: 2e9, volume24h: 8e8, fees24h: 2e5, stables: 2e9 }, // → same key
+    ];
+    const peers = similarChains('Target', universe, { k: 6 });
+    const keys = peers.map((p) => p.key);
+    expect(new Set(keys).size).toBe(keys.length); // no dupes
+  });
+  it('M5: k:0 returns zero peers (not the default 6)', () => {
+    const universe = [
+      { name: 'Target', tvl: 1e9, volume24h: 1e8, fees24h: 1e5, stables: 3e8 },
+      { name: 'X', tvl: 9e8, volume24h: 9e7, fees24h: 9e4, stables: 2.9e8 },
+    ];
+    expect(similarChains('Target', universe, { k: 0 })).toEqual([]);
+  });
+  it('M3: match and label use the same (curated) category when the row disagrees', () => {
+    // row claims payments, but curated says Base is an L2 → curated must win for both
+    const universe = [
+      { name: 'Base', category: 'payments', tvl: 4e9, volume24h: 1.2e9, fees24h: 4e5, stables: 4e9 },
+      { name: 'Arbitrum', category: 'l2-optimistic', tvl: 3e9, volume24h: 1e9, fees24h: 3e5, stables: 3e9 },
+    ];
+    const block = relatedBlock('Base', universe, { k: 3 });
+    expect(block.category).toBe('l2-optimistic'); // curated wins
+    const arb = block.peers.find((p) => p.name === 'Arbitrum');
+    expect(arb.sameCategory).toBe(true); // matched on the same curated category
+  });
+  it('edge: a target absent from the set returns no peers (even with a prior)', () => {
+    const universe = [{ name: 'A', tvl: 1e9, volume24h: 1e8, fees24h: 1e5, stables: 3e8 }];
+    expect(similarChains('NotHere', universe, { k: 6, prior: ['a'] })).toEqual([]);
+  });
+  it('edge: returns fewer than k when fewer valid candidates exist', () => {
+    const universe = [
+      { name: 'Target', tvl: 1e9, volume24h: 1e8, fees24h: 1e5, stables: 3e8 },
+      { name: 'Only', tvl: 9e8, volume24h: 9e7, fees24h: 9e4, stables: 2.9e8 },
+    ];
+    expect(similarChains('Target', universe, { k: 6 }).length).toBe(1);
+  });
+  it('hysteresis is idempotent — feeding its own output back as prior yields the same list', () => {
+    const universe = [
+      { name: 'Ethereum', tvl: 6e10, volume24h: 2e9, fees24h: 5e6, stables: 8e10 },
+      { name: 'Arbitrum', tvl: 3e9, volume24h: 1e9, fees24h: 3e5, stables: 3e9 },
+      { name: 'Base', tvl: 4e9, volume24h: 1.2e9, fees24h: 4e5, stables: 4e9 },
+      { name: 'Optimism', tvl: 2e9, volume24h: 8e8, fees24h: 2e5, stables: 2e9 },
+    ];
+    const first = similarChains('Arbitrum', universe, { k: 3 });
+    const second = similarChains('Arbitrum', universe, { k: 3, prior: first.map((p) => p.key) });
+    expect(second.map((p) => p.key)).toEqual(first.map((p) => p.key)); // no oscillation
+  });
+  it('CLOSE_Z is the axis-closeness threshold', () => {
+    expect(CLOSE_Z).toBeGreaterThan(0);
   });
 });
 

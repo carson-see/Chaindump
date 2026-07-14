@@ -98,14 +98,14 @@ export function deriveCategory(rec) {
   if (!rec || typeof rec !== 'object') return null;
   const stack = String((rec.stack && (rec.stack.label || rec.stack)) || '').toLowerCase();
   const bucket = String(rec.bucket || rec.chain_type || '').toLowerCase();
-  if (rec.da_layer && /celestia|eigenda|avail|^da$/.test(String(rec.da_layer).toLowerCase())) {
-    // has an external DA layer → it's a rollup, not itself a DA layer; fall through
-  }
-  if (/op.?stack|optimistic|orbit|arbitrum/.test(stack)) return 'l2-optimistic';
-  if (/zk|validity|starknet|zksync|polygon.?zk/.test(stack)) return 'l2-zk';
-  if (/(^|\W)da(\W|$)|data.?availability/.test(bucket)) return 'modular-da';
-  if (/l2|layer.?2|rollup/.test(bucket)) return 'l2-optimistic';
-  if (/l1|layer.?1/.test(bucket)) return 'l1-smart-contract';
+  // Stack (the rollup framework) is the strongest signal and is checked before
+  // the DA bucket, so a rollup that merely USES an external DA layer is classed
+  // by its stack, not mislabelled modular-da.
+  if (/op[- ]?stack|optimistic|orbit|arbitrum/.test(stack)) return 'l2-optimistic';
+  if (/zk|validity|starknet|zksync|polygon[- ]?zk/.test(stack)) return 'l2-zk';
+  if (/(^|\W)da(\W|$)|data[- ]?availability/.test(bucket)) return 'modular-da';
+  if (/l2|layer[- ]?2|rollup/.test(bucket)) return 'l2-optimistic';
+  if (/l1|layer[- ]?1/.test(bucket)) return 'l1-smart-contract';
   return null;
 }
 // Curated always wins, then growthepie-derived, then null.
@@ -127,24 +127,28 @@ export function coverageTier(row) {
 // CF-blocked and served from a static D1 seed, so it's stale signal (premortem 6).
 export const FEATURES = ['ltvl', 'lvol', 'lfee', 'feeYield', 'turnover', 'stablesShare'];
 export const MIN_BASIS = 2; // co-measured features required to claim METRIC similarity
+export const CLOSE_Z = 0.75; // max z-distance on an axis to call a peer "close on" it
 
 const FRIENDLY = { ltvl: 'TVL', lvol: 'volume', lfee: 'fees', feeYield: 'fee yield', turnover: 'turnover', stablesShare: 'stablecoin share' };
 const lg = (x) => Math.log10(Math.max(0, Number(x) || 0) + 1);
+// Coerce to a finite number or null. NaN/Infinity/undefined → null (unknown),
+// never a measured 0 — otherwise a bad upstream value would fabricate similarity
+// and skew the standardization stats (review H2).
+const num = (x) => { if (x == null) return null; const n = Number(x); return Number.isFinite(n) ? n : null; };
 
 // Raw (pre-standardization) feature values. null = unknown (caller passes null,
 // never 0, for absent metrics). feeYield/turnover derive from tvl+fees+vol so
 // they're available on tail rows too when those inputs are present.
 export function rawFeatures(c) {
-  const tvl = c.tvl != null ? Number(c.tvl) : null;
-  const fees = c.fees24h != null ? Number(c.fees24h) : null;
-  const vol = c.volume24h != null ? Number(c.volume24h) : null;
+  const tvl = num(c.tvl), fees = num(c.fees24h), vol = num(c.volume24h);
+  const stables = num(c.stables), fY = num(c.feeYield), tO = num(c.turnover);
   return {
     ltvl: tvl != null && tvl > 0 ? lg(tvl) : null,
     lvol: vol != null ? lg(vol) : null,
     lfee: fees != null ? lg(fees) : null,
-    feeYield: c.feeYield != null ? Number(c.feeYield) : (tvl > 0 && fees != null ? (fees * 365) / tvl * 100 : null),
-    turnover: c.turnover != null ? Number(c.turnover) : (tvl > 0 && vol != null ? vol / tvl : null),
-    stablesShare: tvl > 0 && c.stables != null ? Number(c.stables) / tvl : null,
+    feeYield: fY != null ? fY : (tvl != null && tvl > 0 && fees != null ? (fees * 365) / tvl * 100 : null),
+    turnover: tO != null ? tO : (tvl != null && tvl > 0 && vol != null ? vol / tvl : null),
+    stablesShare: tvl != null && tvl > 0 && stables != null ? stables / tvl : null,
   };
 }
 
@@ -187,20 +191,27 @@ export function rankCandidates(targetName, chains) {
   const { vec, raw } = standardize(chains);
   const tVec = vec.get(tKey);
   if (!tVec) return [];
-  const tCat = chains.find((c) => (c.key || norm(c.name)) === tKey)?.category ?? chainCategory(targetName);
+  // resolveCategory (curated wins) for BOTH target and candidates so matching and
+  // labelling never disagree (review M3).
+  const tCat = resolveCategory(targetName, chains.find((c) => (c.key || norm(c.name)) === tKey)?.category);
   const tRaw = raw.get(tKey);
   const out = [];
+  const seen = new Set([tKey]);
   for (const c of chains) {
     const key = c.key || norm(c.name);
-    if (key === tKey) continue;
-    const cRaw = raw.get(key);
+    if (seen.has(key)) continue; // dedup by normalized key (review M4)
+    seen.add(key);
+    const cRaw = raw.get(key), cVec = vec.get(key);
     const basis = FEATURES.filter((f) => tRaw[f] != null && cRaw[f] != null);
-    const cCat = c.category ?? chainCategory(c.name);
+    // "close" = co-measured AND within CLOSE_Z std of the target on that axis, so
+    // "close on X" is only ever said when it's true (review H1).
+    const closeBasis = basis.filter((f) => Math.abs(tVec[FEATURES.indexOf(f)] - cVec[FEATURES.indexOf(f)]) <= CLOSE_Z);
+    const cCat = resolveCategory(c.name, c.category);
     const sameCategory = !!(tCat && cCat === tCat);
     if (basis.length < MIN_BASIS && !sameCategory) continue; // can't honestly relate
     out.push({
       name: c.name, key, category: cCat, coverage: c.coverage || coverageTier(c),
-      distance: euclidean(tVec, vec.get(key)), basis, sameCategory,
+      distance: euclidean(tVec, cVec), basis, closeBasis, sameCategory,
       matchType: sameCategory ? 'category' : 'metric',
     });
   }
@@ -249,28 +260,31 @@ export function applyHysteresis(ranked, priorKeys, k, margin) {
   return result.slice(0, k);
 }
 
-// Honest reason string. Only names features actually co-measured. A category peer
-// with too little data says "grouped by category · limited data" and NEVER claims
-// metric similarity (premortem H3 / accuracy bar).
+// Honest reason string. Only names features the peer is actually CLOSE on
+// (closeBasis), never merely co-measured — a same-category peer that is far on
+// every axis says "same category", not "close on ..." (review H1). A category
+// peer with too little data says "limited data" and never claims metric
+// similarity (premortem H3 / accuracy bar).
 export function buildReason(cand, targetCatLabel) {
-  const feats = cand.basis.map((f) => FRIENDLY[f]);
+  const close = cand.closeBasis.map((f) => FRIENDLY[f]);
   if (cand.matchType === 'category') {
-    if (cand.basis.length >= MIN_BASIS) return `${targetCatLabel} · close on ${feats.join(', ')}`;
-    return `${targetCatLabel} · limited data`;
+    if (cand.basis.length < MIN_BASIS) return `${targetCatLabel} · limited data`;
+    if (close.length === 0) return `${targetCatLabel} · same category`;
+    return `${targetCatLabel} · close on ${close.join(', ')}`;
   }
-  return `Similar ${feats.join(', ')}`;
+  // metric peers are the nearest overall; name what they're genuinely close on.
+  return close.length ? `Similar ${close.join(', ')}` : 'Similar overall profile';
 }
 
 // Peers for a target within `chains`. opts: { k=6, prior=[] (ordered prior peer
 // keys), margin=0.05 }. Pure over the passed-in set.
 export function similarChains(targetName, chains, opts = {}) {
-  const k = opts.k || 6;
+  const k = Number.isInteger(opts.k) && opts.k >= 0 ? opts.k : 6; // k:0 must mean 0 (review M5)
   const margin = opts.margin != null ? opts.margin : 0.05;
-  const tCatLabel = categoryLabel(chainCategory(targetName)
-    || chains.find((c) => (c.key || norm(c.name)) === norm(targetName))?.category);
+  const tCatLabel = categoryLabel(resolveCategory(targetName,
+    chains.find((c) => (c.key || norm(c.name)) === norm(targetName))?.category));
   const ranked = rankCandidates(targetName, chains);
   const chosen = applyHysteresis(ranked, opts.prior, k, margin);
-  const maxD = ranked.reduce((m, c) => Math.max(m, c.distance), 0) || 1;
   return chosen.map((c) => ({
     name: c.name,
     key: c.key,
@@ -279,7 +293,9 @@ export function similarChains(targetName, chains, opts = {}) {
     sameCategory: c.sameCategory,
     matchType: c.matchType,
     lowConfidence: c.basis.length < MIN_BASIS,
-    similarity: +(1 - c.distance / maxD).toFixed(3),
+    // absolute closeness in (0,1]; nearest→1, never a misleading set-relative 0
+    // (review M1). Monotonic in distance.
+    similarity: +(1 / (1 + c.distance)).toFixed(3),
     basis: c.basis,
     reason: buildReason(c, tCatLabel),
   }));
