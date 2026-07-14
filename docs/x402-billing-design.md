@@ -33,9 +33,14 @@ Preferred flow, per metered request:
    for reconciliation).
 5. Return the x402 **`X-PAYMENT-RESPONSE`** header on success per the spec.
 
-Fail-closed on **every** error path — verify failure, replay hit, settle
-failure, store write failure. Never serve paid data without a path to charge,
-and never charge without delivering.
+Fail-closed on every **pre-serve** error path — verify failure, replay hit.
+This ordering deliberately prioritizes **never charge without delivering** over
+**never deliver without charging**: the pre-serve `/verify` confirms the
+authorization is valid and funded, so a post-serve `/settle` failure should be
+rare — but when it happens the agent got the data unbilled. Treat that as the
+accepted tradeoff (log it for reconciliation), not a guarantee you can also
+close. If unbilled-delivery is unacceptable for a given endpoint, keep
+`verify → settle → serve` there and accept the stranded-charge window instead.
 
 ## Durable nonce store
 
