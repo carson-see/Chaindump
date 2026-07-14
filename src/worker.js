@@ -818,6 +818,59 @@ app.post('/api/admin/refresh', wrap(async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, ran }); }
 }));
 
+// ---------------------------------------------------------------------------
+// Research desk (Phase G) write path — DESK_TOKEN-guarded. The autonomous desk
+// POSTs verified, sourced findings to /api/desk/propose; they land as 'pending'
+// in desk_proposals (a durable, human-reviewed queue). Nothing reaches the live
+// tables without a human promoting it (CLAUDE.md §1.5). Disabled (404) unless
+// DESK_TOKEN is set.
+// ---------------------------------------------------------------------------
+function deskAuth(req, res) {
+  const token = ENV.DESK_TOKEN || '';
+  if (!token) { res.status(404).json({ error: 'not found' }); return false; }
+  if ((req.headers['authorization'] || '') !== `Bearer ${token}`) { res.status(401).json({ error: 'unauthorized' }); return false; }
+  return true;
+}
+
+app.post('/api/desk/propose', wrap(async (req, res) => {
+  if (!deskAuth(req, res)) return;
+  if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
+  let b;
+  try { b = await req.raw.json(); } catch (e) { return res.status(400).json({ error: 'invalid JSON body: ' + (e && e.message || e) }); }
+  const dataset = String(b.dataset || '').trim();
+  const slug = String(b.slug || '').trim();
+  if (!dataset || !slug) return res.status(400).json({ error: 'dataset and slug are required' });
+  const namesIndividuals = b.names_individuals ? 1 : 0;
+  const confidence = Number(b.confidence);
+  // Force human review for individual-naming/fraud claims or low/invalid confidence
+  // (NaN counts as low — force review, the safe default).
+  const highConfidence = Number.isFinite(confidence) && confidence >= 0.75;
+  const needsReview = (namesIndividuals || !highConfidence) ? 1 : 0;
+  try {
+    await ENV.DB.prepare(
+      `INSERT INTO desk_proposals (dataset, slug, title, summary, payload, sources, names_individuals, confidence, needs_human_review, status, queued_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+       ON CONFLICT(dataset, slug) DO UPDATE SET title=excluded.title, summary=excluded.summary, payload=excluded.payload,
+         sources=excluded.sources, names_individuals=excluded.names_individuals, confidence=excluded.confidence,
+         needs_human_review=excluded.needs_human_review, status='pending', queued_at=datetime('now')`
+    ).bind(dataset, slug, b.title || null, b.summary || null, JSON.stringify(b.payload || {}), JSON.stringify(b.sources || []),
+      namesIndividuals, Number.isFinite(confidence) ? confidence : null, needsReview).run();
+    res.json({ ok: true, dataset, slug, needs_human_review: !!needsReview });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+}));
+
+app.get('/api/desk/pending', wrap(async (req, res) => {
+  if (!deskAuth(req, res)) return;
+  if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
+  try {
+    const status = String(req.query.status || 'pending');
+    const rows = await dbQuery(
+      `SELECT id, dataset, slug, title, summary, names_individuals, confidence, needs_human_review, status, queued_at
+       FROM desk_proposals WHERE status = ? ORDER BY queued_at DESC LIMIT 100`, [status]);
+    res.json({ status, count: rows.length, proposals: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+}));
+
 app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
