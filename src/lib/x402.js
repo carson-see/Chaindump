@@ -18,7 +18,7 @@ export function monthKeyFromDate(d) {
 // deliberately no hardcoded payTo fallback: no wallet configured ⇒ fail closed
 // to demo, so a misconfigured deploy can never bill to a stale address.
 export function isLiveMode(cfg) {
-  return !!(cfg && cfg.payTo && cfg.facilitator && /^https?:\/\//i.test(cfg.facilitator));
+  return !!(cfg?.payTo && cfg?.facilitator && /^https?:\/\//i.test(cfg.facilitator));
 }
 
 // Decode the base64(JSON) X-PAYMENT header into an object. Returns null for any
@@ -27,12 +27,12 @@ export function decodePaymentHeader(header) {
   if (!header || typeof header !== 'string') return null;
   try {
     const bin = atob(header.trim());
-    const bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+    const bytes = Uint8Array.from(bin, (ch) => ch.codePointAt(0)); // each char is one byte (0–255)
     const json = new TextDecoder().decode(bytes);
     const obj = JSON.parse(json);
     return obj && typeof obj === 'object' ? obj : null;
-  } catch (e) {
-    return null;
+  } catch {
+    return null; // malformed base64/JSON → treated as an invalid (absent) payment
   }
 }
 
@@ -60,7 +60,7 @@ export function structuralCheck(payment, requirements) {
   if (!payment || typeof payment !== 'object') return { ok: false, reason: 'malformed' };
   if (payment.scheme !== requirements.scheme) return { ok: false, reason: 'scheme_unsupported' };
   if (payment.network !== requirements.network) return { ok: false, reason: 'network_mismatch' };
-  const auth = payment.payload && payment.payload.authorization;
+  const auth = payment.payload?.authorization;
   if (!auth || typeof auth !== 'object') return { ok: false, reason: 'malformed' };
   if (!auth.to || String(auth.to).toLowerCase() !== String(requirements.payTo).toLowerCase()) {
     return { ok: false, reason: 'payTo_mismatch' };
@@ -69,8 +69,8 @@ export function structuralCheck(payment, requirements) {
   try {
     paid = BigInt(auth.value);
     required = BigInt(requirements.maxAmountRequired);
-  } catch (e) {
-    return { ok: false, reason: 'amount_malformed' };
+  } catch {
+    return { ok: false, reason: 'amount_malformed' }; // non-integer value
   }
   if (paid < required) return { ok: false, reason: 'amount_insufficient' };
   return { ok: true };

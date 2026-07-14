@@ -1496,7 +1496,9 @@ function require402(res, resource, priceAtomic, desc, opts = {}) {
 // POST to the facilitator (verify/settle). Throws on a non-2xx so the gate can
 // fail closed. Isolated here so it's the single network seam the gate depends on.
 async function facilitatorPost(base, path, body) {
-  const url = base.replace(/\/+$/, '') + path;
+  let root = base;
+  while (root.endsWith('/')) root = root.slice(0, -1); // trim trailing slashes (no regex backtracking)
+  const url = root + path;
   const r = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -1516,26 +1518,33 @@ function monthKey() { return monthKeyFromDate(new Date()); }
 //     and access is granted only within the free monthly quota.
 //   live mode: require a structurally-valid X-PAYMENT for the exact payTo/amount,
 //     then verify + settle it via the facilitator before serving.
+// Live-mode path: require a structurally-valid X-PAYMENT for the exact
+// payTo/amount, then verify + settle via the facilitator before serving.
+// Returns true to allow the handler; false after writing a 402. Split out of
+// x402Gate to keep each function's complexity low.
+async function verifyLivePayment(req, res, baseResource, priceAtomic, desc, cfg) {
+  const deny = (reason) => { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason }); return false; };
+  const header = req.headers['x-payment'];
+  if (!header) { require402(res, baseResource, priceAtomic, desc); return false; }
+  const requirements = paymentRequirements(baseResource, priceAtomic, desc, cfg);
+  const payment = decodePaymentHeader(header);
+  const chk = structuralCheck(payment, requirements);
+  if (!chk.ok) return deny(chk.reason);
+  const body = { x402Version: 1, paymentPayload: payment, paymentRequirements: requirements };
+  let verify;
+  try { verify = await facilitatorPost(cfg.facilitator, '/verify', body); }
+  catch { return deny('verify_unavailable'); }
+  if (verify?.isValid !== true) return deny(verify?.invalidReason || 'verify_rejected');
+  let settle;
+  try { settle = await facilitatorPost(cfg.facilitator, '/settle', body); }
+  catch { return deny('settle_unavailable'); }
+  if (settle?.success !== true) return deny('settle_failed');
+  if (settle.transaction) res.setHeader('X-PAYMENT-RESPONSE', String(settle.transaction));
+  return true;
+}
 async function x402Gate(req, res, baseResource, priceAtomic, desc) {
   const cfg = x402Config();
-  if (isLiveMode(cfg)) {
-    const header = req.headers['x-payment'];
-    if (!header) { require402(res, baseResource, priceAtomic, desc); return false; }
-    const payment = decodePaymentHeader(header);
-    const requirements = paymentRequirements(baseResource, priceAtomic, desc, cfg);
-    const chk = structuralCheck(payment, requirements);
-    if (!chk.ok) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: chk.reason }); return false; }
-    let verify;
-    try { verify = await facilitatorPost(cfg.facilitator, '/verify', { x402Version: 1, paymentPayload: payment, paymentRequirements: requirements }); }
-    catch (e) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: 'verify_unavailable' }); return false; }
-    if (!verify || verify.isValid !== true) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: (verify && verify.invalidReason) || 'verify_rejected' }); return false; }
-    let settle;
-    try { settle = await facilitatorPost(cfg.facilitator, '/settle', { x402Version: 1, paymentPayload: payment, paymentRequirements: requirements }); }
-    catch (e) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: 'settle_unavailable' }); return false; }
-    if (!settle || settle.success !== true) { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason: 'settle_failed' }); return false; }
-    if (settle.transaction) res.setHeader('X-PAYMENT-RESPONSE', String(settle.transaction));
-    return true;
-  }
+  if (isLiveMode(cfg)) return verifyLivePayment(req, res, baseResource, priceAtomic, desc, cfg);
   // Demo mode: never trust X-PAYMENT. Key the free quota on Cloudflare's trusted
   // client IP. X-Forwarded-For is client-supplied (leftmost value spoofable), so
   // it must NOT be trusted — an attacker could rotate it for unlimited free calls.
