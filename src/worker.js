@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 import { prefersMarkdown } from './lib/negotiate.js';
-import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck } from './lib/x402.js';
+import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 
 const ENV = {};
 const app = new Hono();
@@ -1457,7 +1457,9 @@ app.get('/api/power', wrap(async (req, res) => {
 // x402 monetization — agent-payable API. Gated endpoints return HTTP 402 with
 // payment requirements; a valid X-PAYMENT header unlocks the data.
 //   Go-live needs: X402_PAY_TO (receiving wallet) + a facilitator for on-chain
-//   verification. Until then it runs in demo mode (accepts any X-PAYMENT header).
+//   verification. Until then it runs in demo mode (X-PAYMENT ignored, free quota).
+//   Current gate: verify -> settle -> serve. The verify -> serve -> settle +
+//   nonce replay-store target for go-live is in docs/x402-billing-design.md.
 // ---------------------------------------------------------------------------
 // Facilitator decision: Coinbase CDP facilitator on Base mainnet, USDC.
 // Gasless (EIP-3009), built-in KYT/OFAC screening, free 1k tx/mo. Go-live needs:
@@ -1510,7 +1512,12 @@ async function facilitatorPost(base, path, body) {
 }
 // Free preview quota: each client gets FREE_LIMIT calls/month, then x402 payment required.
 const FREE_LIMIT = 1;
-const freeQuota = {}; // ip -> { count, monthKey }
+// ip -> { count, monthKey }. In-process, per-isolate, IP-keyed — a soft limit,
+// not a durable hard quota. `lastPruneKey` tracks the month we last pruned for,
+// so a rollover drops last month's stale IP entries exactly once instead of
+// leaking them for the isolate's whole lifetime.
+const freeQuota = {};
+let lastPruneKey = null;
 function monthKey() { return monthKeyFromDate(new Date()); }
 // Gate an agent endpoint. Returns true to let the handler run, false after it
 // has written a 402. Async because live mode calls the facilitator.
@@ -1550,6 +1557,9 @@ async function x402Gate(req, res, baseResource, priceAtomic, desc) {
   // it must NOT be trusted — an attacker could rotate it for unlimited free calls.
   const ip = req.headers['cf-connecting-ip'] || req.ip || 'anon';
   const mk = monthKey();
+  // On month rollover, drop last month's entries (see pruneStaleQuota) so the
+  // in-process map can't grow unbounded over the isolate's lifetime.
+  if (mk !== lastPruneKey) { pruneStaleQuota(freeQuota, mk); lastPruneKey = mk; }
   let q = freeQuota[ip];
   if (!q || q.monthKey !== mk) { q = freeQuota[ip] = { count: 0, monthKey: mk }; }
   q.count++;

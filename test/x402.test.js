@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   USDC_DP,
   monthKeyFromDate,
+  pruneStaleQuota,
   isLiveMode,
   decodePaymentHeader,
   paymentRequirements,
@@ -31,6 +32,29 @@ describe('monthKeyFromDate', () => {
   it('formats YYYY-M with a 0-indexed UTC month', () => {
     expect(monthKeyFromDate(new Date('2026-07-14T00:00:00Z'))).toBe('2026-6');
     expect(monthKeyFromDate(new Date('2026-01-01T00:00:00Z'))).toBe('2026-0');
+  });
+});
+
+describe('pruneStaleQuota', () => {
+  it('removes entries whose monthKey != current and keeps current ones', () => {
+    const quota = {
+      '1.1.1.1': { count: 1, monthKey: '2026-6' },
+      '2.2.2.2': { count: 1, monthKey: '2026-5' }, // last month
+      '3.3.3.3': { count: 3, monthKey: '2026-6' },
+    };
+    const removed = pruneStaleQuota(quota, '2026-6');
+    expect(removed).toBe(1);
+    expect(Object.keys(quota).sort()).toEqual(['1.1.1.1', '3.3.3.3']);
+  });
+  it('drops malformed (null) entries too', () => {
+    const quota = { a: null, b: { count: 1, monthKey: '2026-6' } };
+    expect(pruneStaleQuota(quota, '2026-6')).toBe(1);
+    expect(Object.keys(quota)).toEqual(['b']);
+  });
+  it('is a no-op for an empty or missing map', () => {
+    const quota = {};
+    expect(pruneStaleQuota(quota, '2026-6')).toBe(0);
+    expect(pruneStaleQuota(null, '2026-6')).toBe(0);
   });
 });
 

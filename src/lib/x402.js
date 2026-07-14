@@ -12,6 +12,26 @@ export function monthKeyFromDate(d) {
   return d.getUTCFullYear() + '-' + d.getUTCMonth();
 }
 
+// Drop every free-quota entry whose monthKey no longer matches the current
+// month — once the month rolls over those entries can never be relevant again
+// (a new month resets each IP's count), so keeping them is a pure memory leak.
+// The demo-mode quota map is in-process and IP-keyed, so without this it grows
+// unbounded over an isolate's lifetime. Mutates `quota` in place; returns the
+// number of entries removed. (NOTE: the quota is per-isolate/per-IP — a soft
+// limit, not a durable cross-isolate hard cap; move to KV/D1 if that's needed.)
+export function pruneStaleQuota(quota, currentKey) {
+  if (!quota) return 0;
+  let removed = 0;
+  for (const ip of Object.keys(quota)) {
+    const q = quota[ip];
+    if (!q || q.monthKey !== currentKey) {
+      delete quota[ip];
+      removed++;
+    }
+  }
+  return removed;
+}
+
 // Live mode requires a real receiving wallet AND a facilitator URL we can POST
 // to for on-chain verification. With either missing we run in demo mode, which
 // hands out a small free quota and NEVER trusts an X-PAYMENT header. There is
