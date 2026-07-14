@@ -1746,6 +1746,12 @@ async function renderScamWeb(){
     ...g.edges.map((e, i) => ({ data: { id: 'e'+i, source: e.source, target: e.target, txurl: e.txurl, label: [e.amount, e.asset].filter(Boolean).join(' '), caseName: e.caseName, note: e.note, sources: e.sources } })),
   ].filter(el => el.data.source === undefined || (g.nodes.find(n=>n.id===el.data.source) && g.nodes.find(n=>n.id===el.data.target)));
   host.innerHTML = ''; // clear the "Loading graph…" placeholder before cytoscape mounts
+  const edgeCount = els.filter(x => x.data.source !== undefined).length;
+  // With no traced edges yet, a force layout collapses the nodes into an ugly
+  // vertical strip — arrange the identified entities in a readable grid instead.
+  const graphLayout = edgeCount === 0
+    ? { name: 'grid', avoidOverlap: true, avoidOverlapPadding: 24, padding: 28, condense: false }
+    : { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 85, componentSpacing: 120, nodeOverlap: 16, gravity: 0.3, padding: 28, randomize: false };
   const cy = cytoscape({
     container: host, elements: els,
     style: [
@@ -1757,7 +1763,7 @@ async function renderScamWeb(){
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#f5b544' } },
       { selector: 'edge:selected', style: { 'line-color': '#f5b544', 'target-arrow-color': '#f5b544', 'width': 2.5 } },
     ],
-    layout: { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 85, componentSpacing: 120, nodeOverlap: 16, gravity: 0.3, padding: 28, randomize: false },
+    layout: graphLayout,
     wheelSensitivity: 0.2, minZoom: 0.3, maxZoom: 2.5,
   });
   cy.ready(() => { cy.fit(undefined, 30); });
