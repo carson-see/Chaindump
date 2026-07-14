@@ -1802,6 +1802,27 @@ app.get('/', wrap(async (req, res) => {
   sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: `${ORIGIN}/` }));
 }));
 
+// Graceful fallback for any unmatched path. A page navigation (GET, wants HTML,
+// not /api or a file) renders the SPA shell — the client router lands the user
+// on the live board instead of a bare "404 Not Found". API/asset paths keep a
+// real 404 so agents and tooling see the correct status.
+app.notFound(async (c) => {
+  const url = new URL(c.req.url);
+  const p = url.pathname;
+  const wantsHtml = (c.req.header('accept') || '').includes('text/html');
+  const isPage = c.req.method === 'GET' && wantsHtml
+    && !p.startsWith('/api/') && !p.startsWith('/.well-known/')
+    && !/\.[a-z0-9]+$/i.test(p); // has a file extension → treat as a missing asset
+  if (isPage) {
+    try {
+      const html = ogHtml(await spaShell(ENV, c.req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: ORIGIN + p });
+      return c.html(html, 200, { Link: DISCOVERY_LINK });
+    } catch (e) { console.error('[notFound spa] failed:', e && e.message); }
+  }
+  if (p.startsWith('/api/')) return c.json({ error: 'not_found', path: p }, 404);
+  return c.text('404 Not Found', 404);
+});
+
 // ---------------------------------------------------------------------------
 // Cron Trigger — refreshes the D1 snapshot cache off the request path (real
 // freshness bounded by the cron interval, not per-request cache luck) and
