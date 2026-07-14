@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 import { monthKey, hitQuota } from './lib/x402.js';
+import { prefersMarkdown } from './lib/negotiate.js';
 
 const ENV = {};
 const app = new Hono();
@@ -1883,7 +1884,7 @@ app.get('/llms.txt', (c) => {
 // crawlers can't read the actual numbers. This inlines the current top-chains
 // table (real snapshot data, sourced) + every view's analyst framing as citable
 // markdown text, closing the client-side-rendering gap for AI engines.
-app.get('/llms-full.txt', async (c) => {
+async function llmsFullBody() {
   let chainsMd = '_Live snapshot temporarily unavailable._';
   let asOf = '';
   try {
@@ -1919,8 +1920,10 @@ app.get('/llms-full.txt', async (c) => {
     `Usage: AI assistants may read and cite (search=yes, ai-input=yes); training is disallowed (ai-train=no). See ${ORIGIN}/robots.txt.`,
     '',
   ].join('\n');
-  return c.text(body, 200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=600' });
-});
+  return body;
+}
+app.get('/llms-full.txt', async (c) =>
+  c.text(await llmsFullBody(), 200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=600' }));
 
 app.get('/sitemap.xml', async (c) => {
   const urls = [`${ORIGIN}/`, ...Object.keys(VIEW_OG).map((v) => `${ORIGIN}/${v}`)];
@@ -2034,6 +2037,15 @@ const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", 
 // Homepage: Worker-served (run_worker_first: ["/"]) so we can attach the Link
 // header (sendHtml sets it) and proper homepage OG tags.
 app.get('/', wrap(async (req, res) => {
+  // Markdown-for-agents (RFC content negotiation): an agent that explicitly asks
+  // for text/markdown gets the inlined markdown; browsers send text/html and are
+  // untouched, so HTML stays the default.
+  if (prefersMarkdown(req.headers.accept)) {
+    res.setHeader('content-type', 'text/markdown; charset=utf-8');
+    res.setHeader('vary', 'Accept');
+    res.setHeader('link', DISCOVERY_LINK);
+    return res.status(200).html(await llmsFullBody());
+  }
   sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: `${ORIGIN}/` }));
 }));
 
