@@ -35,3 +35,22 @@ export function pruneStaleQuota(quota, currentKey) {
   }
   return removed;
 }
+
+// Record one free-preview hit for `ip` in the given month and decide whether it
+// is still within the free allowance. Encapsulates the full bookkeeping so the
+// Worker's gate stays a thin wrapper and the logic is unit-testable:
+//   1. On month rollover (tracked via the mutable `state.lastPruneKey`) sweep
+//      last month's entries exactly once — the leak fix.
+//   2. Get-or-create this IP's counter for the current month, then increment.
+//   3. Allow while count <= limit; report remaining free calls.
+// Mutates `quota` and `state` in place. Returns { allowed, remaining, count }.
+export function hitQuota(quota, ip, currentKey, limit, state) {
+  if (state.lastPruneKey !== currentKey) {
+    pruneStaleQuota(quota, currentKey);
+    state.lastPruneKey = currentKey;
+  }
+  let q = quota[ip];
+  if (!q || q.monthKey !== currentKey) { q = quota[ip] = { count: 0, monthKey: currentKey }; }
+  q.count++;
+  return { allowed: q.count <= limit, remaining: Math.max(0, limit - q.count), count: q.count };
+}
