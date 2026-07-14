@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 import { prefersMarkdown } from './lib/negotiate.js';
-import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock } from './lib/chainkit.js';
+import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 
 const ENV = {};
@@ -112,17 +112,20 @@ function aggregateBreakdown(overview) {
   return out;
 }
 
-// growthepie master: origin_key -> { name, chainId }
+// growthepie master: chainId -> { origin, bucket, stack, da_layer } — origin for
+// the DAA lookup, the rest to derive a value-prop category when curated misses.
 function parseMaster(master) {
   const byChainId = {};
   const chains = (master && master.chains) || {};
   for (const originKey in chains) {
     const c = chains[originKey];
     const cid = c.evm_chain_id != null ? Number(c.evm_chain_id) : null;
-    if (cid != null && !Number.isNaN(cid)) byChainId[cid] = originKey;
+    if (cid != null && !Number.isNaN(cid)) byChainId[cid] = { origin: originKey, bucket: c.bucket, stack: c.stack, da_layer: c.da_layer };
   }
   return byChainId;
 }
+// Back-compat: the CF-blocked D1 seed may still hold the old chainId->string shape.
+function masterRec(v) { return typeof v === 'string' ? { origin: v } : (v || null); }
 // growthepie fundamentals: latest value per origin_key for a metric
 function latestByOrigin(fundamentals, metricKey) {
   const best = {}; // origin -> {date, value}
@@ -270,13 +273,16 @@ async function buildSnapshot(opts = {}) {
     .filter((c) => c && c.name)
     .map((c) => {
       const key = norm(c.name);
-      const originKey = c.chainId != null ? masterMap[Number(c.chainId)] : null;
+      const mrec = c.chainId != null ? masterRec(masterMap[Number(c.chainId)]) : null;
+      const originKey = mrec?.origin || null;
       return {
         key,
         name: c.name,
         symbol: c.tokenSymbol || null,
         gecko: c.gecko_id || null,
         chainId: c.chainId ?? null,
+        // value-prop category: curated taxonomy first, then growthepie-derived.
+        category: resolveCategory(c.name, deriveCategory(mrec)),
         tvl: Number(c.tvl) || 0,
         volume24h: volAgg[key] || 0,
         fees24h: feeAgg[key] || 0,
@@ -389,21 +395,29 @@ async function buildSnapshot(opts = {}) {
   // and computed here on the refresh, not per request — stable + reproducible.
   // opts.prior carries the previous blob's peer keys for hysteresis (anti-churn).
   const prior = opts.prior || {};
-  for (const r of ranked) r.coverage = coverageTier(r);
+  for (const r of ranked) { r.coverage = coverageTier(r); r.categoryLabel = categoryLabel(r.category); }
   // Linking view: a chain absent from the volume/fee breakdown carries 0, which
   // means "unknown", not "measured zero" — pass null so similarity never claims a
-  // metric it doesn't have (chainkit treats null as absent).
+  // metric it doesn't have (chainkit treats null as absent). Candidates are the
+  // enriched top-50, so every peer resolves in this blob (no tail 404s).
   const linkRows = ranked.map((r) => ({
-    key: r.key, name: r.name, coverage: r.coverage,
+    key: r.key, name: r.name, category: r.category, coverage: r.coverage,
     tvl: r.tvl || null, volume24h: r.volume24h || null, fees24h: r.fees24h || null,
     stables: r.stables || null, feeYield: r.feeYield || null, turnover: r.turnover || null,
   }));
   for (const r of ranked) {
     const rel = relatedBlock(r.name, linkRows, { k: 6, prior: prior[r.key] || [] });
-    r.category = rel.category;
-    r.categoryLabel = rel.categoryLabel;
     r.related = rel;
   }
+  // Lite index of the WHOLE universe (not just the top-50) so a direct visit to a
+  // tail chain resolves to a real profile instead of a 404. Kept in a separate
+  // cache key so it never bloats the /api/chains leaderboard payload.
+  const chainsLite = rows.map((r) => ({
+    key: r.key, name: r.name, symbol: r.symbol, gecko: r.gecko, chainId: r.chainId,
+    category: r.category, categoryLabel: categoryLabel(r.category), coverage: coverageTier(r),
+    tvl: r.tvl, volume24h: r.volume24h, fees24h: r.fees24h, stables: r.stables,
+    activeAddresses: r.activeAddresses,
+  }));
   const totals = ranked.reduce((a, r) => {
     a.tvl += r.tvl; a.volume24h += r.volume24h; a.fees24h += r.fees24h; a.stables += r.stables || 0;
     a.activeAddresses += r.activeAddresses || 0;
@@ -419,7 +433,43 @@ async function buildSnapshot(opts = {}) {
     usersCoverage,
     totals,
     chains: ranked,
+    chainsLite, // persisted separately (key 'chains_lite'); stripped from the 'chains' blob
   };
+}
+// Persist the snapshot: the top-50 leaderboard under 'chains' and the whole-
+// universe lite index under 'chains_lite'. Keeping them separate stops the lite
+// index from bloating every /api/chains response. Returns the trimmed blob.
+async function persistSnapshot(db, data, ts) {
+  const lite = data.chainsLite;
+  const blob = { ...data }; delete blob.chainsLite;
+  try {
+    await db.prepare(`INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`)
+      .bind(JSON.stringify(blob), ts).run();
+    if (lite) await db.prepare(`INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains_lite', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`)
+      .bind(JSON.stringify(lite), ts).run();
+  } catch (e) { /* best-effort persistence */ }
+  return blob;
+}
+// Resolve a chain beyond the top-50 from the lite index, and compute its peers at
+// request time against the top-50 (every peer resolves in the main blob, so no
+// dead links). Returns a basic profile row or null. Not the hot path.
+async function resolveTailChain(target) {
+  let lite = null;
+  try { const rows = await dbQuery(`SELECT data FROM snapshot_cache WHERE key='chains_lite' LIMIT 1`); if (rows[0]?.data) lite = JSON.parse(rows[0].data); } catch (e) {}
+  if (!Array.isArray(lite)) return null;
+  const row = lite.find((c) => c.name.toLowerCase() === target);
+  if (!row) return null;
+  const top = (cache.data && cache.data.chains) || [];
+  const linkRows = [row, ...top].map((r) => ({
+    key: r.key || norm(r.name), name: r.name, category: r.category, coverage: r.coverage || 'basic',
+    tvl: r.tvl || null, volume24h: r.volume24h || null, fees24h: r.fees24h || null,
+    stables: r.stables || null, feeYield: r.feeYield || null, turnover: r.turnover || null,
+  }));
+  row.related = relatedBlock(row.name, linkRows, { k: 6 });
+  row.categoryLabel = row.categoryLabel || categoryLabel(row.category);
+  return row;
 }
 
 // Read the cron-refreshed snapshot from D1 (instant, no live upstream calls on
@@ -434,15 +484,10 @@ async function loadSnapshot() {
   }
   const data = await buildSnapshot();
   const ts = Date.now();
-  if (ENV.DB) {
-    try {
-      await ENV.DB.prepare(
-        `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
-         ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
-      ).bind(JSON.stringify(data), ts).run();
-    } catch (e) { /* best-effort priming, not fatal */ }
-  }
-  return { data, ts };
+  let blob;
+  if (ENV.DB) blob = await persistSnapshot(ENV.DB, data, ts);
+  else { blob = { ...data }; delete blob.chainsLite; }
+  return { data: blob, ts };
 }
 
 function fmtShort(n) {
@@ -897,7 +942,8 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
     const target = String(req.params.name || '').toLowerCase();
-    const row = cache.data.chains.find((c) => c.name.toLowerCase() === target);
+    let row = cache.data.chains.find((c) => c.name.toLowerCase() === target);
+    if (!row) { row = await resolveTailChain(target); } // beyond the top-50 → lite index
     if (!row) return res.status(404).json({ error: 'unknown chain' });
 
     let topProjects = [];
@@ -2235,12 +2281,8 @@ async function handleScheduled(event, env, ctx) {
     if (tick % 2016 === 0) await refreshNftCatalog(env);
   }
 
-  cache = { ts, data };
-  if (!env.DB) return;
-  await env.DB.prepare(
-    `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
-     ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
-  ).bind(JSON.stringify(data), ts).run();
+  if (!env.DB) { const blob = { ...data }; delete blob.chainsLite; cache = { ts, data: blob }; return; }
+  cache = { ts, data: await persistSnapshot(env.DB, data, ts) };
 }
 
 export default {
