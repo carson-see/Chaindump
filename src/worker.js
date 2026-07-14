@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
+import { monthKey, pruneStaleQuota } from './lib/x402.js';
 
 const ENV = {};
 const app = new Hono();
@@ -1487,8 +1488,13 @@ function require402(res, resource, priceAtomic, desc) {
 }
 // Free preview quota: each client gets FREE_LIMIT calls/month, then x402 payment required.
 const FREE_LIMIT = 1;
-const freeQuota = {}; // ip -> { count, monthKey }
-function monthKey() { const d = new Date(); return d.getUTCFullYear() + '-' + d.getUTCMonth(); }
+// ip -> { count, monthKey }. In-process, per-isolate, IP-keyed — a soft limit,
+// not a durable hard quota (see src/lib/x402.js for the design note + the KV
+// migration path if a cross-isolate quota is ever needed). `lastPruneKey`
+// tracks the month we last pruned for, so a rollover drops stale IP entries
+// exactly once instead of leaking them for the isolate's whole lifetime.
+const freeQuota = {};
+let lastPruneKey = null;
 function x402Gate(req, res, baseResource, priceAtomic, desc) {
   const pay = req.headers['x-payment'];
   // SECURITY(go-live blocker): a non-empty X-PAYMENT is currently trusted without
@@ -1500,6 +1506,10 @@ function x402Gate(req, res, baseResource, priceAtomic, desc) {
   // rate limiting — an attacker could rotate it to get unlimited free calls.
   const ip = req.headers['cf-connecting-ip'] || req.ip || 'anon';
   const mk = monthKey();
+  // On month rollover, drop last month's entries — they can never be relevant
+  // again (a new month resets each IP's count) and would otherwise accumulate
+  // unbounded over the isolate's lifetime.
+  if (mk !== lastPruneKey) { pruneStaleQuota(freeQuota, mk); lastPruneKey = mk; }
   let q = freeQuota[ip];
   if (!q || q.monthKey !== mk) { q = freeQuota[ip] = { count: 0, monthKey: mk }; }
   q.count++;
