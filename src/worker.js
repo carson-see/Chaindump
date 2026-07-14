@@ -1491,8 +1491,14 @@ const freeQuota = {}; // ip -> { count, monthKey }
 function monthKey() { const d = new Date(); return d.getUTCFullYear() + '-' + d.getUTCMonth(); }
 function x402Gate(req, res, baseResource, priceAtomic, desc) {
   const pay = req.headers['x-payment'];
-  if (pay) return true; // paid — TODO(go-live): verify via CDP facilitator before serving
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'anon';
+  // SECURITY(go-live blocker): a non-empty X-PAYMENT is currently trusted without
+  // on-chain verification. Before enabling real billing, verify the payment via the
+  // CDP facilitator here — otherwise any client sends `X-PAYMENT: x` for free access.
+  if (pay) return true;
+  // Key the free quota on Cloudflare's trusted client IP. X-Forwarded-For is
+  // client-supplied (leftmost value spoofable), so it must NOT be trusted for
+  // rate limiting — an attacker could rotate it to get unlimited free calls.
+  const ip = req.headers['cf-connecting-ip'] || req.ip || 'anon';
   const mk = monthKey();
   let q = freeQuota[ip];
   if (!q || q.monthKey !== mk) { q = freeQuota[ip] = { count: 0, monthKey: mk }; }
