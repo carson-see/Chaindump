@@ -1491,8 +1491,14 @@ const freeQuota = {}; // ip -> { count, monthKey }
 function monthKey() { const d = new Date(); return d.getUTCFullYear() + '-' + d.getUTCMonth(); }
 function x402Gate(req, res, baseResource, priceAtomic, desc) {
   const pay = req.headers['x-payment'];
-  if (pay) return true; // paid — TODO(go-live): verify via CDP facilitator before serving
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'anon';
+  // SECURITY(go-live blocker): a non-empty X-PAYMENT is currently trusted without
+  // on-chain verification. Before enabling real billing, verify the payment via the
+  // CDP facilitator here — otherwise any client sends `X-PAYMENT: x` for free access.
+  if (pay) return true;
+  // Key the free quota on Cloudflare's trusted client IP. X-Forwarded-For is
+  // client-supplied (leftmost value spoofable), so it must NOT be trusted for
+  // rate limiting — an attacker could rotate it to get unlimited free calls.
+  const ip = req.headers['cf-connecting-ip'] || req.ip || 'anon';
   const mk = monthKey();
   let q = freeQuota[ip];
   if (!q || q.monthKey !== mk) { q = freeQuota[ip] = { count: 0, monthKey: mk }; }
@@ -1670,12 +1676,24 @@ app.get('/api/health', wrap((req, res) => res.json({ ok: true })));
 // Twitter/Discord/Slack. The client reads the path and opens the right view.
 // ---------------------------------------------------------------------------
 const OG_DESC_FALLBACK = 'Onchain intelligence — chains, assets, markets, policy & forensics. What is changing, why, and what to do about it.';
-function ogHtml(html, { title, desc, url }) {
+// Serialize JSON-LD safely for inlining in a <script> (neutralize "</script>").
+function jsonLd(obj) { return JSON.stringify(obj).replace(/</g, '\\u003c'); }
+function ogHtml(html, { title, desc, url, ld }) {
   const t = escapeHtml(title || 'Chaindump — Onchain Intelligence');
   const d = escapeHtml(desc || OG_DESC_FALLBACK);
   const u = escapeHtml(url || 'https://chaindump.xyz/');
+  // Base structured-data graph: Organization + WebSite, present on every page so
+  // AI engines and search can attribute claims to Chaindump. Per-page nodes (a
+  // chain Dataset, a scam Report, etc.) are appended via the optional `ld` arg.
+  const graph = [
+    { '@type': 'Organization', '@id': ORIGIN + '/#org', name: 'Chaindump', url: ORIGIN + '/', description: OG_DESC_FALLBACK, logo: ORIGIN + '/favicon.svg' },
+    { '@type': 'WebSite', '@id': ORIGIN + '/#site', name: 'Chaindump', url: ORIGIN + '/', description: OG_DESC_FALLBACK, inLanguage: 'en', publisher: { '@id': ORIGIN + '/#org' } },
+  ];
+  if (ld) graph.push(...(Array.isArray(ld) ? ld : [ld]));
+  const structured = jsonLd({ '@context': 'https://schema.org', '@graph': graph });
   const tags = `<title>${t}</title>
 <meta name="description" content="${d}">
+<link rel="canonical" href="${u}">
 <meta property="og:title" content="${t}">
 <meta property="og:description" content="${d}">
 <meta property="og:type" content="website">
@@ -1683,7 +1701,8 @@ function ogHtml(html, { title, desc, url }) {
 <meta property="og:site_name" content="Chaindump">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="${t}">
-<meta name="twitter:description" content="${d}">`;
+<meta name="twitter:description" content="${d}">
+<script type="application/ld+json">${structured}</script>`;
   return html.replace(/<title>[\s\S]*?<\/title>/, tags);
 }
 async function spaShell(env, req) {
@@ -1692,6 +1711,13 @@ async function spaShell(env, req) {
     const r = await env.ASSETS.fetch(new Request(new URL('/index.html', req.url)));
     return await r.text();
   } catch (e) { console.error('[spaShell] failed:', e && e.message); throw e; }
+}
+// BreadcrumbList for entity deep-links: Home › {section} › {entity}.
+function breadcrumb(section, sectionUrl, entity, entityUrl) {
+  const el = [{ '@type': 'ListItem', position: 1, name: 'Chaindump', item: ORIGIN + '/' }];
+  if (section) el.push({ '@type': 'ListItem', position: 2, name: section, item: sectionUrl });
+  if (entity) el.push({ '@type': 'ListItem', position: el.length + 1, name: entity, item: entityUrl });
+  return { '@type': 'BreadcrumbList', itemListElement: el };
 }
 function sendHtml(res, html) { res.setHeader('Link', DISCOVERY_LINK); res.status(200).html(html); }
 
@@ -1712,10 +1738,24 @@ const VIEW_OG = {
   traces: ['Scam Tracker — Chaindump', 'Traced scam fund-flows plus live OFAC wallet screening against 900+ sanctioned addresses across 14 chains.'],
   api: ['Agent API · x402 — Chaindump', 'A versioned, provenance-tagged JSON API for AI agents, payable per-call via x402.'],
 };
+// Views whose primary content is a ranking → emit an ItemList so AI engines can
+// answer "top X" questions directly. Only `live` has its items in the snapshot
+// cache at request time; the rest stay description-only until wired to their data.
 Object.keys(VIEW_OG).forEach((v) => {
   app.get('/' + v, wrap(async (req, res) => {
     const [title, desc] = VIEW_OG[v];
-    sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/${v}` }));
+    const url = `${ORIGIN}/${v}`;
+    let ld;
+    if (v === 'live') {
+      try {
+        if (!cache.data) cache = await loadSnapshot();
+        const items = (cache.data.chains || []).slice(0, 20).map((c, i) => ({
+          '@type': 'ListItem', position: i + 1, name: c.name, url: `${ORIGIN}/chain/${encodeURIComponent(c.name)}`,
+        }));
+        if (items.length) ld = { '@type': 'ItemList', '@id': url + '#list', name: 'Top chains by on-chain activity', itemListOrder: 'https://schema.org/ItemListOrderDescending', numberOfItems: items.length, itemListElement: items };
+      } catch (e) { console.error('[live itemlist] skipped:', e && e.message); }
+    }
+    sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
   }));
 });
 app.get('/chain/:name', wrap(async (req, res) => {
@@ -1726,7 +1766,22 @@ app.get('/chain/:name', wrap(async (req, res) => {
   const desc = row
     ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
     : OG_DESC_FALLBACK;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/chain/${encodeURIComponent(key)}` }));
+  const url = `${ORIGIN}/chain/${encodeURIComponent(key)}`;
+  let ld;
+  if (row) {
+    const dm = (cache.data && cache.data.updatedAt) ? new Date(cache.data.updatedAt).toISOString() : undefined;
+    const measured = [
+      { '@type': 'PropertyValue', name: 'Total value locked (USD)', value: row.tvl },
+      { '@type': 'PropertyValue', name: '24h DEX volume (USD)', value: row.volume24h },
+      { '@type': 'PropertyValue', name: 'Composite activity rank', value: row.rank },
+    ];
+    if (row.tokenPrice != null) measured.push({ '@type': 'PropertyValue', name: 'Token price (USD)', value: row.tokenPrice });
+    ld = [
+      { '@type': 'Dataset', '@id': url + '#dataset', name: `${row.name} on-chain metrics`, description: desc, url, isPartOf: { '@id': ORIGIN + '/#site' }, creator: { '@id': ORIGIN + '/#org' }, publisher: { '@id': ORIGIN + '/#org' }, dateModified: dm, variableMeasured: measured, citation: ['https://defillama.com/', 'https://www.coingecko.com/'] },
+      breadcrumb('Live · Top 50', `${ORIGIN}/live`, row.name, url),
+    ];
+  }
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
 }));
 app.get('/scam/:slug', wrap(async (req, res) => {
   const slug = String(req.params.slug || '');
@@ -1734,7 +1789,14 @@ app.get('/scam/:slug', wrap(async (req, res) => {
   try { row = (await dbQuery(`SELECT name, category, amount_usd FROM scam_traces WHERE slug = ?`, [slug]))[0]; } catch (e) {}
   const title = row ? `${row.name} — Chaindump Scam Tracker` : 'Scam Tracker — Chaindump';
   const desc = row ? `${row.name}${row.amount_usd ? ` — ~$${fmtShort(row.amount_usd)} ${row.category || ''}` : ''}. Traced wallets, fund-flow and sources on Chaindump.` : OG_DESC_FALLBACK;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/scam/${encodeURIComponent(slug)}` }));
+  const url = `${ORIGIN}/scam/${encodeURIComponent(slug)}`;
+  // Article node describes the CASE (an event/report). Named-individual allegations
+  // stay out of structured data per the human-review policy (CLAUDE.md §1.5).
+  const ld = row ? [
+    { '@type': 'Article', '@id': url + '#article', headline: `${row.name} — traced fund-flow`, description: desc, url, mainEntityOfPage: url, isPartOf: { '@id': ORIGIN + '/#site' }, author: { '@id': ORIGIN + '/#org' }, publisher: { '@id': ORIGIN + '/#org' } },
+    breadcrumb('Scam Tracker', `${ORIGIN}/traces`, row.name, url),
+  ] : undefined;
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
 }));
 app.get('/collection/:id', wrap(async (req, res) => {
   const id = String(req.params.id || '');
@@ -1742,7 +1804,12 @@ app.get('/collection/:id', wrap(async (req, res) => {
   try { if (ENV.DB) row = await ENV.DB.prepare(`SELECT name, chain FROM nft_catalog WHERE id = ?`).bind(id).first(); } catch (e) {}
   const title = row ? `${row.name} — Chaindump` : 'NFT Collection — Chaindump';
   const desc = row ? `${row.name} (${row.chain}) — live floor, market cap, 24h volume and holders on Chaindump.` : OG_DESC_FALLBACK;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/collection/${encodeURIComponent(id)}` }));
+  const url = `${ORIGIN}/collection/${encodeURIComponent(id)}`;
+  const ld = row ? [
+    { '@type': 'Dataset', '@id': url + '#dataset', name: `${row.name} NFT market metrics`, description: desc, url, isPartOf: { '@id': ORIGIN + '/#site' }, publisher: { '@id': ORIGIN + '/#org' }, citation: ['https://www.coingecko.com/'] },
+    breadcrumb('NFTs & Ordinals', `${ORIGIN}/nft`, row.name, url),
+  ] : undefined;
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
 }));
 
 // ---------------------------------------------------------------------------
@@ -1770,15 +1837,106 @@ const ROBOTS_TXT = [
 
 app.get('/robots.txt', (c) => c.text(ROBOTS_TXT, 200, { 'cache-control': 'public, max-age=3600' }));
 
+// llms.txt (llmstxt.org) — a compact, link-first map of the site for LLMs and
+// AI-search crawlers. Built from VIEW_OG so it never drifts from the real views.
+app.get('/llms.txt', (c) => {
+  const label = (v) => (VIEW_OG[v][0] || '').replace(/ — Chaindump$/, '');
+  const line = (v) => `- [${label(v)}](${ORIGIN}/${v}): ${VIEW_OG[v][1]}`;
+  const contentViews = ['live', 'mid', 'grave', 'traces', 'stables', 'nft', 'rwa', 'infra', 'markets', 'geo', 'uspolicy', 'power', 'news'].filter((v) => VIEW_OG[v]);
+  const body = [
+    '# Chaindump',
+    '',
+    '> Real-time blockchain intelligence — analysis and aggregation with provenance across chains, assets, markets, policy and on-chain forensics. Chaindump answers "what is changing, why, and what to do about it", not "what is biggest". Every material figure cites a resolving, authoritative source.',
+    '',
+    'Chaindump is a public-data product. Its differentiation is sourced analysis, not raw numbers: each view pairs live metrics with a written analyst take and an explicit provenance trail.',
+    '',
+    '## Views',
+    ...contentViews.map(line),
+    '',
+    '## Entity deep-links',
+    '- Chain profile: ' + ORIGIN + '/chain/{name} (e.g. ' + ORIGIN + '/chain/ethereum) — live TVL, volume, fundamentals and analyst take.',
+    '- Scam case: ' + ORIGIN + '/scam/{slug} — traced wallets, fund-flow and sources.',
+    '- NFT collection: ' + ORIGIN + '/collection/{id} — live floor, market cap, volume, holders.',
+    '',
+    '## Full context',
+    '- [llms-full.txt](' + ORIGIN + '/llms-full.txt): current top-chains table (real data) plus every view\'s analysis, inlined as text.',
+    '',
+    '## For agents',
+    '- [Agent API (x402)](' + ORIGIN + '/api): versioned, provenance-tagged JSON API, payable per-call via x402 (USDC on Base).',
+    '- [API catalog](' + ORIGIN + '/.well-known/api-catalog)',
+    '- [Agent skills index](' + ORIGIN + '/.well-known/agent-skills/index.json)',
+    '- [MCP server card](' + ORIGIN + '/.well-known/mcp/server-card.json) — Chaindump intelligence as MCP tools.',
+    '',
+    '## Sources & method',
+    'DefiLlama (TVL), CoinGecko (prices), OFAC SDN via the 0xB10C mirror (sanctions screening, 900+ addresses across 18 chains), growthepie (active addresses), and government / mainstream / NPO sources for policy. Claims that name a private individual as a wrongdoer are human-reviewed before publication, never auto-generated.',
+    '',
+    '## Usage policy',
+    'AI assistants may read Chaindump to answer and cite (Content-Signal: search=yes, ai-input=yes) but not to train models (ai-train=no). See ' + ORIGIN + '/robots.txt.',
+    '',
+  ].join('\n');
+  return c.text(body, 200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=3600' });
+});
+
+// llms-full.txt — the SPA renders bodies from /api client-side, so non-JS AI
+// crawlers can't read the actual numbers. This inlines the current top-chains
+// table (real snapshot data, sourced) + every view's analyst framing as citable
+// markdown text, closing the client-side-rendering gap for AI engines.
+app.get('/llms-full.txt', async (c) => {
+  let chainsMd = '_Live snapshot temporarily unavailable._';
+  let asOf = '';
+  try {
+    if (!cache.data) cache = await loadSnapshot();
+    if (cache.data && cache.data.updatedAt) asOf = ` (as of ${cache.data.updatedAt})`;
+    const top = (cache.data.chains || []).slice(0, 25);
+    if (top.length) {
+      chainsMd = ['| # | Chain | TVL | 24h volume | Token price | Activity rank |', '|---|---|---|---|---|---|']
+        .concat(top.map((ch) => `| ${ch.rank ?? ''} | ${ch.name} | $${fmtShort(ch.tvl)} | $${fmtShort(ch.volume24h)} | ${ch.tokenPrice != null ? '$' + ch.tokenPrice : '—'} | ${ch.rank ?? ''} |`)).join('\n');
+    }
+  } catch (e) { console.error('[llms-full] snapshot skipped:', e && e.message); }
+  const label = (v) => (VIEW_OG[v][0] || '').replace(/ — Chaindump$/, '');
+  const contentViews = ['live', 'mid', 'grave', 'traces', 'stables', 'nft', 'rwa', 'infra', 'markets', 'geo', 'uspolicy', 'power', 'news'].filter((v) => VIEW_OG[v]);
+  const body = [
+    '# Chaindump — full context for LLMs',
+    '',
+    '> Real-time blockchain intelligence — sourced analysis and aggregation across chains, assets, markets, policy and on-chain forensics. This file inlines Chaindump\'s current headline data and per-view analysis as plain text, because the site UI renders from a JSON API client-side.',
+    '',
+    `## Top chains by composite on-chain activity${asOf}`,
+    'Ranked by composite activity (50% volume, 30% TVL, 20% fees). Source: DefiLlama (TVL/volume), CoinGecko (price).',
+    '',
+    chainsMd,
+    '',
+    '## What each view covers',
+    ...contentViews.map((v) => `### ${label(v)} (${ORIGIN}/${v})\n${VIEW_OG[v][1]}`),
+    '',
+    '## Provenance',
+    'Every material figure cites a resolving, authoritative source: DefiLlama (TVL), CoinGecko (prices), OFAC SDN via the 0xB10C mirror (sanctions, 900+ addresses / 18 chains), growthepie (active addresses), government / mainstream / NPO sources (policy). Claims naming a private individual as a wrongdoer are human-reviewed before publication.',
+    '',
+    '## Programmatic access',
+    `Agent API (x402, USDC on Base): ${ORIGIN}/api · API catalog: ${ORIGIN}/.well-known/api-catalog · MCP server card: ${ORIGIN}/.well-known/mcp/server-card.json`,
+    '',
+    `Usage: AI assistants may read and cite (search=yes, ai-input=yes); training is disallowed (ai-train=no). See ${ORIGIN}/robots.txt.`,
+    '',
+  ].join('\n');
+  return c.text(body, 200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=600' });
+});
+
 app.get('/sitemap.xml', async (c) => {
   const urls = [`${ORIGIN}/`, ...Object.keys(VIEW_OG).map((v) => `${ORIGIN}/${v}`)];
+  let lastmod;
   try { // include the live top chains as entity deep-links when the snapshot is warm
     if (!cache.data) cache = await loadSnapshot();
+    if (cache.data && cache.data.updatedAt) lastmod = new Date(cache.data.updatedAt).toISOString().slice(0, 10);
     for (const ch of (cache.data.chains || []).slice(0, 50)) urls.push(`${ORIGIN}/chain/${encodeURIComponent(ch.name)}`);
-  } catch (e) { console.error('[sitemap] entity deep-links skipped:', e instanceof Error ? e.message : e); }
+  } catch (e) { console.error('[sitemap] chain deep-links skipped:', e instanceof Error ? e.message : e); }
+  try { // scam cases + NFT collections — real-time product, so worth crawling
+    const scams = await dbQuery(`SELECT slug FROM scam_traces`).catch(() => []);
+    for (const s of scams) if (s.slug) urls.push(`${ORIGIN}/scam/${encodeURIComponent(s.slug)}`);
+    if (ENV.DB) { const { results } = await ENV.DB.prepare(`SELECT id FROM nft_catalog LIMIT 200`).all(); for (const r of (results || [])) if (r.id != null) urls.push(`${ORIGIN}/collection/${encodeURIComponent(r.id)}`); }
+  } catch (e) { console.error('[sitemap] case/collection deep-links skipped:', e instanceof Error ? e.message : e); }
+  const lm = lastmod ? `<lastmod>${lastmod}</lastmod>` : '';
   const body = '<?xml version="1.0" encoding="UTF-8"?>\n'
     + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-    + urls.map((u) => `  <url><loc>${u.replaceAll('&', '&amp;')}</loc></url>`).join('\n')
+    + urls.map((u) => `  <url><loc>${u.replaceAll('&', '&amp;')}</loc>${lm}</url>`).join('\n')
     + '\n</urlset>\n';
   return new Response(body, { headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
 });
@@ -1876,6 +2034,29 @@ const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", 
 app.get('/', wrap(async (req, res) => {
   sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: `${ORIGIN}/` }));
 }));
+
+// Graceful fallback for any unmatched path. A page navigation (GET, wants HTML,
+// not /api or a file) renders the SPA shell — the client router lands the user
+// on the live board instead of a bare "404 Not Found". API/asset paths keep a
+// real 404 so agents and tooling see the correct status.
+app.notFound(async (c) => {
+  const url = new URL(c.req.url);
+  const p = url.pathname;
+  // Any extensionless GET that isn't an API/well-known path is a page route —
+  // serve the SPA shell regardless of Accept so browsers AND crawlers/agents
+  // (which often send Accept: */*) get the app, never a bare 404.
+  const isPage = c.req.method === 'GET'
+    && !p.startsWith('/api/') && !p.startsWith('/.well-known/')
+    && !/\.[a-z0-9]+$/i.test(p); // has a file extension → treat as a missing asset
+  if (isPage) {
+    try {
+      const html = ogHtml(await spaShell(ENV, c.req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: ORIGIN + p });
+      return c.html(html, 200, { Link: DISCOVERY_LINK });
+    } catch (e) { console.error('[notFound spa] failed:', e && e.message); }
+  }
+  if (p.startsWith('/api/')) return c.json({ error: 'not_found', path: p }, 404);
+  return c.text('404 Not Found', 404);
+});
 
 // ---------------------------------------------------------------------------
 // Cron Trigger — refreshes the D1 snapshot cache off the request path (real

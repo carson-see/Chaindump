@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <base href="/" />
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<meta name="theme-color" content="#07090d" />
+<meta name="color-scheme" content="dark" />
 <title>Chaindump — Onchain Intelligence</title>
 <!-- cytoscape (~365KB) is lazy-loaded on demand by ensureCytoscape(), only when
      the Scam Tracker "Connection web" graph is opened — it must NOT block the
@@ -549,6 +552,10 @@ let state = { chains: [], sortKey: 'rank', dir: 1, q: '', expanded: null, detail
 const fmtUsd = (n) => n == null ? '—' : (n < 0 ? '-' : '') + '$' + Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(Math.abs(n));
 const fmtNum = (n) => n == null ? '—' : Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+// esc() stops attribute breakout but NOT dangerous URL schemes. Remote/third-party
+// URLs (news RSS links, CoinGecko homepage/twitter, etc.) must pass through this so
+// a `javascript:`/`data:` href can't execute on click. Allows only http(s)/mailto/relative.
+const safeUrl = (u) => { const s = String(u == null ? '' : u).trim(); return /^(https?:\/\/|mailto:|\/|#)/i.test(s) ? s : '#'; };
 
 // Robust source renderer — handles both plain URL strings ["https://…"] and
 // {title,url} objects, dedups, and derives a clean domain label when no title.
@@ -621,7 +628,7 @@ function actScore(c){
 function marketChips(c){
   const L = c.links;
   if (!L || (!L.dex && !L.nft)) return '<span class="muted">—</span>';
-  const a = (x,kind) => x && x.url ? `<a class="mchip" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer"><span class="mk">${kind}</span>${esc(x.name)} ↗</a>` : '';
+  const a = (x,kind) => x && x.url ? `<a class="mchip" href="${esc(safeUrl(x.url))}" target="_blank" rel="noopener noreferrer"><span class="mk">${kind}</span>${esc(x.name)} ↗</a>` : '';
   return `<div class="mkts">${a(L.dex,'DEX')}${a(L.nft,'NFT')}</div>`;
 }
 
@@ -773,13 +780,13 @@ function detailHtml(c) {
       <div class="app">
         <div class="apphead">${p.logo?`<img class="applogo" src="${esc(p.logo)}" alt="" onerror="this.remove()">`:''}<span class="pn">${esc(p.name)}</span><span class="pc">${esc(p.category||'—')}</span><span class="pt">${fmtUsd(p.tvl)}</span></div>
         ${p.description?`<div class="appdesc">${esc(p.description)}</div>`:''}
-        ${(p.url||p.twitter)?`<div class="applinks">${p.url?`<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Website ↗</a>`:''}${p.url&&p.twitter?' · ':''}${p.twitter?`<a href="https://x.com/${esc(String(p.twitter).replace(/^@/,''))}" target="_blank" rel="noopener noreferrer">@${esc(String(p.twitter).replace(/^@/,''))} ↗</a>`:''}</div>`:''}
+        ${(p.url||p.twitter)?`<div class="applinks">${p.url?`<a href="${esc(safeUrl(p.url))}" target="_blank" rel="noopener noreferrer">Website ↗</a>`:''}${p.url&&p.twitter?' · ':''}${p.twitter?`<a href="https://x.com/${esc(String(p.twitter).replace(/^@/,''))}" target="_blank" rel="noopener noreferrer">@${esc(String(p.twitter).replace(/^@/,''))} ↗</a>`:''}</div>`:''}
       </div>`).join('')}</div>`;
   const L = c.links;
-  const mbtn = (x,kind) => x && x.url ? `<a class="mktbtn" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer"><span class="mk">${kind}</span> ${esc(x.name)} ↗</a>` : '';
+  const mbtn = (x,kind) => x && x.url ? `<a class="mktbtn" href="${esc(safeUrl(x.url))}" target="_blank" rel="noopener noreferrer"><span class="mk">${kind}</span> ${esc(x.name)} ↗</a>` : '';
   const markets = (L && (L.dex || L.nft)) ? `<div class="dsec">Markets</div><div class="mktbtns">${mbtn(L.dex,'DEX')}${mbtn(L.nft,'NFT')}</div>` : '';
-  const tokensSection = (d && d.topTokens && d.topTokens.length) ? `<div class="dsec">Top tokens on this chain</div><div class="applist">${d.topTokens.map(t=>`<div class="app"><div class="apphead"><span class="pn">${esc(t.name)}</span><span class="pc">${esc(t.symbol)}</span><span class="pt">$${fmtTok(t.price)}${t.change24h!=null?' '+delta(t.change24h):''}</span></div><div class="applinks"><a href="${esc(t.url)}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a></div></div>`).join('')}</div>` : '';
-  const nftsSection = (d && d.topNfts && d.topNfts.length) ? `<div class="dsec">Top NFT / Ordinals collections</div><div class="applist">${d.topNfts.map(n=>`<div class="app"><div class="apphead"><span class="pn">${esc(n.name)}</span><a class="pt" href="${esc(n.url)}" target="_blank" rel="noopener noreferrer">View ↗</a></div></div>`).join('')}</div>` : '';
+  const tokensSection = (d && d.topTokens && d.topTokens.length) ? `<div class="dsec">Top tokens on this chain</div><div class="applist">${d.topTokens.map(t=>`<div class="app"><div class="apphead"><span class="pn">${esc(t.name)}</span><span class="pc">${esc(t.symbol)}</span><span class="pt">$${fmtTok(t.price)}${t.change24h!=null?' '+delta(t.change24h):''}</span></div><div class="applinks"><a href="${esc(safeUrl(t.url))}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a></div></div>`).join('')}</div>` : '';
+  const nftsSection = (d && d.topNfts && d.topNfts.length) ? `<div class="dsec">Top NFT / Ordinals collections</div><div class="applist">${d.topNfts.map(n=>`<div class="app"><div class="apphead"><span class="pn">${esc(n.name)}</span><a class="pt" href="${esc(safeUrl(n.url))}" target="_blank" rel="noopener noreferrer">View ↗</a></div></div>`).join('')}</div>` : '';
   const idx = actScore(c);
   const sent = (d && d.analysis && d.analysis.sentiment) || '';
   const vline = (d && d.analysis && d.analysis.trend) || (`Rank #${c.rank} by composite activity`);
@@ -1075,7 +1082,7 @@ function renderNft(data){
     const mkt = mktUrl(c);
     const body = open ? `<div class="gexp">
       ${c.risk?riskBanner(c.risk):''}
-      ${mkt?`<div class="gfield"><span class="gfl">Collection</span> <a href="${esc(mkt)}" target="_blank" rel="noopener noreferrer">View on marketplace ↗</a></div>`:''}
+      ${mkt?`<div class="gfield"><span class="gfl">Collection</span> <a href="${esc(safeUrl(mkt))}" target="_blank" rel="noopener noreferrer">View on marketplace ↗</a></div>`:''}
       <div class="gfield"><span class="gfl">Minted</span> ${esc(p.launched||'—')}${p.supply?` · ${Intl.NumberFormat('en').format(p.supply)} supply`:''}</div>
       <div class="gfield"><span class="gfl">Mint→2nd</span> raised ${p.mint_raise_usd?fmtUsd(p.mint_raise_usd):'—'} → secondary ${p.secondary_volume_usd?fmtUsd(p.secondary_volume_usd):'—'}</div>
       <div class="gfield"><span class="gfl">Floor</span> now ${p.floor_current!=null?p.floor_current+' ':'—'}${p.floor_ath?`(ATH ${p.floor_ath})`:''}</div>
@@ -1131,7 +1138,7 @@ function catCardHtml(c, cat){
         ${det.floorChange24h!=null?`<div class="catstat"><span class="${det.floorChange24h>=0?'up':'down'}">${det.floorChange24h>=0?'▲':'▼'} ${Math.abs(det.floorChange24h)}%</span><label>Floor 24h</label></div>`:''}
       </div>
       ${det.desc?`<div class="gbody" style="margin-top:8px">${esc(det.desc)}</div>`:''}
-      <div class="catlinks">${det.coingecko?`<a href="${esc(det.coingecko)}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a>`:''}${det.homepage?` · <a href="${esc(det.homepage)}" target="_blank" rel="noopener noreferrer">Website ↗</a>`:''}${det.twitter?` · <a href="${esc(det.twitter)}" target="_blank" rel="noopener noreferrer">X ↗</a>`:''}</div>
+      <div class="catlinks">${det.coingecko?`<a href="${esc(safeUrl(det.coingecko))}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a>`:''}${det.homepage?` · <a href="${esc(safeUrl(det.homepage))}" target="_blank" rel="noopener noreferrer">Website ↗</a>`:''}${det.twitter?` · <a href="${esc(safeUrl(det.twitter))}" target="_blank" rel="noopener noreferrer">X ↗</a>`:''}</div>
     </div>`;
   }
   return `<div class="gcard catcard ${open?'open':''}" data-id="${esc(c.id)}">
@@ -1494,7 +1501,7 @@ function renderRwa(data){
     const rwaRows = rwaLive.map((r,i) => `<div class="rlrow">
       <span class="rlrank">${i+1}</span>
       ${r.logo?`<img class="rllogo" src="${esc(r.logo)}" alt="" onerror="this.style.visibility='hidden'"/>`:'<span class="rllogo"></span>'}
-      <span class="rlname">${r.url?`<a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>`:esc(r.name)}</span>
+      <span class="rlname">${r.url?`<a href="${esc(safeUrl(r.url))}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>`:esc(r.name)}</span>
       <span class="rlchains">${(r.chains||[]).slice(0,4).map(chip).join('')}${(r.chains||[]).length>4?`<span class="rlchain">+${r.chains.length-4}</span>`:''}</span>
       <span class="rltvl">${fmtUsd(r.tvl)}</span>
       <span class="rlchg ${r.change_7d>=0?'up':'down'}">${r.change_7d!=null?(r.change_7d>=0?'▲':'▼')+' '+Math.abs(r.change_7d).toFixed(1)+'%':'—'}</span>
@@ -1554,7 +1561,7 @@ function renderNews(data){
   if (!data.items.length) { el.innerHTML = `<div class="skel">Loading news…</div>`; return; }
   const chips = NEWS_TOPICS.map(t=>`<span class="nfilter${t===newsTopic?' on':''}" data-topic="${t}">${t}</span>`).join('');
   const items = data.items.filter(i=>newsMatch(i, newsTopic));
-  const rows = items.map(i=>`<a class="newsitem" href="${esc(i.link)}" target="_blank" rel="noopener noreferrer"><span class="nsrc">${esc(i.src)}</span><span class="ntitle">${esc(i.title)}</span><span class="nage">${timeAgo(i.ts)}</span></a>`).join('');
+  const rows = items.map(i=>`<a class="newsitem" href="${esc(safeUrl(i.link))}" target="_blank" rel="noopener noreferrer"><span class="nsrc">${esc(i.src)}</span><span class="ntitle">${esc(i.title)}</span><span class="nage">${timeAgo(i.ts)}</span></a>`).join('');
   el.innerHTML = `<div class="gvintro">Trending crypto news — aggregated from CoinDesk, Cointelegraph, Decrypt, The Block, Bitcoin Magazine &amp; DL News. Updated every 10 min.</div>
     <div class="nfilters">${chips}</div>
     <div class="newslist">${rows||'<div class="skel">No stories match this filter.</div>'}</div>`;
@@ -1691,10 +1698,10 @@ function renderTraces(data){
   const cards = data.cases.map(c => {
     const p = c.profile || {};
     const open = state.tracesExpanded === c.slug;
-    const hops = (p.hops||[]).map(h => `<div class="hop"><div class="hopfrom">${esc(h.from||'')}</div><div class="hoparrow">↓<span class="hopmeta">${esc(String(h.amount||''))} ${esc(h.asset||'')}${h.chain?' · '+esc(h.chain):''}${h.txurl?` · <a href="${esc(h.txurl)}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}</span></div><div class="hopto">${esc(h.to||'')}</div>${h.note?`<div class="hopnote">${esc(h.note)}</div>`:''}</div>`).join('');
+    const hops = (p.hops||[]).map(h => `<div class="hop"><div class="hopfrom">${esc(h.from||'')}</div><div class="hoparrow">↓<span class="hopmeta">${esc(String(h.amount||''))} ${esc(h.asset||'')}${h.chain?' · '+esc(h.chain):''}${h.txurl?` · <a href="${esc(safeUrl(h.txurl))}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}</span></div><div class="hopto">${esc(h.to||'')}</div>${h.note?`<div class="hopnote">${esc(h.note)}</div>`:''}</div>`).join('');
     let src = srcHtml(c.sources);
     const tl = Array.isArray(p.timeline) ? `<div class="tl">${p.timeline.map(t=>`<div class="tlrow"><span class="tld">${esc(t.date||'')}</span><span class="tle">${esc(t.event||String(t))}</span></div>`).join('')}</div>` : (p.timeline?proseBox(p.timeline):'');
-    const ents = Array.isArray(p.entities) ? `<div class="entlist">${p.entities.map(en=>`<div class="entrow"><span class="entrole">${esc(en.role||'')}</span><span class="entname">${esc(en.name||en.label||'')}${en.person?` — <b>${esc(en.person)}</b>`:''}${en.address?` <code class="ent-addr">${esc(en.address)}</code>`:''}${(en.links&&en.links.length)?`<div class="entlinks">${en.links.map(l=>`<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.title||'source')} ↗</a>`).join('')}</div>`:''}</span></div>`).join('')}</div>` : (p.entities?proseBox(p.entities):'');
+    const ents = Array.isArray(p.entities) ? `<div class="entlist">${p.entities.map(en=>`<div class="entrow"><span class="entrole">${esc(en.role||'')}</span><span class="entname">${esc(en.name||en.label||'')}${en.person?` — <b>${esc(en.person)}</b>`:''}${en.address?` <code class="ent-addr">${esc(en.address)}</code>`:''}${(en.links&&en.links.length)?`<div class="entlinks">${en.links.map(l=>`<a href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer">${esc(l.title||'source')} ↗</a>`).join('')}</div>`:''}</span></div>`).join('')}</div>` : (p.entities?proseBox(p.entities):'');
     const hasTl = Array.isArray(p.timeline)?p.timeline.length:p.timeline;
     const hasEnt = Array.isArray(p.entities)?p.entities.length:p.entities;
     const body = open ? `<div class="gexp">${p.summary?proseBox(p.summary):''}${p.technical?`<div class="gsec">How the attack worked</div>${proseBox(p.technical)}`:''}${hasTl?`<div class="gsec">Timeline</div>${tl}`:''}${hops?`<div class="gsec">Fund-flow trail</div><div class="hoptrail">${hops}</div>`:''}${hasEnt?`<div class="gsec">Entities involved</div>${ents}`:''}${p.analysis?`<div class="gsec">Forensic analysis</div>${proseBox(p.analysis)}`:''}${p.aftermath?`<div class="gsec">Aftermath — recovery, indictments, sanctions</div>${proseBox(p.aftermath)}`:''}${p.industry_impact?`<div class="gsec">Industry impact</div>${proseBox(p.industry_impact)}`:''}${p.parallels?`<div class="gsec">Parallels to other cases</div>${proseBox(p.parallels)}`:''}${p.legal?`<div class="gsec">Legal / enforcement</div>${proseBox(p.legal)}`:''}${src}${stamp(c.updated_at)}</div>` : '';
@@ -1746,6 +1753,12 @@ async function renderScamWeb(){
     ...g.edges.map((e, i) => ({ data: { id: 'e'+i, source: e.source, target: e.target, txurl: e.txurl, label: [e.amount, e.asset].filter(Boolean).join(' '), caseName: e.caseName, note: e.note, sources: e.sources } })),
   ].filter(el => el.data.source === undefined || (g.nodes.find(n=>n.id===el.data.source) && g.nodes.find(n=>n.id===el.data.target)));
   host.innerHTML = ''; // clear the "Loading graph…" placeholder before cytoscape mounts
+  const edgeCount = els.filter(x => x.data.source !== undefined).length;
+  // With no traced edges yet, a force layout collapses the nodes into an ugly
+  // vertical strip — arrange the identified entities in a readable grid instead.
+  const graphLayout = edgeCount === 0
+    ? { name: 'grid', avoidOverlap: true, avoidOverlapPadding: 24, padding: 28, condense: false }
+    : { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 85, componentSpacing: 120, nodeOverlap: 16, gravity: 0.3, padding: 28, randomize: false };
   const cy = cytoscape({
     container: host, elements: els,
     style: [
@@ -1757,7 +1770,7 @@ async function renderScamWeb(){
       { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#f5b544' } },
       { selector: 'edge:selected', style: { 'line-color': '#f5b544', 'target-arrow-color': '#f5b544', 'width': 2.5 } },
     ],
-    layout: { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 85, componentSpacing: 120, nodeOverlap: 16, gravity: 0.3, padding: 28, randomize: false },
+    layout: graphLayout,
     wheelSensitivity: 0.2, minZoom: 0.3, maxZoom: 2.5,
   });
   cy.ready(() => { cy.fit(undefined, 30); });
@@ -1766,7 +1779,7 @@ async function renderScamWeb(){
   const mapped = g.casesMapped || 0, hidden = g.hiddenIsolated || 0;
   if (info) info.innerHTML = `<b>${nCount}</b> traced wallet${nCount===1?'':'s'} · <b>${eCount}</b> transaction${eCount===1?'':'s'} mapped across <b>${mapped}</b> case${mapped===1?'':'s'}${hidden>0?` · <span class="muted">${hidden} untraced address${hidden===1?'':'es'} hidden until flows are mapped</span>`:''} — tap a node or edge for detail.`;
   cy.on('tap', 'node', (ev) => { const d = ev.target.data(); const k = d.kind==='actor'?' <span class="dn">· culpable actor</span>':d.kind==='infra'?' <span style="color:#a78bfa">· neutral infrastructure (tool, not blamed)</span>':d.kind==='shared'?' <span style="color:var(--yellow)">· shared across cases</span>':''; if (info) info.innerHTML = `<b>${esc(d.label)}</b>${k}<br><span class="muted">Appears in: ${esc(d.cases)}</span>`; });
-  cy.on('tap', 'edge', (ev) => { const d = ev.target.data(); let esrc=''; if(d.sources){try{const a=typeof d.sources==='string'?JSON.parse(d.sources):d.sources; if(Array.isArray(a)&&a.length) esrc=`<br><span class="muted">Sources: ${a.map(x=>{const u=typeof x==='string'?x:(x&&x.url); const t=(x&&x.title)||(u?u.replace(/^https?:\/\//,'').split('/')[0]:'source'); return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(t)} ↗</a>`:'';}).filter(Boolean).join(' · ')}</span>`;}catch(e){}} if (info) info.innerHTML = `<b>${esc(d.caseName||'')}</b> · ${esc(d.label||'transfer')}${d.note?` — ${esc(d.note)}`:''}${d.txurl?` · <a href="${esc(d.txurl)}" target="_blank" rel="noopener noreferrer">open tx ↗</a>`:''}${esrc}`; });
+  cy.on('tap', 'edge', (ev) => { const d = ev.target.data(); let esrc=''; if(d.sources){try{const a=typeof d.sources==='string'?JSON.parse(d.sources):d.sources; if(Array.isArray(a)&&a.length) esrc=`<br><span class="muted">Sources: ${a.map(x=>{const u=typeof x==='string'?x:(x&&x.url); const t=(x&&x.title)||(u?u.replace(/^https?:\/\//,'').split('/')[0]:'source'); return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(t)} ↗</a>`:'';}).filter(Boolean).join(' · ')}</span>`;}catch(e){}} if (info) info.innerHTML = `<b>${esc(d.caseName||'')}</b> · ${esc(d.label||'transfer')}${d.note?` — ${esc(d.note)}`:''}${d.txurl?` · <a href="${esc(safeUrl(d.txurl))}" target="_blank" rel="noopener noreferrer">open tx ↗</a>`:''}${esrc}`; });
 }
 function renderTraceResults(data){
   const el = document.getElementById('tracelookup'); if (!el) return;
@@ -1782,7 +1795,7 @@ function renderTraceResults(data){
   if (!m.length && !rk.length && !data.sanctioned) { el.innerHTML = `<div class="traceres muted">No OFAC match, traced case, or risk flag for “${esc(data.query)}”. Not in our dataset — which is not the same as clean.</div>`; return; }
   if (!m.length && !rk.length) { el.innerHTML = `<div class="tracepanel">${sancHtml}</div>`; return; }
   const rkHtml = rk.length ? `<div class="dsec">Risk flags</div>${rk.map(r=>`<div class="traceres"><b class="${r.level==='high'?'dn':''}">⚠ ${esc(r.entity_name)} — ${esc(r.level)}</b> ${esc(r.summary||'')}</div>`).join('')}` : '';
-  const mHtml = m.length ? `<div class="dsec">Found in ${m.length} traced case${m.length>1?'s':''}</div>${m.map(x=>`<div class="traceres" data-goto="${esc(x.slug)}"><b>${esc(x.name)}</b>${x.amount_usd?` · ${fmtUsd(x.amount_usd)}`:''}<div class="tracehits">${(x.hits||[]).map(h=>`<div class="tracehit">${h.type==='hop'?'↳':'•'} ${esc(h.detail)}${h.txurl?` · <a href="${esc(h.txurl)}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}</div>`).join('')||'<div class="tracehit">Referenced in case</div>'}</div><div class="tracegoto">Open case ↓</div></div>`).join('')}` : '';
+  const mHtml = m.length ? `<div class="dsec">Found in ${m.length} traced case${m.length>1?'s':''}</div>${m.map(x=>`<div class="traceres" data-goto="${esc(x.slug)}"><b>${esc(x.name)}</b>${x.amount_usd?` · ${fmtUsd(x.amount_usd)}`:''}<div class="tracehits">${(x.hits||[]).map(h=>`<div class="tracehit">${h.type==='hop'?'↳':'•'} ${esc(h.detail)}${h.txurl?` · <a href="${esc(safeUrl(h.txurl))}" target="_blank" rel="noopener noreferrer">tx ↗</a>`:''}</div>`).join('')||'<div class="tracehit">Referenced in case</div>'}</div><div class="tracegoto">Open case ↓</div></div>`).join('')}` : '';
   el.innerHTML = `<div class="tracepanel">${sancHtml}${rkHtml}${mHtml}</div>`;
 }
 async function loadTraces(){ tracesLoaded=true; document.getElementById('tracesview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderTraces(await fetch('api/traces').then(r=>r.json())); }catch(e){ tracesLoaded=false; document.getElementById('tracesview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
@@ -1841,7 +1854,7 @@ function renderUs(data){
   void US_GRID;
   // federal section
   const f = data.federal;
-  const fedBills = f && Array.isArray(f.bills) ? `<div class="dsec" style="margin-top:6px">Key federal legislation</div><div class="gwrap">${f.bills.map(b=>`<div class="app"><div class="apphead"><span class="pn">${esc(b.name||b.title||'')}</span><span class="pc">${esc(b.status||'')}</span></div>${b.summary?`<div class="appdesc">${esc(b.summary)}</div>`:''}${b.url?`<div class="applinks"><a href="${esc(b.url)}" target="_blank" rel="noopener noreferrer">Source ↗</a></div>`:''}</div>`).join('')}</div>` : '';
+  const fedBills = f && Array.isArray(f.bills) ? `<div class="dsec" style="margin-top:6px">Key federal legislation</div><div class="gwrap">${f.bills.map(b=>`<div class="app"><div class="apphead"><span class="pn">${esc(b.name||b.title||'')}</span><span class="pc">${esc(b.status||'')}</span></div>${b.summary?`<div class="appdesc">${esc(b.summary)}</div>`:''}${b.url?`<div class="applinks"><a href="${esc(safeUrl(b.url))}" target="_blank" rel="noopener noreferrer">Source ↗</a></div>`:''}</div>`).join('')}</div>` : '';
   const fedText = f && (f.analysis||f.text) ? accordion('Federal policy analysis', f.analysis||f.text, true) : (f?'':'<div class="gnar muted">Federal analysis compiling…</div>');
   // selected state detail
   const sel = state.usSelected && states[state.usSelected];
