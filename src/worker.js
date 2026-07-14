@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 import { prefersMarkdown } from './lib/negotiate.js';
+import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock } from './lib/chainkit.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 
 const ENV = {};
@@ -60,20 +61,8 @@ function cgUrl(url) { const CG_KEY = ENV.COINGECKO_API_KEY || ''; return CG_KEY 
 let priceCache = {}; // gecko_id -> { price, mcap, ch, ts } — sticky so transient CoinGecko failures don't wipe prices
 
 // ---- name normalization so sources line up ----
-const ALIAS = {
-  bnb: 'bsc', binance: 'bsc', binancesmartchain: 'bsc',
-  op: 'opmainnet', optimism: 'opmainnet', opmainnet: 'opmainnet',
-  avax: 'avalanche',
-  xdai: 'gnosis',
-  zksyncera: 'zksync', zksync2: 'zksync',
-  arbitrumone: 'arbitrum',
-};
-function norm(name) {
-  let n = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (ALIAS[n]) return ALIAS[n];
-  if (n.length > 2 && (n.endsWith('l1') || n.endsWith('l2'))) n = n.slice(0, -2);
-  return ALIAS[n] || n;
-}
+// norm() + its ALIAS map now live in ./lib/chainkit.js (single source of truth,
+// shared with the chain-linking logic so keys can never diverge).
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -238,7 +227,16 @@ function logSettled(name, r) {
   else if (r.value == null) console.error(`[buildSnapshot] ${name} returned null/empty`);
 }
 
-async function buildSnapshot() {
+// Map a previously-persisted snapshot blob to { chainKey -> [priorPeerKeys] } so
+// buildSnapshot can apply hysteresis and keep peer lists stable across refreshes.
+function priorPeersByKey(priorData) {
+  const m = {};
+  for (const c of (priorData?.chains || [])) {
+    if (c.key && c.related?.peers) m[c.key] = c.related.peers.map((p) => p.key);
+  }
+  return m;
+}
+async function buildSnapshot(opts = {}) {
   // --- cheap global fetches (partial failure tolerated) ---
   // growthepie DAA is fetched separately via getDaaByOrigin (D1-persisted,
   // its own try-live-then-last-good path), not in this parallel group.
@@ -385,6 +383,27 @@ async function buildSnapshot() {
   }
 
   const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
+
+  // --- chain linking: bake a value-prop category + related peers onto each row ---
+  // Peers are drawn from the enriched top-50 (so every peer resolves in this blob)
+  // and computed here on the refresh, not per request — stable + reproducible.
+  // opts.prior carries the previous blob's peer keys for hysteresis (anti-churn).
+  const prior = opts.prior || {};
+  for (const r of ranked) r.coverage = coverageTier(r);
+  // Linking view: a chain absent from the volume/fee breakdown carries 0, which
+  // means "unknown", not "measured zero" — pass null so similarity never claims a
+  // metric it doesn't have (chainkit treats null as absent).
+  const linkRows = ranked.map((r) => ({
+    key: r.key, name: r.name, coverage: r.coverage,
+    tvl: r.tvl || null, volume24h: r.volume24h || null, fees24h: r.fees24h || null,
+    stables: r.stables || null, feeYield: r.feeYield || null, turnover: r.turnover || null,
+  }));
+  for (const r of ranked) {
+    const rel = relatedBlock(r.name, linkRows, { k: 6, prior: prior[r.key] || [] });
+    r.category = rel.category;
+    r.categoryLabel = rel.categoryLabel;
+    r.related = rel;
+  }
   const totals = ranked.reduce((a, r) => {
     a.tvl += r.tvl; a.volume24h += r.volume24h; a.fees24h += r.fees24h; a.stables += r.stables || 0;
     a.activeAddresses += r.activeAddresses || 0;
@@ -394,6 +413,7 @@ async function buildSnapshot() {
   const usersCoverage = ranked.filter((r) => r.activeAddresses != null).length;
 
   return {
+    schemaVersion: 2,
     updatedAt: new Date().toISOString(),
     count: ranked.length,
     usersCoverage,
@@ -2179,7 +2199,14 @@ async function pruneOldSnapshots(env, now) {
 
 async function handleScheduled(event, env, ctx) {
   if (!ENV.__init) { Object.assign(ENV, env || {}); ENV.__init = true; }
-  const data = await buildSnapshot();
+  // Read the prior blob BEFORE overwriting it, so peer hysteresis has last tick's
+  // peers to compare against (otherwise the anti-churn rule is a no-op).
+  let priorData = null;
+  if (env.DB) {
+    try { const row = await env.DB.prepare(`SELECT data FROM snapshot_cache WHERE key='chains'`).first(); if (row?.data) priorData = JSON.parse(row.data); }
+    catch (e) { /* first run / cold cache — no prior, peers computed verbatim */ }
+  }
+  const data = await buildSnapshot({ prior: priorPeersByKey(priorData) });
   const ts = Date.now();
 
   if (env.DB) {
