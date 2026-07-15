@@ -4,6 +4,7 @@ import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './li
 import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
+import { OAUTH_SCOPES, TOKEN_TTL_SECONDS, asMetadata, protectedResourceMetadata, parseBearer, clientAuthFromRequest, validateTokenRequest, grantedScope, isExpired } from './lib/oauth.js';
 
 const ENV = {};
 const app = new Hono();
@@ -1849,6 +1850,36 @@ function breadcrumb(section, sectionUrl, entity, entityUrl) {
 }
 function sendHtml(res, html) { res.setHeader('Link', DISCOVERY_LINK); res.status(200).html(html); }
 
+// Rough token estimate for the x-markdown-tokens header (~4 chars/token).
+function estimateTokens(s) { return Math.max(1, Math.ceil(String(s).length / 4)); }
+
+// Serve an entity/view page with markdown-for-agents content negotiation.
+// Browsers (Accept includes text/html) get the SPA shell with injected OG +
+// JSON-LD. An agent that explicitly asks for text/markdown gets a compact,
+// citable markdown rendition of the same entity — Content-Type: text/markdown,
+// Vary: Accept, and an x-markdown-tokens size hint. HTML stays the default.
+async function servePage(req, res, { title, desc, url, ld, mdLines }) {
+  if (prefersMarkdown(req.headers.accept)) {
+    const heading = String(title || 'Chaindump').replace(/ — .*$/, '').replace(/ · .*$/, '');
+    const body = [
+      `# ${heading}`,
+      '',
+      desc || OG_DESC_FALLBACK,
+      ...(mdLines && mdLines.length ? ['', ...mdLines] : []),
+      '',
+      `Source: ${url}`,
+      `Full site context: ${ORIGIN}/llms-full.txt · Agent API: ${ORIGIN}/api/agent/manifest`,
+      '',
+    ].join('\n');
+    res.setHeader('content-type', 'text/markdown; charset=utf-8');
+    res.setHeader('vary', 'Accept');
+    res.setHeader('link', DISCOVERY_LINK);
+    res.setHeader('x-markdown-tokens', String(estimateTokens(body)));
+    return res.status(200).html(body);
+  }
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+}
+
 // Views that are valid single-segment deep-links → their share copy.
 const VIEW_OG = {
   live: ['Live · Top 50 chains — Chaindump', 'The top 50 chains ranked by composite on-chain activity (volume, TVL, fees), with live capital-flow and anomaly signals.'],
@@ -1883,7 +1914,11 @@ Object.keys(VIEW_OG).forEach((v) => {
         if (items.length) ld = { '@type': 'ItemList', '@id': url + '#list', name: 'Top chains by on-chain activity', itemListOrder: 'https://schema.org/ItemListOrderDescending', numberOfItems: items.length, itemListElement: items };
       } catch (e) { console.error('[live itemlist] skipped:', e && e.message); }
     }
-    sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+    let mdLines;
+    if (v === 'live' && Array.isArray(ld?.itemListElement) && ld.itemListElement.length) {
+      mdLines = ['## Top chains by on-chain activity', ...ld.itemListElement.map((it) => `${it.position}. ${it.name} — ${it.url}`)];
+    }
+    await servePage(req, res, { title, desc, url, ld, mdLines });
   }));
 });
 app.get('/chain/:name', wrap(async (req, res) => {
@@ -1909,7 +1944,16 @@ app.get('/chain/:name', wrap(async (req, res) => {
       breadcrumb('Live · Top 50', `${ORIGIN}/live`, row.name, url),
     ];
   }
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+  const mdLines = row ? [
+    '## Metrics',
+    `- TVL: $${fmtShort(row.tvl)}`,
+    `- 24h volume: $${fmtShort(row.volume24h)}`,
+    `- Composite activity rank: #${row.rank}`,
+    ...(row.tokenPrice != null ? [`- Token price: $${row.tokenPrice}`] : []),
+    '',
+    'Sources: DefiLlama (TVL/volume), CoinGecko (price).',
+  ] : undefined;
+  await servePage(req, res, { title, desc, url, ld, mdLines });
 }));
 app.get('/scam/:slug', wrap(async (req, res) => {
   const slug = String(req.params.slug || '');
@@ -1924,7 +1968,7 @@ app.get('/scam/:slug', wrap(async (req, res) => {
     { '@type': 'Article', '@id': url + '#article', headline: `${row.name} — traced fund-flow`, description: desc, url, mainEntityOfPage: url, isPartOf: { '@id': ORIGIN + '/#site' }, author: { '@id': ORIGIN + '/#org' }, publisher: { '@id': ORIGIN + '/#org' } },
     breadcrumb('Scam Tracker', `${ORIGIN}/traces`, row.name, url),
   ] : undefined;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+  await servePage(req, res, { title, desc, url, ld });
 }));
 app.get('/collection/:id', wrap(async (req, res) => {
   const id = String(req.params.id || '');
@@ -1937,7 +1981,7 @@ app.get('/collection/:id', wrap(async (req, res) => {
     { '@type': 'Dataset', '@id': url + '#dataset', name: `${row.name} NFT market metrics`, description: desc, url, isPartOf: { '@id': ORIGIN + '/#site' }, publisher: { '@id': ORIGIN + '/#org' }, citation: ['https://www.coingecko.com/'] },
     breadcrumb('NFTs & Ordinals', `${ORIGIN}/nft`, row.name, url),
   ] : undefined;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+  await servePage(req, res, { title, desc, url, ld });
 }));
 
 // ---------------------------------------------------------------------------
@@ -1994,6 +2038,7 @@ app.get('/llms.txt', (c) => {
     '- [API catalog](' + ORIGIN + '/.well-known/api-catalog)',
     '- [Agent skills index](' + ORIGIN + '/.well-known/agent-skills/index.json)',
     '- [MCP server card](' + ORIGIN + '/.well-known/mcp/server-card.json) — Chaindump intelligence as MCP tools.',
+    '- [Agent authentication](' + ORIGIN + '/auth.md) — register + obtain a bearer token (OAuth 2.0 client_credentials); metadata at ' + ORIGIN + '/.well-known/oauth-authorization-server and ' + ORIGIN + '/.well-known/oauth-protected-resource.',
     '',
     '## Sources & method',
     'DefiLlama (TVL), CoinGecko (prices), OFAC SDN via the 0xB10C mirror (sanctions screening, 900+ addresses across 18 chains), growthepie (active addresses), and government / mainstream / NPO sources for policy. Claims that name a private individual as a wrongdoer are human-reviewed before publication, never auto-generated.',
@@ -2040,7 +2085,7 @@ async function llmsFullBody() {
     'Every material figure cites a resolving, authoritative source: DefiLlama (TVL), CoinGecko (prices), OFAC SDN via the 0xB10C mirror (sanctions, 900+ addresses / 18 chains), growthepie (active addresses), government / mainstream / NPO sources (policy). Claims naming a private individual as a wrongdoer are human-reviewed before publication.',
     '',
     '## Programmatic access',
-    `Agent API (x402, USDC on Base): ${ORIGIN}/api · API catalog: ${ORIGIN}/.well-known/api-catalog · MCP server card: ${ORIGIN}/.well-known/mcp/server-card.json`,
+    `Agent API (x402, USDC on Base): ${ORIGIN}/api · API catalog: ${ORIGIN}/.well-known/api-catalog · MCP server card: ${ORIGIN}/.well-known/mcp/server-card.json · Agent auth: ${ORIGIN}/auth.md`,
     '',
     `Usage: AI assistants may read and cite (search=yes, ai-input=yes); training is disallowed (ai-train=no). See ${ORIGIN}/robots.txt.`,
     '',
@@ -2155,9 +2200,185 @@ app.get('/.well-known/mcp/server-card.json', () => {
   return new Response(JSON.stringify(card, null, 2), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
 });
 
-// RFC 8288 Link header advertising the API catalog + service docs. Applied to
-// the homepage (run_worker_first: ["/"]) and every Worker-served HTML view.
-const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", <${ORIGIN}/api>; rel="service-doc", <${ORIGIN}/api/agent/manifest>; rel="service-desc"`;
+// ---------------------------------------------------------------------------
+// OAuth 2.0 identity layer for the agent API. Discovery: RFC 8414 (authorization
+// server) + RFC 9728 (protected resource) + /auth.md. Flow: RFC 7591 dynamic
+// client registration -> RFC 6749 §4.4 client_credentials -> a bearer token that
+// unlocks the identity endpoint (/api/agent/whoami). x402 still meters the data
+// endpoints. Client secrets and tokens are stored SHA-256-hashed; the raw values
+// are returned to the caller once and never persisted in the clear.
+// ---------------------------------------------------------------------------
+function randHex(bytes = 32) {
+  const a = new Uint8Array(bytes);
+  crypto.getRandomValues(a);
+  return Array.from(a).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+const nowSec = () => Math.floor(Date.now() / 1000);
+const oauthJson = (obj, status = 200, extra = {}) =>
+  new Response(JSON.stringify(obj, null, 2), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...extra } });
+const oauthErr = (error, status = 400, description) =>
+  oauthJson({ error, ...(description ? { error_description: description } : {}) }, status);
+// Token endpoints take form-urlencoded per RFC 6749; tolerate JSON too.
+async function readForm(c) {
+  const ct = c.req.header('content-type') || '';
+  if (ct.includes('application/json')) { try { return await c.req.json(); } catch { return {}; } }
+  try { return await c.req.parseBody(); } catch { return {}; }
+}
+// Validate a presented bearer token against D1 (hashed lookup + expiry).
+async function lookupToken(raw) {
+  try {
+    const row = await ENV.DB.prepare(`SELECT client_id, scope, expires_at FROM oauth_tokens WHERE token_hash = ?`).bind(await sha256Hex(raw)).first();
+    if (!row || isExpired(row.expires_at, nowSec())) return null;
+    return row;
+  } catch (e) { console.error('[oauth lookup]', e && e.message); return null; }
+}
+
+app.get('/.well-known/oauth-authorization-server', () =>
+  oauthJson(asMetadata(ORIGIN), 200, { 'cache-control': 'public, max-age=3600' }));
+
+app.get('/.well-known/oauth-protected-resource', () =>
+  oauthJson(protectedResourceMetadata(ORIGIN), 200, { 'cache-control': 'public, max-age=3600' }));
+
+// RFC 7591 dynamic client registration. Open registration issues a client_id +
+// client_secret for the client_credentials grant; the secret is shown once and
+// stored hashed. Scope is capped to what we advertise (agent:read).
+app.post('/oauth/register', async (c) => {
+  const body = await readForm(c);
+  const name = typeof body.client_name === 'string' ? body.client_name.slice(0, 200) : '';
+  const clientId = 'cd_' + randHex(16);
+  const clientSecret = randHex(32);
+  const scope = OAUTH_SCOPES.join(' ');
+  try {
+    await ENV.DB.prepare(
+      `INSERT INTO oauth_clients (client_id, client_secret_hash, client_name, scope, created_at) VALUES (?, ?, ?, ?, ?)`
+    ).bind(clientId, await sha256Hex(clientSecret), name || null, scope, nowSec()).run();
+  } catch (e) {
+    console.error('[oauth register]', e && e.message);
+    return oauthErr('server_error', 500, 'registration storage failed');
+  }
+  return oauthJson({
+    client_id: clientId,
+    client_secret: clientSecret,
+    ...(name ? { client_name: name } : {}),
+    token_endpoint_auth_method: 'client_secret_basic',
+    grant_types: ['client_credentials'],
+    scope,
+    token_endpoint: `${ORIGIN}/oauth/token`,
+  }, 201);
+});
+
+// RFC 6749 §4.4 client_credentials token endpoint.
+app.post('/oauth/token', async (c) => {
+  const form = await readForm(c);
+  const check = validateTokenRequest(form);
+  if (!check.ok) return oauthErr(check.error, 400);
+  const creds = clientAuthFromRequest(c.req.header('authorization'), form);
+  if (!creds) return oauthErr('invalid_client', 401, 'client authentication required');
+  let client;
+  try { client = await ENV.DB.prepare(`SELECT client_id, client_secret_hash, scope FROM oauth_clients WHERE client_id = ?`).bind(creds.clientId).first(); }
+  catch (e) { return oauthErr('server_error', 500); }
+  if (!client || (await sha256Hex(creds.clientSecret)) !== client.client_secret_hash) {
+    return oauthErr('invalid_client', 401, 'unknown client or bad secret');
+  }
+  const scope = grantedScope(form.scope, client.scope);
+  const token = randHex(32);
+  const exp = nowSec() + TOKEN_TTL_SECONDS;
+  try {
+    await ENV.DB.prepare(`INSERT INTO oauth_tokens (token_hash, client_id, scope, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`)
+      .bind(await sha256Hex(token), client.client_id, scope, exp, nowSec()).run();
+  } catch (e) { return oauthErr('server_error', 500); }
+  return oauthJson({ access_token: token, token_type: 'Bearer', expires_in: TOKEN_TTL_SECONDS, scope });
+});
+
+// RFC 7009 token revocation (idempotent — always 200 to authenticated clients).
+app.post('/oauth/revoke', async (c) => {
+  const form = await readForm(c);
+  const creds = clientAuthFromRequest(c.req.header('authorization'), form);
+  if (!creds) return oauthErr('invalid_client', 401);
+  if (form.token) { try { await ENV.DB.prepare(`DELETE FROM oauth_tokens WHERE token_hash = ? AND client_id = ?`).bind(await sha256Hex(String(form.token)), creds.clientId).run(); } catch (e) {} }
+  return new Response(null, { status: 200 });
+});
+
+// RFC 7662 token introspection.
+app.post('/oauth/introspect', async (c) => {
+  const form = await readForm(c);
+  const creds = clientAuthFromRequest(c.req.header('authorization'), form);
+  if (!creds) return oauthErr('invalid_client', 401);
+  const info = form.token ? await lookupToken(String(form.token)) : null;
+  if (!info) return oauthJson({ active: false });
+  return oauthJson({ active: true, client_id: info.client_id, scope: info.scope, exp: info.expires_at, token_type: 'Bearer' });
+});
+
+// Identity endpoint — the concrete OAuth-protected resource. A valid bearer token
+// confirms the registered agent's identity. RFC 9728 §5.3: a 401 carries a
+// WWW-Authenticate pointing at the protected-resource metadata for discovery.
+app.get('/api/agent/whoami', async (c) => {
+  const wwwAuth = `Bearer resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource"`;
+  const token = parseBearer(c.req.header('authorization'));
+  if (!token) return oauthJson({ error: 'invalid_request', error_description: 'bearer token required' }, 401, { 'www-authenticate': wwwAuth });
+  const info = await lookupToken(token);
+  if (!info) return oauthJson({ error: 'invalid_token', error_description: 'token unknown or expired' }, 401, { 'www-authenticate': `${wwwAuth}, error="invalid_token"` });
+  return oauthJson({
+    authenticated: true, client_id: info.client_id, scope: info.scope, expires_at: info.expires_at,
+    note: 'Identity confirmed. Metered /api/agent/* data endpoints additionally require x402 payment — see /api/agent/manifest.',
+  });
+});
+
+// /auth.md (WorkOS auth.md) — human/agent-readable registration + auth walkthrough.
+const AUTH_MD = `# Agent authentication — Chaindump
+
+Chaindump's agent API lives under \`${ORIGIN}/api/agent/\`. Data endpoints are
+metered with **x402** (USDC on Base). This document covers the **OAuth 2.0
+identity layer**: how an autonomous agent registers and obtains a bearer token
+that proves its identity to the API.
+
+- Authorization server metadata: \`${ORIGIN}/.well-known/oauth-authorization-server\` (RFC 8414)
+- Protected resource metadata: \`${ORIGIN}/.well-known/oauth-protected-resource\` (RFC 9728)
+- Grant: \`client_credentials\` (RFC 6749 §4.4). Scopes: \`${OAUTH_SCOPES.join(' ')}\`.
+
+## 1. Register (RFC 7591 dynamic client registration)
+
+\`\`\`sh
+curl -X POST ${ORIGIN}/oauth/register \\
+  -H 'content-type: application/json' \\
+  -d '{"client_name":"my-agent"}'
+\`\`\`
+
+Returns a \`client_id\` and a one-time \`client_secret\` (store it; it is not
+recoverable).
+
+## 2. Get a token (client_credentials)
+
+\`\`\`sh
+curl -X POST ${ORIGIN}/oauth/token \\
+  -u "$CLIENT_ID:$CLIENT_SECRET" \\
+  -d 'grant_type=client_credentials'
+\`\`\`
+
+Returns \`{ "access_token", "token_type":"Bearer", "expires_in":${TOKEN_TTL_SECONDS}, "scope" }\`.
+
+## 3. Call the API
+
+\`\`\`sh
+curl ${ORIGIN}/api/agent/whoami -H "authorization: Bearer $ACCESS_TOKEN"
+\`\`\`
+
+\`/api/agent/whoami\` confirms your identity. Metered data endpoints
+(\`/api/agent/summary\`, \`/api/agent/chain/{key}\`, \`/api/agent/signals\`,
+\`/api/agent/risk/{entity}\`) additionally require x402 payment — discover prices
+and payment terms at \`${ORIGIN}/api/agent/manifest\`.
+
+## Revoke / introspect
+
+- Revoke: \`POST ${ORIGIN}/oauth/revoke\` (RFC 7009) with \`token=<access_token>\` + client auth.
+- Introspect: \`POST ${ORIGIN}/oauth/introspect\` (RFC 7662) with \`token=<access_token>\` + client auth.
+`;
+app.get('/auth.md', () =>
+  new Response(AUTH_MD, { headers: { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=3600' } }));
+
+// RFC 8288 Link header advertising the API catalog + service docs + auth. Applied
+// to the homepage (run_worker_first: ["/"]) and every Worker-served HTML view.
+const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", <${ORIGIN}/api>; rel="service-doc", <${ORIGIN}/api/agent/manifest>; rel="service-desc", <${ORIGIN}/.well-known/oauth-protected-resource>; rel="oauth-protected-resource", <${ORIGIN}/.well-known/oauth-authorization-server>; rel="oauth-authorization-server"`;
 
 // Homepage: Worker-served (run_worker_first: ["/"]) so we can attach the Link
 // header (sendHtml sets it) and proper homepage OG tags.
@@ -2166,10 +2387,12 @@ app.get('/', wrap(async (req, res) => {
   // for text/markdown gets the inlined markdown; browsers send text/html and are
   // untouched, so HTML stays the default.
   if (prefersMarkdown(req.headers.accept)) {
+    const md = await llmsFullBody();
     res.setHeader('content-type', 'text/markdown; charset=utf-8');
     res.setHeader('vary', 'Accept');
     res.setHeader('link', DISCOVERY_LINK);
-    return res.status(200).html(await llmsFullBody());
+    res.setHeader('x-markdown-tokens', String(estimateTokens(md)));
+    return res.status(200).html(md);
   }
   sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: `${ORIGIN}/` }));
 }));

@@ -2149,5 +2149,76 @@ setInterval(() => {
     <div id="cmdkList" class="cmdk-list"></div>
   </div>
 </div>
+<!-- WebMCP (webmachinelearning.github.io/webmcp) — expose Chaindump's key
+     read-only actions to in-browser AI agents via navigator.modelContext. Each
+     tool calls the site's own public JSON API (same origin), so an agent driving
+     the page gets sourced answers without scraping the DOM. No-op where the API
+     is unavailable. -->
+<script>
+(function () {
+  var mc = (typeof navigator !== 'undefined') && navigator.modelContext;
+  if (!mc || typeof mc.provideContext !== 'function') return; // API not present — nothing to register
+  function ok(data) { return { content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }] }; }
+  function fail(msg) { return { content: [{ type: 'text', text: 'Error: ' + msg }], isError: true }; }
+  async function getJson(path) {
+    var r = await fetch(path, { headers: { accept: 'application/json' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + path);
+    return r.json();
+  }
+  var tools = [
+    {
+      name: 'chaindump_screen_address',
+      description: 'Screen a crypto address, entity, or case name against Chaindump: OFAC SDN sanctions status (900+ addresses), traced scam/exploit cases it appears in, and risk flags. Sourced.',
+      inputSchema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'A blockchain address, entity name, or case keyword (min 3 chars).' } },
+        required: ['query'],
+      },
+      execute: async function (args) {
+        try {
+          var q = String((args && args.query) || '').trim();
+          if (q.length < 3) return fail('query must be at least 3 characters');
+          return ok(await getJson('/api/trace-lookup?q=' + encodeURIComponent(q)));
+        } catch (e) { return fail(e.message); }
+      },
+    },
+    {
+      name: 'chaindump_chain_intel',
+      description: 'Get Chaindump\'s live profile for one chain: TVL, 24h volume, activity rank, fundamentals and the analyst take, with sources.',
+      inputSchema: {
+        type: 'object',
+        properties: { chain: { type: 'string', description: 'Chain name, e.g. "ethereum", "base", "solana".' } },
+        required: ['chain'],
+      },
+      execute: async function (args) {
+        try {
+          var name = String((args && args.chain) || '').trim();
+          if (!name) return fail('chain is required');
+          return ok(await getJson('/api/chain/' + encodeURIComponent(name)));
+        } catch (e) { return fail(e.message); }
+      },
+    },
+    {
+      name: 'chaindump_top_chains',
+      description: 'List the top chains ranked by composite on-chain activity (volume, TVL, fees), with live metrics. Sourced from DefiLlama + CoinGecko.',
+      inputSchema: {
+        type: 'object',
+        properties: { limit: { type: 'integer', minimum: 1, maximum: 50, description: 'How many chains to return (default 10).' } },
+      },
+      execute: async function (args) {
+        try {
+          var limit = Math.max(1, Math.min(50, Number((args && args.limit) || 10)));
+          var data = await getJson('/api/chains');
+          var chains = (data && data.chains) || [];
+          return ok(chains.slice(0, limit).map(function (c) {
+            return { rank: c.rank, name: c.name, tvl_usd: c.tvl, volume_24h_usd: c.volume24h, token_price_usd: c.tokenPrice };
+          }));
+        } catch (e) { return fail(e.message); }
+      },
+    },
+  ];
+  try { mc.provideContext({ tools: tools }); } catch (e) { /* older draft signature — ignore */ }
+})();
+</script>
 </body>
 </html>

@@ -44,9 +44,14 @@ content-type before UAT.
    - Skill: https://isitagentready.com/.well-known/agent-skills/api-catalog/SKILL.md
    - RFC 9727: https://www.rfc-editor.org/rfc/rfc9727
 
-7. **Markdown-for-agents** — requests with `Accept: text/markdown` return a
-   markdown version (Content-Type: text/markdown) while HTML stays default for
-   browsers. Cloudflare has native support.
+7. ✅ **Markdown-for-agents** — DONE. Requests with `Accept: text/markdown` (and
+   not `text/html`) return a markdown rendition with `Content-Type:
+   text/markdown`, `Vary: Accept`, and an `x-markdown-tokens` size hint; browsers
+   (which always send `text/html`) get HTML. Wired on `/` (full-site context) and
+   the deep-link/view routes (`/live`, `/chain/:name`, `/scam/:slug`,
+   `/collection/:id`, every `VIEW_OG` view) via the `servePage` helper. Pure
+   negotiation in `src/lib/negotiate.js`; routes covered by
+   `test/agent-discovery.integration.test.js`.
    - Skill: https://isitagentready.com/.well-known/agent-skills/markdown-negotiation/SKILL.md
    - https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/
 
@@ -71,22 +76,44 @@ content-type before UAT.
 
 ## Conditional (only if we expose protected APIs)
 
-10. **OAuth/OIDC discovery** — `/.well-known/openid-configuration` or
-    `/.well-known/oauth-authorization-server`. Relevant only if the x402 agent
-    API moves to OAuth-protected access.
+Implemented as a real, minimal OAuth 2.0 **identity** layer over the agent API.
+The API data is still metered by x402 (payment); OAuth adds standards-compliant
+registration + bearer-token identity so agents can discover *how to
+authenticate*. Every published endpoint resolves and functions — no fabricated
+metadata. Pure logic in `src/lib/oauth.js`; D1 tables in
+`migrations/0009_oauth_clients.sql`; flow covered end-to-end in
+`test/agent-discovery.integration.test.js`. Secrets + tokens are stored
+SHA-256-hashed.
+
+10. ✅ **OAuth discovery** — DONE. `/.well-known/oauth-authorization-server`
+    (RFC 8414): `client_credentials` grant, token/registration/revocation/
+    introspection endpoints, plus a WorkOS `agent_auth` block. (Pure OAuth 2.0,
+    so `oauth-authorization-server`, not `openid-configuration`.)
     - https://www.rfc-editor.org/rfc/rfc8414
-11. **OAuth Protected Resource Metadata** — `/.well-known/oauth-protected-resource`.
+11. ✅ **OAuth Protected Resource Metadata** — DONE.
+    `/.well-known/oauth-protected-resource` (RFC 9728): `resource` =
+    `/api/agent`, `authorization_servers`, `scopes_supported`,
+    `bearer_methods_supported`. A 401 from `/api/agent/whoami` returns a
+    `WWW-Authenticate` pointing back at this document.
     - RFC 9728: https://www.rfc-editor.org/rfc/rfc9728
-12. **`/auth.md`** — agent registration instructions.
+12. ✅ **`/auth.md`** — DONE. Served at the site root with the full register →
+    token → call walkthrough. Registration (RFC 7591) at `POST /oauth/register`;
+    tokens (RFC 6749 §4.4) at `POST /oauth/token`; revoke/introspect (RFC 7009 /
+    7662).
     - https://workos.com/auth-md
 
 ## Stretch
 
-13. **DNS-AID records** — `_index._agents.chaindump.xyz` etc. via SVCB/HTTPS
-    records, DNSSEC-signed. (Cloudflare DNS; needs zone-edit permissions.)
+13. 🟡 **DNS-AID records** — PREPARED (pending zone apply). Record set + apply
+    runbook + DNSSEC steps in [`docs/dns-aid.md`](dns-aid.md):
+    `_index/_skills/_mcp/_oauth/_api._agents.chaindump.xyz` ServiceMode SVCB/HTTPS
+    records pointing at endpoints that already resolve. Applying them + enabling
+    DNSSEC is a Cloudflare zone-edit op left for a human (outward-facing).
     - draft-mozleywilliams-dnsop-dnsaid · RFC 9460
-14. **WebMCP** — `navigator.modelContext.provideContext()` exposing site tools
-    (verify a chain, screen an address, look up a case) to in-browser agents.
+14. ✅ **WebMCP** — DONE. `public/index.html` calls
+    `navigator.modelContext.provideContext()` with three read-only tools
+    (`chaindump_screen_address`, `chaindump_chain_intel`, `chaindump_top_chains`)
+    backed by the site's own public JSON API. No-ops where the API is absent.
     - https://webmachinelearning.github.io/webmcp/
 
 ## Notes
