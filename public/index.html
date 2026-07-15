@@ -337,6 +337,12 @@
   .watchrow .wdd { color:var(--muted2); font-size:11px; font-variant-numeric:tabular-nums; }
   .watchrow .wl { display:block; font-size:8.5px; color:var(--muted); text-transform:uppercase; }
   .watchrow .wtag { font-size:9px; color:var(--accent2); }
+  .watchrow.wclick { cursor:pointer; transition:border-color .12s, background .12s; }
+  .watchrow.wclick:hover { border-color:var(--accent2); background:var(--surface3,var(--surface2)); }
+  .watchrow.wclick.on { border-color:var(--accent2); }
+  .watchdetail { margin-top:10px; border:1px solid var(--accent2); border-radius:10px; padding:12px 14px; background:var(--surface2); }
+  .watchdetail .ghead { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+  .watchdetail .gexpand { cursor:pointer; color:var(--muted); font-size:11px; margin-top:8px; }
   .acc { border:1px solid var(--border); border-radius:9px; margin-bottom:8px; overflow:hidden; background:var(--surface2); }
   .acchead { width:100%; display:flex; justify-content:space-between; align-items:center; background:none; border:none; color:var(--text); font-size:12.5px; font-weight:600; padding:11px 13px; cursor:pointer; text-align:left; }
   .acchead:hover { color:var(--accent); }
@@ -1971,29 +1977,41 @@ function renderGraveyard(data){
     <span class="gvf${gf==='dead'?' on':''}" data-gf="dead">☠ Dead (${nDead})</span>
     <span class="gvf${gf==='dying'?' on':''}" data-gf="dying">🩸 Dying / declining (${nDying})</span>
   </div>`;
-  const graveCard = (c) => {
+  // Shared expanded-profile markup, reused by the grave cards AND the dying-watch
+  // click-to-open detail. Handles both the dead-chain profile shape (postmortem /
+  // lessons / could_differ) and the mid-chain shape (whats_working / whats_not).
+  const graveDetailBody = (c) => {
     const p = c.profile || {};
-    const open = state.graveExpanded === c.chain;
     const dd = c.drawdown_pct != null ? `-${Math.abs(c.drawdown_pct).toFixed(0)}%` : '—';
     const td = tokenDrop(p);
-    const tags = (p.cause_tags||[]).map(tg=>`<span class="ctag">${esc(tagLabel(data,tg))}</span>`).join('');
+    const tags = (p.cause_tags||p.success_factors_missing||[]).map(tg=>`<span class="ctag">${esc(tagLabel(data,tg))}</span>`).join('');
     const sources = srcHtml(c.sources);
-    const tokenLine = p.token_symbol ? `${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)}${p.token_ath_date?` (${esc(p.token_ath_date)})`:''} → $${fmtTok(p.token_current)}${td!=null?` <span class="tdrop">-${td}%</span>`:''}` : 'No live token';
-    const body = open ? `<div class="gexp">
+    const tokenLine = (p.token_symbol && p.token_ath!=null) ? `${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)}${p.token_ath_date?` (${esc(p.token_ath_date)})`:''} → $${fmtTok(p.token_current)}${td!=null?` <span class="tdrop">-${td}%</span>`:''}` : (p.token_symbol?esc(p.token_symbol):'No live token');
+    return `<div class="gexp">
       ${(p.founded||p.founders)?`<div class="gfield"><span class="gfl">Founded</span> ${esc(p.founded||'—')}${p.founders?` · ${esc(p.founders)}`:''}</div>`:''}
       ${p.raised?`<div class="gfield"><span class="gfl">Raised</span> ${esc(p.raised)}</div>`:''}
       <div class="gfield"><span class="gfl">Token</span> ${tokenLine}</div>
       <div class="gfield"><span class="gfl">TVL</span> peak ${fmtUsd(c.peak_tvl)}${c.peak_date?` (${esc(c.peak_date)})`:''} → now ${fmtUsd(c.current_tvl)} <span class="tdrop">${dd}</span></div>
       ${p.purpose?`<div class="gsec">Purpose</div><div class="gbody">${esc(p.purpose)}</div>`:''}
+      ${p.whats_working?`<div class="gsec">What's working</div>${proseBox(p.whats_working)}`:''}
+      ${p.whats_not?`<div class="gsec">What's not</div>${proseBox(p.whats_not)}`:''}
       ${p.situation?`<div class="gsec">What happened</div>${proseBox(p.situation)}`:''}
-      ${(p.postmortem||c.why)?`<div class="gsec">Postmortem</div>${proseBox(p.postmortem||c.why)}`:''}
+      ${(p.postmortem||(!p.whats_working&&c.why))?`<div class="gsec">Postmortem</div>${proseBox(p.postmortem||c.why)}`:''}
       ${p.non_economic?`<div class="gsec">Social · media · community signals</div>${proseBox(p.non_economic)}`:''}
       ${p.lessons_learned?`<div class="gsec">Lessons learned</div>${proseBox(p.lessons_learned)}`:''}
       ${p.could_differ?`<div class="gsec">What they could've done differently — and why</div>${proseBox(p.could_differ)}`:''}
       ${(p.outlook||c.outlook)?`<div class="gsec">Outlook</div>${proseBox(p.outlook||c.outlook)}`:''}
       ${tags?`<div class="ctags">${tags}</div>`:''}
       ${sources}${stamp(c.updated_at)}
-    </div>` : `${tags?`<div class="ctags">${tags}</div>`:''}`;
+    </div>`;
+  };
+  const graveCard = (c) => {
+    const p = c.profile || {};
+    const open = state.graveExpanded === c.chain;
+    const dd = c.drawdown_pct != null ? `-${Math.abs(c.drawdown_pct).toFixed(0)}%` : '—';
+    const td = tokenDrop(p);
+    const tags = (p.cause_tags||[]).map(tg=>`<span class="ctag">${esc(tagLabel(data,tg))}</span>`).join('');
+    const body = open ? graveDetailBody(c) : `${tags?`<div class="ctags">${tags}</div>`:''}`;
     return `<div class="gcard ${open?'open':''}" data-chain="${esc(c.chain)}">
       <div class="ghead">
         <div class="gname">${esc(c.chain)} <span class="gverdict ${verdictClass(c.verdict)}">${esc(c.verdict||'')}</span></div>
@@ -2018,7 +2036,9 @@ function renderGraveyard(data){
     return `<div class="chainfolder ${open?'open':''}"><div class="folderhead" data-gravegroup="${esc(k)}"><span class="foldercaret">${open?'▾':'▸'}</span><span class="foldername">${esc(causeLabel(k))}</span><span class="foldercount">${chs.length}</span></div>${inner}</div>`;
   }).join('') + `</div>`;
   const dq = data.declining || [];
-  const watch = dq.length ? `<div class="gpanel"><div class="dsec">🩸 Live dying watch — steepest 90-day decliners, auto-updating from live TVL (${dq.length})</div><div class="watchgrid">${dq.map(w=>`<div class="watchrow"><span class="wn">${esc(w.chain)}</span><span class="w90">${w.change_90d}%<span class="wl">90d</span></span><span class="wdd">-${Math.abs(w.drawdown_pct||0).toFixed(0)}%<span class="wl">peak</span></span>${w.research?'<span class="wtag">profiled ↓</span>':''}</div>`).join('')}</div><div class="gnar muted" style="margin-top:8px">Live from the classifier — chains bleeding out now, before they hit the graveyard. Refreshes automatically.</div></div>` : '';
+  const we = dq.find(x=>x.chain===state.watchExpanded && x.research);
+  const watchDetail = we ? (()=>{ const c={chain:we.chain, verdict:we.research.verdict, why:we.research.why, outlook:we.research.outlook, sources:we.research.sources, profile:we.research.profile, peak_tvl:we.peak_tvl, current_tvl:we.current_tvl, drawdown_pct:we.drawdown_pct, peak_date:we.peak_date, updated_at:(we.research.profile&&we.research.profile.updated_at)||null}; return `<div class="watchdetail"><div class="ghead"><div class="gname">${esc(we.chain)} <span class="gverdict ${verdictClass(c.verdict)}">${esc(c.verdict||'')}</span></div><div class="gdd">-${Math.abs(we.drawdown_pct||0).toFixed(0)}%<span class="gddl">from peak</span></div></div>${graveDetailBody(c)}<div class="gexpand" data-watchclose="1">Hide details ▲</div></div>`; })() : '';
+  const watch = dq.length ? `<div class="gpanel"><div class="dsec">🩸 Live dying watch — steepest 90-day decliners, auto-updating from live TVL (${dq.length})</div><div class="watchgrid">${dq.map(w=>`<div class="watchrow${w.research?' wclick':''}${w.research&&state.watchExpanded===w.chain?' on':''}"${w.research?` data-watch="${esc(w.chain)}"`:''}><span class="wn">${esc(w.chain)}</span><span class="w90">${w.change_90d}%<span class="wl">90d</span></span><span class="wdd">-${Math.abs(w.drawdown_pct||0).toFixed(0)}%<span class="wl">peak</span></span>${w.research?'<span class="wtag">profiled ↓</span>':''}</div>`).join('')}</div>${watchDetail}<div class="gnar muted" style="margin-top:8px">Live from the classifier — chains bleeding out now, before they hit the graveyard. ${dq.some(x=>x.research)?'Click a “profiled ↓” chain to open its postmortem. ':''}Refreshes automatically.</div></div>` : '';
   el.innerHTML = `<div class="gvintro">Dead &amp; dying chains — a live decliner watch plus full researched postmortems (founding, funding, token, what went wrong) and an aggregator that extracts the patterns.</div>${watch}${trendsPanel}${chips}<div class="dsec" style="margin:14px 0 10px">${gf==='all'?'Researched postmortems':gf==='dying'?'Dying / declining':'Dead'} — ${filtered.length} chains, grouped by cause of death</div>${filtered.length?cards:'<div class="skel">None in this filter.</div>'}`;
 }
 
@@ -2043,6 +2063,10 @@ document.getElementById('graveview').addEventListener('click', (e) => {
   if (f && state.graveData) { state.graveFilter = f.dataset.gf; renderGraveyard(state.graveData); return; }
   const fh = e.target.closest('.folderhead');
   if (fh && state.graveData) { const k=fh.dataset.gravegroup; state.graveOpenGroups = state.graveOpenGroups||{}; if (state.graveOpenGroups[k]) delete state.graveOpenGroups[k]; else state.graveOpenGroups[k]=true; renderGraveyard(state.graveData); return; }
+  const wclose = e.target.closest('[data-watchclose]');
+  if (wclose && state.graveData) { const y=window.scrollY; state.watchExpanded=null; renderGraveyard(state.graveData); window.scrollTo(0,y); return; }
+  const wr = e.target.closest('.watchrow[data-watch]');
+  if (wr && state.graveData) { const y=window.scrollY; const n=wr.dataset.watch; state.watchExpanded = state.watchExpanded===n?null:n; renderGraveyard(state.graveData); window.scrollTo(0,y); return; }
   const card = e.target.closest('.gcard');
   if (!card || !state.graveData) return;
   const name = card.dataset.chain;

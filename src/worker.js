@@ -864,12 +864,27 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
 }));
 
 // Graveyard: chains that launched recently and then collapsed (populated by the research agent)
+// Synonym → canonical cause tag, so the "why they died" rollup doesn't split one
+// concept across two bars (e.g. outcompeted/lost_competition → competition).
+const TAG_CANON = {
+  outcompeted: 'competition', lost_competition: 'competition',
+  mercenary_liquidity: 'mercenary_tvl',
+  lost_narrative: 'narrative_death',
+  founder_exit: 'team_abandonment',
+};
+const canonTag = (t) => TAG_CANON[t] || t;
 const TAG_LABELS = {
   mercenary_tvl: 'Mercenary TVL', airdrop_farming: 'Airdrop farming', points_collapse: 'Points collapse',
   token_unlock_dump: 'Token unlock dump', exploit_hack: 'Exploit / hack', team_abandonment: 'Team abandonment',
   soft_rug: 'Soft rug', unsustainable_yield: 'Unsustainable yield', narrative_death: 'Narrative death',
   no_real_users: 'No real users', wash_trading: 'Wash trading', vc_dump: 'VC dump',
   competition: 'Out-competed', regulatory: 'Regulatory',
+  token_overhang: 'Token overhang', declining_volume: 'Declining volume', wrong_ecosystem_bet: 'Wrong-ecosystem bet',
+  tech_no_adoption: 'Tech, no adoption', no_killer_app: 'No killer app', no_product_market_fit: 'No product-market fit',
+  weak_dev_ecosystem: 'Weak dev ecosystem', governance_failure: 'Governance failure', bridge_hack: 'Bridge hack',
+  security_failure: 'Security failure', ftx_contagion: 'FTX contagion', centralization: 'Centralization',
+  token_inflation: 'Token inflation', insider_concentration: 'Insider concentration',
+  misallocated_treasury: 'Misallocated treasury', gamed_metrics: 'Gamed metrics', double_counted_tvl: 'Double-counted TVL',
 };
 const FRAUDY = new Set(['soft_rug', 'exploit_hack', 'wash_trading', 'token_unlock_dump']);
 
@@ -882,7 +897,8 @@ app.get('/api/dead', wrap(async (req, res) => {
     const tagCounts = {}; let ddSum = 0, ddN = 0, fraud = 0; const verdictCounts = {};
     for (const c of chains) {
       const tags = (c.profile && c.profile.cause_tags) || [];
-      tags.forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
+      // canonicalize synonyms, then dedupe per-chain so a merge can't double-count
+      [...new Set(tags.map(canonTag))].forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
       if (tags.some((t) => FRAUDY.has(t))) fraud++;
       if (c.drawdown_pct != null) { ddSum += c.drawdown_pct; ddN++; }
       const v = (c.verdict || 'unknown').toLowerCase();
