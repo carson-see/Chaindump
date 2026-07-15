@@ -1,0 +1,21 @@
+name: test
+
+# Runs the Vitest suite on every PR and on pushes to main, so a red test can't
+# merge. Complements the existing SonarCloud (maintainability) + CodeRabbit checks,
+# which don't execute the tests. See CLAUDE.md §1.1 (TDD).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  vitest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
