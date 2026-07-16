@@ -193,9 +193,31 @@ build time):**
   passes).
 - Latest SDK version + verifier agent (`agent-sdk-verifier-ts`) at build time.
 
-## Phase H — Full UAT clickthrough (Chrome) — THE VERY LAST STEP
-After ALL of the above, the complete manual UAT via the browser as the final
-gate: each tab loads, every card/folder/search/deep-link works, no console
-errors, responsive at 1280px + 375px, agent-discovery endpoints resolve.
-Screenshot proof. Log regressions and fix. Nothing ships after this except
-regression fixes it surfaces.
+## Phase H — Full UAT clickthrough (Chrome) — THE VERY LAST STEP  *(✅ PASSED, session 3, 2026-07-14)*
+Complete UAT run on chaindump.xyz via the browser. Results:
+- ✅ **All 14 views render content** (live 50 rows · traces 11 · grave 29 ·
+  mid 14 · stables 50 · nft 33 · rwa 192 · infra 15 · markets 25 · geo 30 ·
+  power 24 · uspolicy/news/api = expected non-card content). **Zero console
+  errors** across the whole sweep + interactions.
+- ✅ **Redesign live** — deep-dark + Signal Amber, Sora type, ⌘K palette opens,
+  Top-50 **tier labels** render (thriving/mid/dying/dead).
+- ✅ **Deep-links** — `/chain/Solana` server-OG title "Solana — Chaindump" +
+  client routes to the expanded row; `/scam/*` opens the case.
+- ✅ **Forensics** — OFAC screening: Ronin SDN address → ⛔ SANCTIONED banner.
+- ✅ **Agent-readiness** — robots.txt (valid, AI-crawler rules, Content-Signal
+  `ai-train=no,search=yes,ai-input=yes`), sitemap.xml, llms.txt, api-catalog,
+  mcp/server-card.json, agent-skills/index.json all 200 w/ correct content-type;
+  homepage `Link:` header points to api-catalog + service-doc/desc.
+- ✅ **Mobile (375px)** — layout fits, stat tiles stack cleanly, **no
+  user-facing horizontal scroll** (a 21px content-extent overflow exists but
+  `html,body{overflow-x:clip}` contains it — verified `couldScrollRight:false`;
+  NOT a bug, no fix made).
+
+**Only open gap:** Phase D item 7 — markdown-for-agents negotiation
+(`Accept: text/markdown` still returns `text/html`). Minor for a JS-rendered SPA
+(llms.txt already serves the markdown overview). Optional to close.
+
+**Two founder ratifications (both already live):** (1) the **Neo** entry names
+co-founders in an attributed, sourced treasury dispute — Carson to confirm
+comfort; (2) the **`ai-train=no`** content policy — Carson to confirm the
+business call.

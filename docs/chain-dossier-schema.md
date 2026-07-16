@@ -144,7 +144,7 @@ a structured dataset layer:
   `outlook`, `cause_tags`, `sources`). Small enough to write reliably; keeps the
   human-facing `/api/dead` response lean.
 - **`chain_facts(chain, dimension, data, sources, updated_at)`** (migration
-  `0008`) — the **structured dataset**: one row per (chain, dimension) block
+  `0009`) — the **structured dataset**: one row per (chain, dimension) block
   (`identity`|`token`|`capital`|`onchain`|`team`|`narrative`|`risk`|`synthesis`)
   plus a `_meta` row holding `{completeness, confidence, unsourced_fields}` and the
   deduped master source list. Each block is small enough for its specialist to

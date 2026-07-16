@@ -50,11 +50,14 @@ content-type before UAT.
    - Skill: https://isitagentready.com/.well-known/agent-skills/markdown-negotiation/SKILL.md
    - https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/
 
-8. ⏸ **`/.well-known/mcp/server-card.json`** (SEP-1649) — DEFERRED until the
-   Phase F `chaindump-mcp` server is HOSTED at a resolving URL (CTO decision:
-   **Google Cloud Run in `arkova1`**). The MCP server code exists (PR #2) but
-   isn't hosted yet; publishing a server-card at a dead endpoint would break the
-   accuracy bar. Publish this the moment the Cloud Run URL resolves.
+8. ✅ **`/.well-known/mcp/server-card.json`** (SEP-1649) — DONE. The Phase F
+   `chaindump-mcp` server is now HOSTED on **Cloud Run in `arkova1`** (Carson:
+   "use existing for now") at
+   `https://chaindump-mcp-270018525501.us-central1.run.app/mcp`. The card
+   advertises serverInfo, the streamable-http endpoint, and the 6 tools. Verified
+   live: card 200 + the endpoint it points at returns 200 (no dead URL) + real
+   `tools/call`s work against production data (screen_address → ⛔ SANCTIONED,
+   chain_forensics → sourced verdict).
    - Skill: https://isitagentready.com/.well-known/agent-skills/mcp-server-card/SKILL.md
 
 9. ✅ **`/.well-known/agent-skills/index.json`** (Agent Skills Discovery RFC

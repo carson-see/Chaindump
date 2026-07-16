@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
-import { displayPayTo, manifestMode, facilitatorUrl, decodePaymentHeader, paymentMatchesRequirement } from './lib/x402.js';
+import { prefersMarkdown } from './lib/negotiate.js';
+import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
+import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 
 const ENV = {};
 const app = new Hono();
@@ -59,20 +61,8 @@ function cgUrl(url) { const CG_KEY = ENV.COINGECKO_API_KEY || ''; return CG_KEY 
 let priceCache = {}; // gecko_id -> { price, mcap, ch, ts } — sticky so transient CoinGecko failures don't wipe prices
 
 // ---- name normalization so sources line up ----
-const ALIAS = {
-  bnb: 'bsc', binance: 'bsc', binancesmartchain: 'bsc',
-  op: 'opmainnet', optimism: 'opmainnet', opmainnet: 'opmainnet',
-  avax: 'avalanche',
-  xdai: 'gnosis',
-  zksyncera: 'zksync', zksync2: 'zksync',
-  arbitrumone: 'arbitrum',
-};
-function norm(name) {
-  let n = String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (ALIAS[n]) return ALIAS[n];
-  if (n.length > 2 && (n.endsWith('l1') || n.endsWith('l2'))) n = n.slice(0, -2);
-  return ALIAS[n] || n;
-}
+// norm() + its ALIAS map now live in ./lib/chainkit.js (single source of truth,
+// shared with the chain-linking logic so keys can never diverge).
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -122,17 +112,20 @@ function aggregateBreakdown(overview) {
   return out;
 }
 
-// growthepie master: origin_key -> { name, chainId }
+// growthepie master: chainId -> { origin, bucket, stack, da_layer } — origin for
+// the DAA lookup, the rest to derive a value-prop category when curated misses.
 function parseMaster(master) {
   const byChainId = {};
   const chains = (master && master.chains) || {};
   for (const originKey in chains) {
     const c = chains[originKey];
     const cid = c.evm_chain_id != null ? Number(c.evm_chain_id) : null;
-    if (cid != null && !Number.isNaN(cid)) byChainId[cid] = originKey;
+    if (cid != null && !Number.isNaN(cid)) byChainId[cid] = { origin: originKey, bucket: c.bucket, stack: c.stack, da_layer: c.da_layer };
   }
   return byChainId;
 }
+// Back-compat: the CF-blocked D1 seed may still hold the old chainId->string shape.
+function masterRec(v) { return typeof v === 'string' ? { origin: v } : (v || null); }
 // growthepie fundamentals: latest value per origin_key for a metric
 function latestByOrigin(fundamentals, metricKey) {
   const best = {}; // origin -> {date, value}
@@ -237,7 +230,16 @@ function logSettled(name, r) {
   else if (r.value == null) console.error(`[buildSnapshot] ${name} returned null/empty`);
 }
 
-async function buildSnapshot() {
+// Map a previously-persisted snapshot blob to { chainKey -> [priorPeerKeys] } so
+// buildSnapshot can apply hysteresis and keep peer lists stable across refreshes.
+function priorPeersByKey(priorData) {
+  const m = {};
+  for (const c of (priorData?.chains || [])) {
+    if (c.key && c.related?.peers) m[c.key] = c.related.peers.map((p) => p.key);
+  }
+  return m;
+}
+async function buildSnapshot(opts = {}) {
   // --- cheap global fetches (partial failure tolerated) ---
   // growthepie DAA is fetched separately via getDaaByOrigin (D1-persisted,
   // its own try-live-then-last-good path), not in this parallel group.
@@ -271,13 +273,16 @@ async function buildSnapshot() {
     .filter((c) => c && c.name)
     .map((c) => {
       const key = norm(c.name);
-      const originKey = c.chainId != null ? masterMap[Number(c.chainId)] : null;
+      const mrec = c.chainId != null ? masterRec(masterMap[Number(c.chainId)]) : null;
+      const originKey = mrec?.origin || null;
       return {
         key,
         name: c.name,
         symbol: c.tokenSymbol || null,
         gecko: c.gecko_id || null,
         chainId: c.chainId ?? null,
+        // value-prop category: curated taxonomy first, then growthepie-derived.
+        category: resolveCategory(c.name, deriveCategory(mrec)),
         tvl: Number(c.tvl) || 0,
         volume24h: volAgg[key] || 0,
         fees24h: feeAgg[key] || 0,
@@ -384,6 +389,35 @@ async function buildSnapshot() {
   }
 
   const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
+
+  // --- chain linking: bake a value-prop category + related peers onto each row ---
+  // Peers are drawn from the enriched top-50 (so every peer resolves in this blob)
+  // and computed here on the refresh, not per request — stable + reproducible.
+  // opts.prior carries the previous blob's peer keys for hysteresis (anti-churn).
+  const prior = opts.prior || {};
+  for (const r of ranked) { r.coverage = coverageTier(r); r.categoryLabel = categoryLabel(r.category); }
+  // Linking view: a chain absent from the volume/fee breakdown carries 0, which
+  // means "unknown", not "measured zero" — pass null so similarity never claims a
+  // metric it doesn't have (chainkit treats null as absent). Candidates are the
+  // enriched top-50, so every peer resolves in this blob (no tail 404s).
+  const linkRows = ranked.map((r) => ({
+    key: r.key, name: r.name, category: r.category, coverage: r.coverage,
+    tvl: r.tvl || null, volume24h: r.volume24h || null, fees24h: r.fees24h || null,
+    stables: r.stables || null, feeYield: r.feeYield || null, turnover: r.turnover || null,
+  }));
+  for (const r of ranked) {
+    const rel = relatedBlock(r.name, linkRows, { k: 6, prior: prior[r.key] || [] });
+    r.related = rel;
+  }
+  // Lite index of the WHOLE universe (not just the top-50) so a direct visit to a
+  // tail chain resolves to a real profile instead of a 404. Kept in a separate
+  // cache key so it never bloats the /api/chains leaderboard payload.
+  const chainsLite = rows.map((r) => ({
+    key: r.key, name: r.name, symbol: r.symbol, gecko: r.gecko, chainId: r.chainId,
+    category: r.category, categoryLabel: categoryLabel(r.category), coverage: coverageTier(r),
+    tvl: r.tvl, volume24h: r.volume24h, fees24h: r.fees24h, stables: r.stables,
+    activeAddresses: r.activeAddresses,
+  }));
   const totals = ranked.reduce((a, r) => {
     a.tvl += r.tvl; a.volume24h += r.volume24h; a.fees24h += r.fees24h; a.stables += r.stables || 0;
     a.activeAddresses += r.activeAddresses || 0;
@@ -393,12 +427,49 @@ async function buildSnapshot() {
   const usersCoverage = ranked.filter((r) => r.activeAddresses != null).length;
 
   return {
+    schemaVersion: 2,
     updatedAt: new Date().toISOString(),
     count: ranked.length,
     usersCoverage,
     totals,
     chains: ranked,
+    chainsLite, // persisted separately (key 'chains_lite'); stripped from the 'chains' blob
   };
+}
+// Persist the snapshot: the top-50 leaderboard under 'chains' and the whole-
+// universe lite index under 'chains_lite'. Keeping them separate stops the lite
+// index from bloating every /api/chains response. Returns the trimmed blob.
+async function persistSnapshot(db, data, ts) {
+  const lite = data.chainsLite;
+  const blob = { ...data }; delete blob.chainsLite;
+  try {
+    await db.prepare(`INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`)
+      .bind(JSON.stringify(blob), ts).run();
+    if (lite) await db.prepare(`INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains_lite', ?, ?)
+       ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`)
+      .bind(JSON.stringify(lite), ts).run();
+  } catch (e) { /* best-effort persistence */ }
+  return blob;
+}
+// Resolve a chain beyond the top-50 from the lite index, and compute its peers at
+// request time against the top-50 (every peer resolves in the main blob, so no
+// dead links). Returns a basic profile row or null. Not the hot path.
+async function resolveTailChain(target) {
+  let lite = null;
+  try { const rows = await dbQuery(`SELECT data FROM snapshot_cache WHERE key='chains_lite' LIMIT 1`); if (rows[0]?.data) lite = JSON.parse(rows[0].data); } catch (e) {}
+  if (!Array.isArray(lite)) return null;
+  const row = lite.find((c) => c.name.toLowerCase() === target);
+  if (!row) return null;
+  const top = (cache.data && cache.data.chains) || [];
+  const linkRows = [row, ...top].map((r) => ({
+    key: r.key || norm(r.name), name: r.name, category: r.category, coverage: r.coverage || 'basic',
+    tvl: r.tvl || null, volume24h: r.volume24h || null, fees24h: r.fees24h || null,
+    stables: r.stables || null, feeYield: r.feeYield || null, turnover: r.turnover || null,
+  }));
+  row.related = relatedBlock(row.name, linkRows, { k: 6 });
+  row.categoryLabel = row.categoryLabel || categoryLabel(row.category);
+  return row;
 }
 
 // Read the cron-refreshed snapshot from D1 (instant, no live upstream calls on
@@ -413,15 +484,10 @@ async function loadSnapshot() {
   }
   const data = await buildSnapshot();
   const ts = Date.now();
-  if (ENV.DB) {
-    try {
-      await ENV.DB.prepare(
-        `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
-         ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
-      ).bind(JSON.stringify(data), ts).run();
-    } catch (e) { /* best-effort priming, not fatal */ }
-  }
-  return { data, ts };
+  let blob;
+  if (ENV.DB) blob = await persistSnapshot(ENV.DB, data, ts);
+  else { blob = { ...data }; delete blob.chainsLite; }
+  return { data: blob, ts };
 }
 
 function fmtShort(n) {
@@ -819,11 +885,65 @@ app.post('/api/admin/refresh', wrap(async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message, ran }); }
 }));
 
+// ---------------------------------------------------------------------------
+// Research desk (Phase G) write path — DESK_TOKEN-guarded. The autonomous desk
+// POSTs verified, sourced findings to /api/desk/propose; they land as 'pending'
+// in desk_proposals (a durable, human-reviewed queue). Nothing reaches the live
+// tables without a human promoting it (CLAUDE.md §1.5). Disabled (404) unless
+// DESK_TOKEN is set.
+// ---------------------------------------------------------------------------
+function deskAuth(req, res) {
+  const token = ENV.DESK_TOKEN || '';
+  if (!token) { res.status(404).json({ error: 'not found' }); return false; }
+  if ((req.headers['authorization'] || '') !== `Bearer ${token}`) { res.status(401).json({ error: 'unauthorized' }); return false; }
+  return true;
+}
+
+app.post('/api/desk/propose', wrap(async (req, res) => {
+  if (!deskAuth(req, res)) return;
+  if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
+  let b;
+  try { b = await req.raw.json(); } catch (e) { return res.status(400).json({ error: 'invalid JSON body: ' + (e && e.message || e) }); }
+  const dataset = String(b.dataset || '').trim();
+  const slug = String(b.slug || '').trim();
+  if (!dataset || !slug) return res.status(400).json({ error: 'dataset and slug are required' });
+  const namesIndividuals = b.names_individuals ? 1 : 0;
+  const confidence = Number(b.confidence);
+  // Force human review for individual-naming/fraud claims or low/invalid confidence
+  // (NaN counts as low — force review, the safe default).
+  const highConfidence = Number.isFinite(confidence) && confidence >= 0.75;
+  const needsReview = (namesIndividuals || !highConfidence) ? 1 : 0;
+  try {
+    await ENV.DB.prepare(
+      `INSERT INTO desk_proposals (dataset, slug, title, summary, payload, sources, names_individuals, confidence, needs_human_review, status, queued_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+       ON CONFLICT(dataset, slug) DO UPDATE SET title=excluded.title, summary=excluded.summary, payload=excluded.payload,
+         sources=excluded.sources, names_individuals=excluded.names_individuals, confidence=excluded.confidence,
+         needs_human_review=excluded.needs_human_review, status='pending', queued_at=datetime('now')`
+    ).bind(dataset, slug, b.title || null, b.summary || null, JSON.stringify(b.payload || {}), JSON.stringify(b.sources || []),
+      namesIndividuals, Number.isFinite(confidence) ? confidence : null, needsReview).run();
+    res.json({ ok: true, dataset, slug, needs_human_review: !!needsReview });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+}));
+
+app.get('/api/desk/pending', wrap(async (req, res) => {
+  if (!deskAuth(req, res)) return;
+  if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
+  try {
+    const status = String(req.query.status || 'pending');
+    const rows = await dbQuery(
+      `SELECT id, dataset, slug, title, summary, names_individuals, confidence, needs_human_review, status, queued_at
+       FROM desk_proposals WHERE status = ? ORDER BY queued_at DESC LIMIT 100`, [status]);
+    res.json({ status, count: rows.length, proposals: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+}));
+
 app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
     const target = String(req.params.name || '').toLowerCase();
-    const row = cache.data.chains.find((c) => c.name.toLowerCase() === target);
+    let row = cache.data.chains.find((c) => c.name.toLowerCase() === target);
+    if (!row) { row = await resolveTailChain(target); } // beyond the top-50 → lite index
     if (!row) return res.status(404).json({ error: 'unknown chain' });
 
     let topProjects = [];
@@ -1419,95 +1539,109 @@ app.get('/api/power', wrap(async (req, res) => {
 // x402 monetization — agent-payable API. Gated endpoints return HTTP 402 with
 // payment requirements; a valid X-PAYMENT header unlocks the data.
 //   Go-live needs: X402_PAY_TO (receiving wallet) + a facilitator for on-chain
-//   verification. Until then it runs in demo mode (accepts any X-PAYMENT header).
+//   verification. Until then it runs in demo mode (X-PAYMENT ignored, free quota).
+//   Current gate: verify -> settle -> serve. The verify -> serve -> settle +
+//   nonce replay-store target for go-live is in docs/x402-billing-design.md.
 // ---------------------------------------------------------------------------
 // Facilitator decision: Coinbase CDP facilitator on Base mainnet, USDC.
 // Gasless (EIP-3009), built-in KYT/OFAC screening, free 1k tx/mo. Go-live needs:
-//   X402_PAY_TO      = your Base receiving wallet (secret; NO hardcoded fallback —
-//                      unset => zero-address sentinel => demo mode, funds never route)
-//   X402_FACILITATOR = the facilitator's base URL (e.g. https://x402.org/facilitator
-//                      or the CDP endpoint). The legacy value 'coinbase-cdp' is not a
-//                      URL, so it reads as "no verifier wired" and the gate fails closed.
-//   X402_FACILITATOR_KEY (optional) = bearer token for facilitators that require auth.
-const X402 = {
-  get payTo() { return displayPayTo(ENV); },
-  get network() { return ENV.X402_NETWORK || 'base'; },
-  get asset() { return ENV.X402_ASSET || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'; }, // USDC on Base
-};
+//   X402_PAY_TO = your Base receiving wallet
+//   CDP_API_KEY_ID + CDP_API_KEY_SECRET (from portal.cdp.coinbase.com) for the facilitator SDK
+// Payment config, resolved from env at call time. No hardcoded payTo fallback:
+// with X402_PAY_TO unset, payTo is null → isLiveMode() is false → we run in demo
+// mode and never bill. X402_FACILITATOR must be an http(s) URL to go live (the
+// default 'coinbase-cdp' sentinel keeps us in demo until a facilitator is wired).
+function x402Config() {
+  return {
+    payTo: ENV.X402_PAY_TO || null,
+    network: ENV.X402_NETWORK || 'base',
+    asset: ENV.X402_ASSET || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', // USDC on Base
+    facilitator: ENV.X402_FACILITATOR || 'coinbase-cdp',
+  };
+}
 const AGENT_ENDPOINTS = {
   '/api/agent/summary': { price: 5000, desc: 'Market posture + top signals across all chains' },      // 0.005 USDC
   '/api/agent/chain': { price: 10000, desc: 'Full sourced profile + metrics + signals for one chain' }, // 0.01
   '/api/agent/signals': { price: 20000, desc: 'Live signal feed (momentum, flows, anomalies)' },       // 0.02
   '/api/agent/risk': { price: 50000, desc: 'Scam / bad-actor risk assessment with cited evidence' },   // 0.05 (compliance)
 };
-const USDC_DP = 1e6;
-// The x402 paymentRequirements for a metered endpoint — the single source of
-// truth handed to the client (402 challenge) AND to the facilitator (verify+settle),
-// so the amount/asset/network/payTo the agent pays are exactly what we enforce.
-function paymentRequirement(resource, priceAtomic, desc) {
-  return {
-    scheme: 'exact', network: X402.network, maxAmountRequired: String(priceAtomic),
-    resource, description: desc, mimeType: 'application/json',
-    payTo: X402.payTo, asset: X402.asset, maxTimeoutSeconds: 60,
-  };
-}
-function require402(res, resource, priceAtomic, desc, reason = 'payment_required') {
+// 402 body advertising what a caller must pay. `error` is 'payment_required' when
+// no/again-needed payment (discovery), 'payment_invalid' when a payment was
+// supplied but failed structural or facilitator verification.
+function require402(res, resource, priceAtomic, desc, opts = {}) {
+  const cfg = x402Config();
   res.status(402).json({
     x402Version: 1,
-    error: reason,
-    accepts: [paymentRequirement(resource, priceAtomic, desc)],
+    error: opts.error || 'payment_required',
+    ...(opts.reason ? { reason: opts.reason } : {}),
+    accepts: [paymentRequirements(resource, priceAtomic, desc, cfg)],
   });
 }
-
-// On-chain payment verification via the x402 facilitator. Fails closed on every
-// error path — a payment is accepted ONLY when it structurally matches the
-// requirement AND the facilitator both verifies the signature and successfully
-// settles it. Settling here (before serving) consumes the EIP-3009 nonce
-// on-chain, which is what prevents replay of a captured X-PAYMENT header.
-async function verifyPayment(header, requirement) {
-  const fac = facilitatorUrl(ENV);
-  if (!fac) return false;                         // no verifier wired -> reject
-  const payload = decodePaymentHeader(header);
-  if (!payload) return false;                     // malformed header -> reject
-  if (!paymentMatchesRequirement(payload, requirement)) return false; // wrong payTo/amount/network -> reject
-  const body = JSON.stringify({ x402Version: 1, paymentPayload: payload, paymentRequirements: requirement });
-  const headers = { 'content-type': 'application/json' };
-  if (ENV.X402_FACILITATOR_KEY) headers.authorization = `Bearer ${ENV.X402_FACILITATOR_KEY}`;
-  try {
-    const vr = await fetch(fac + '/verify', { method: 'POST', headers, body });
-    if (!vr.ok) { console.error('x402 /verify http', vr.status); return false; }
-    const v = await vr.json();
-    if (!v || v.isValid !== true) { console.error('x402 verify rejected', v && v.invalidReason); return false; }
-    const sr = await fetch(fac + '/settle', { method: 'POST', headers, body });
-    if (!sr.ok) { console.error('x402 /settle http', sr.status); return false; }
-    const s = await sr.json();
-    if (!s || s.success !== true) { console.error('x402 settle failed', s && s.errorReason); return false; }
-    return true;
-  } catch (e) {
-    console.error('x402 verify/settle error', e && e.message);
-    return false;
-  }
+// POST to the facilitator (verify/settle). Throws on a non-2xx so the gate can
+// fail closed. Isolated here so it's the single network seam the gate depends on.
+async function facilitatorPost(base, path, body) {
+  let root = base;
+  while (root.endsWith('/')) root = root.slice(0, -1); // trim trailing slashes (no regex backtracking)
+  const url = root + path;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error('facilitator ' + path + ' -> ' + r.status);
+  return await r.json();
 }
-
 // Free preview quota: each client gets FREE_LIMIT calls/month, then x402 payment required.
 const FREE_LIMIT = 1;
-const freeQuota = {}; // ip -> { count, monthKey }
-function monthKey() { const d = new Date(); return d.getUTCFullYear() + '-' + d.getUTCMonth(); }
-async function x402Gate(req, res, baseResource, priceAtomic, desc) {
-  const requirement = paymentRequirement(baseResource, priceAtomic, desc);
+// ip -> { count, monthKey }. In-process, per-isolate, IP-keyed — a soft limit,
+// not a durable hard quota. `lastPruneKey` tracks the month we last pruned for,
+// so a rollover drops last month's stale IP entries exactly once instead of
+// leaking them for the isolate's whole lifetime.
+const freeQuota = {};
+let lastPruneKey = null;
+function monthKey() { return monthKeyFromDate(new Date()); }
+// Gate an agent endpoint. Returns true to let the handler run, false after it
+// has written a 402. Async because live mode calls the facilitator.
+//   demo mode (no wallet/facilitator): X-PAYMENT is IGNORED — never a bypass —
+//     and access is granted only within the free monthly quota.
+//   live mode: require a structurally-valid X-PAYMENT for the exact payTo/amount,
+//     then verify + settle it via the facilitator before serving.
+// Live-mode path: require a structurally-valid X-PAYMENT for the exact
+// payTo/amount, then verify + settle via the facilitator before serving.
+// Returns true to allow the handler; false after writing a 402. Split out of
+// x402Gate to keep each function's complexity low.
+async function verifyLivePayment(req, res, baseResource, priceAtomic, desc, cfg) {
+  const deny = (reason) => { require402(res, baseResource, priceAtomic, desc, { error: 'payment_invalid', reason }); return false; };
   const header = req.headers['x-payment'];
-  // A payment is only ever honored in live mode — the SAME condition the manifest
-  // advertises (real wallet AND a real facilitator URL), so the gate never tries to
-  // charge for a mode we told agents was demo. In demo mode the X-PAYMENT header is
-  // ignored — no header can unlock paid data, so a missing config can never be
-  // bypassed with `X-PAYMENT: x`.
-  if (header && manifestMode(ENV) === 'live') {
-    if (await verifyPayment(header, requirement)) return true;
-    require402(res, baseResource, priceAtomic, desc, 'payment_invalid');
-    return false;
-  }
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'anon';
+  if (!header) { require402(res, baseResource, priceAtomic, desc); return false; }
+  const requirements = paymentRequirements(baseResource, priceAtomic, desc, cfg);
+  const payment = decodePaymentHeader(header);
+  const chk = structuralCheck(payment, requirements);
+  if (!chk.ok) return deny(chk.reason);
+  const body = { x402Version: 1, paymentPayload: payment, paymentRequirements: requirements };
+  let verify;
+  try { verify = await facilitatorPost(cfg.facilitator, '/verify', body); }
+  catch { return deny('verify_unavailable'); }
+  if (verify?.isValid !== true) return deny(verify?.invalidReason || 'verify_rejected');
+  let settle;
+  try { settle = await facilitatorPost(cfg.facilitator, '/settle', body); }
+  catch { return deny('settle_unavailable'); }
+  if (settle?.success !== true) return deny('settle_failed');
+  if (settle.transaction) res.setHeader('X-PAYMENT-RESPONSE', String(settle.transaction));
+  return true;
+}
+async function x402Gate(req, res, baseResource, priceAtomic, desc) {
+  const cfg = x402Config();
+  if (isLiveMode(cfg)) return verifyLivePayment(req, res, baseResource, priceAtomic, desc, cfg);
+  // Demo mode: never trust X-PAYMENT. Key the free quota on Cloudflare's trusted
+  // client IP. X-Forwarded-For is client-supplied (leftmost value spoofable), so
+  // it must NOT be trusted — an attacker could rotate it for unlimited free calls.
+  const ip = req.headers['cf-connecting-ip'] || req.ip || 'anon';
   const mk = monthKey();
+  // On month rollover, drop last month's entries (see pruneStaleQuota) so the
+  // in-process map can't grow unbounded over the isolate's lifetime.
+  if (mk !== lastPruneKey) { pruneStaleQuota(freeQuota, mk); lastPruneKey = mk; }
   let q = freeQuota[ip];
   if (!q || q.monthKey !== mk) { q = freeQuota[ip] = { count: 0, monthKey: mk }; }
   q.count++;
@@ -1518,10 +1652,12 @@ async function x402Gate(req, res, baseResource, priceAtomic, desc) {
 
 // Free discovery manifest — how agents learn what's payable and for how much
 app.get('/api/agent/manifest', wrap((req, res) => {
+  const cfg = x402Config();
+  const live = isLiveMode(cfg);
   res.json({
     name: 'Chaindump', description: 'Onchain intelligence — chains, assets, markets, policy & forensics.',
     x402Version: 1, freeCallsPerMonth: FREE_LIMIT,
-    payment: { network: X402.network, asset: X402.asset, payTo: X402.payTo, currency: 'USDC', mode: manifestMode(ENV) },
+    payment: { network: cfg.network, asset: cfg.asset, payTo: live ? cfg.payTo : null, currency: 'USDC', mode: live ? 'live' : 'demo' },
     entrypoints: Object.entries(AGENT_ENDPOINTS).map(([path, v]) => ({ path, priceUsd: v.price / USDC_DP, description: v.desc })),
   });
 }));
@@ -1684,12 +1820,24 @@ app.get('/api/health', wrap((req, res) => res.json({ ok: true })));
 // Twitter/Discord/Slack. The client reads the path and opens the right view.
 // ---------------------------------------------------------------------------
 const OG_DESC_FALLBACK = 'Onchain intelligence — chains, assets, markets, policy & forensics. What is changing, why, and what to do about it.';
-function ogHtml(html, { title, desc, url }) {
+// Serialize JSON-LD safely for inlining in a <script> (neutralize "</script>").
+function jsonLd(obj) { return JSON.stringify(obj).replace(/</g, '\\u003c'); }
+function ogHtml(html, { title, desc, url, ld }) {
   const t = escapeHtml(title || 'Chaindump — Onchain Intelligence');
   const d = escapeHtml(desc || OG_DESC_FALLBACK);
   const u = escapeHtml(url || 'https://chaindump.xyz/');
+  // Base structured-data graph: Organization + WebSite, present on every page so
+  // AI engines and search can attribute claims to Chaindump. Per-page nodes (a
+  // chain Dataset, a scam Report, etc.) are appended via the optional `ld` arg.
+  const graph = [
+    { '@type': 'Organization', '@id': ORIGIN + '/#org', name: 'Chaindump', url: ORIGIN + '/', description: OG_DESC_FALLBACK, logo: ORIGIN + '/favicon.svg' },
+    { '@type': 'WebSite', '@id': ORIGIN + '/#site', name: 'Chaindump', url: ORIGIN + '/', description: OG_DESC_FALLBACK, inLanguage: 'en', publisher: { '@id': ORIGIN + '/#org' } },
+  ];
+  if (ld) graph.push(...(Array.isArray(ld) ? ld : [ld]));
+  const structured = jsonLd({ '@context': 'https://schema.org', '@graph': graph });
   const tags = `<title>${t}</title>
 <meta name="description" content="${d}">
+<link rel="canonical" href="${u}">
 <meta property="og:title" content="${t}">
 <meta property="og:description" content="${d}">
 <meta property="og:type" content="website">
@@ -1697,7 +1845,8 @@ function ogHtml(html, { title, desc, url }) {
 <meta property="og:site_name" content="Chaindump">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="${t}">
-<meta name="twitter:description" content="${d}">`;
+<meta name="twitter:description" content="${d}">
+<script type="application/ld+json">${structured}</script>`;
   return html.replace(/<title>[\s\S]*?<\/title>/, tags);
 }
 async function spaShell(env, req) {
@@ -1706,6 +1855,13 @@ async function spaShell(env, req) {
     const r = await env.ASSETS.fetch(new Request(new URL('/index.html', req.url)));
     return await r.text();
   } catch (e) { console.error('[spaShell] failed:', e && e.message); throw e; }
+}
+// BreadcrumbList for entity deep-links: Home › {section} › {entity}.
+function breadcrumb(section, sectionUrl, entity, entityUrl) {
+  const el = [{ '@type': 'ListItem', position: 1, name: 'Chaindump', item: ORIGIN + '/' }];
+  if (section) el.push({ '@type': 'ListItem', position: 2, name: section, item: sectionUrl });
+  if (entity) el.push({ '@type': 'ListItem', position: el.length + 1, name: entity, item: entityUrl });
+  return { '@type': 'BreadcrumbList', itemListElement: el };
 }
 function sendHtml(res, html) { res.setHeader('Link', DISCOVERY_LINK); res.status(200).html(html); }
 
@@ -1726,10 +1882,24 @@ const VIEW_OG = {
   traces: ['Scam Tracker — Chaindump', 'Traced scam fund-flows plus live OFAC wallet screening against 900+ sanctioned addresses across 14 chains.'],
   api: ['Agent API · x402 — Chaindump', 'A versioned, provenance-tagged JSON API for AI agents, payable per-call via x402.'],
 };
+// Views whose primary content is a ranking → emit an ItemList so AI engines can
+// answer "top X" questions directly. Only `live` has its items in the snapshot
+// cache at request time; the rest stay description-only until wired to their data.
 Object.keys(VIEW_OG).forEach((v) => {
   app.get('/' + v, wrap(async (req, res) => {
     const [title, desc] = VIEW_OG[v];
-    sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/${v}` }));
+    const url = `${ORIGIN}/${v}`;
+    let ld;
+    if (v === 'live') {
+      try {
+        if (!cache.data) cache = await loadSnapshot();
+        const items = (cache.data.chains || []).slice(0, 20).map((c, i) => ({
+          '@type': 'ListItem', position: i + 1, name: c.name, url: `${ORIGIN}/chain/${encodeURIComponent(c.name)}`,
+        }));
+        if (items.length) ld = { '@type': 'ItemList', '@id': url + '#list', name: 'Top chains by on-chain activity', itemListOrder: 'https://schema.org/ItemListOrderDescending', numberOfItems: items.length, itemListElement: items };
+      } catch (e) { console.error('[live itemlist] skipped:', e && e.message); }
+    }
+    sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
   }));
 });
 app.get('/chain/:name', wrap(async (req, res) => {
@@ -1740,7 +1910,22 @@ app.get('/chain/:name', wrap(async (req, res) => {
   const desc = row
     ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
     : OG_DESC_FALLBACK;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/chain/${encodeURIComponent(key)}` }));
+  const url = `${ORIGIN}/chain/${encodeURIComponent(key)}`;
+  let ld;
+  if (row) {
+    const dm = (cache.data && cache.data.updatedAt) ? new Date(cache.data.updatedAt).toISOString() : undefined;
+    const measured = [
+      { '@type': 'PropertyValue', name: 'Total value locked (USD)', value: row.tvl },
+      { '@type': 'PropertyValue', name: '24h DEX volume (USD)', value: row.volume24h },
+      { '@type': 'PropertyValue', name: 'Composite activity rank', value: row.rank },
+    ];
+    if (row.tokenPrice != null) measured.push({ '@type': 'PropertyValue', name: 'Token price (USD)', value: row.tokenPrice });
+    ld = [
+      { '@type': 'Dataset', '@id': url + '#dataset', name: `${row.name} on-chain metrics`, description: desc, url, isPartOf: { '@id': ORIGIN + '/#site' }, creator: { '@id': ORIGIN + '/#org' }, publisher: { '@id': ORIGIN + '/#org' }, dateModified: dm, variableMeasured: measured, citation: ['https://defillama.com/', 'https://www.coingecko.com/'] },
+      breadcrumb('Live · Top 50', `${ORIGIN}/live`, row.name, url),
+    ];
+  }
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
 }));
 app.get('/scam/:slug', wrap(async (req, res) => {
   const slug = String(req.params.slug || '');
@@ -1748,7 +1933,14 @@ app.get('/scam/:slug', wrap(async (req, res) => {
   try { row = (await dbQuery(`SELECT name, category, amount_usd FROM scam_traces WHERE slug = ?`, [slug]))[0]; } catch (e) {}
   const title = row ? `${row.name} — Chaindump Scam Tracker` : 'Scam Tracker — Chaindump';
   const desc = row ? `${row.name}${row.amount_usd ? ` — ~$${fmtShort(row.amount_usd)} ${row.category || ''}` : ''}. Traced wallets, fund-flow and sources on Chaindump.` : OG_DESC_FALLBACK;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/scam/${encodeURIComponent(slug)}` }));
+  const url = `${ORIGIN}/scam/${encodeURIComponent(slug)}`;
+  // Article node describes the CASE (an event/report). Named-individual allegations
+  // stay out of structured data per the human-review policy (CLAUDE.md §1.5).
+  const ld = row ? [
+    { '@type': 'Article', '@id': url + '#article', headline: `${row.name} — traced fund-flow`, description: desc, url, mainEntityOfPage: url, isPartOf: { '@id': ORIGIN + '/#site' }, author: { '@id': ORIGIN + '/#org' }, publisher: { '@id': ORIGIN + '/#org' } },
+    breadcrumb('Scam Tracker', `${ORIGIN}/traces`, row.name, url),
+  ] : undefined;
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
 }));
 app.get('/collection/:id', wrap(async (req, res) => {
   const id = String(req.params.id || '');
@@ -1756,7 +1948,12 @@ app.get('/collection/:id', wrap(async (req, res) => {
   try { if (ENV.DB) row = await ENV.DB.prepare(`SELECT name, chain FROM nft_catalog WHERE id = ?`).bind(id).first(); } catch (e) {}
   const title = row ? `${row.name} — Chaindump` : 'NFT Collection — Chaindump';
   const desc = row ? `${row.name} (${row.chain}) — live floor, market cap, 24h volume and holders on Chaindump.` : OG_DESC_FALLBACK;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url: `https://chaindump.xyz/collection/${encodeURIComponent(id)}` }));
+  const url = `${ORIGIN}/collection/${encodeURIComponent(id)}`;
+  const ld = row ? [
+    { '@type': 'Dataset', '@id': url + '#dataset', name: `${row.name} NFT market metrics`, description: desc, url, isPartOf: { '@id': ORIGIN + '/#site' }, publisher: { '@id': ORIGIN + '/#org' }, citation: ['https://www.coingecko.com/'] },
+    breadcrumb('NFTs & Ordinals', `${ORIGIN}/nft`, row.name, url),
+  ] : undefined;
+  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
 }));
 
 // ---------------------------------------------------------------------------
@@ -1784,15 +1981,108 @@ const ROBOTS_TXT = [
 
 app.get('/robots.txt', (c) => c.text(ROBOTS_TXT, 200, { 'cache-control': 'public, max-age=3600' }));
 
+// llms.txt (llmstxt.org) — a compact, link-first map of the site for LLMs and
+// AI-search crawlers. Built from VIEW_OG so it never drifts from the real views.
+app.get('/llms.txt', (c) => {
+  const label = (v) => (VIEW_OG[v][0] || '').replace(/ — Chaindump$/, '');
+  const line = (v) => `- [${label(v)}](${ORIGIN}/${v}): ${VIEW_OG[v][1]}`;
+  const contentViews = ['live', 'mid', 'grave', 'traces', 'stables', 'nft', 'rwa', 'infra', 'markets', 'geo', 'uspolicy', 'power', 'news'].filter((v) => VIEW_OG[v]);
+  const body = [
+    '# Chaindump',
+    '',
+    '> Real-time blockchain intelligence — analysis and aggregation with provenance across chains, assets, markets, policy and on-chain forensics. Chaindump answers "what is changing, why, and what to do about it", not "what is biggest". Every material figure cites a resolving, authoritative source.',
+    '',
+    'Chaindump is a public-data product. Its differentiation is sourced analysis, not raw numbers: each view pairs live metrics with a written analyst take and an explicit provenance trail.',
+    '',
+    '## Views',
+    ...contentViews.map(line),
+    '',
+    '## Entity deep-links',
+    '- Chain profile: ' + ORIGIN + '/chain/{name} (e.g. ' + ORIGIN + '/chain/ethereum) — live TVL, volume, fundamentals and analyst take.',
+    '- Scam case: ' + ORIGIN + '/scam/{slug} — traced wallets, fund-flow and sources.',
+    '- NFT collection: ' + ORIGIN + '/collection/{id} — live floor, market cap, volume, holders.',
+    '',
+    '## Full context',
+    '- [llms-full.txt](' + ORIGIN + '/llms-full.txt): current top-chains table (real data) plus every view\'s analysis, inlined as text.',
+    '',
+    '## For agents',
+    '- [Agent API (x402)](' + ORIGIN + '/api): versioned, provenance-tagged JSON API, payable per-call via x402 (USDC on Base).',
+    '- [API catalog](' + ORIGIN + '/.well-known/api-catalog)',
+    '- [Agent skills index](' + ORIGIN + '/.well-known/agent-skills/index.json)',
+    '- [MCP server card](' + ORIGIN + '/.well-known/mcp/server-card.json) — Chaindump intelligence as MCP tools.',
+    '',
+    '## Sources & method',
+    'DefiLlama (TVL), CoinGecko (prices), OFAC SDN via the 0xB10C mirror (sanctions screening, 900+ addresses across 18 chains), growthepie (active addresses), and government / mainstream / NPO sources for policy. Claims that name a private individual as a wrongdoer are human-reviewed before publication, never auto-generated.',
+    '',
+    '## Usage policy',
+    'AI assistants may read Chaindump to answer and cite (Content-Signal: search=yes, ai-input=yes) but not to train models (ai-train=no). See ' + ORIGIN + '/robots.txt.',
+    '',
+  ].join('\n');
+  return c.text(body, 200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=3600' });
+});
+
+// llms-full.txt — the SPA renders bodies from /api client-side, so non-JS AI
+// crawlers can't read the actual numbers. This inlines the current top-chains
+// table (real snapshot data, sourced) + every view's analyst framing as citable
+// markdown text, closing the client-side-rendering gap for AI engines.
+async function llmsFullBody() {
+  let chainsMd = '_Live snapshot temporarily unavailable._';
+  let asOf = '';
+  try {
+    if (!cache.data) cache = await loadSnapshot();
+    if (cache.data && cache.data.updatedAt) asOf = ` (as of ${cache.data.updatedAt})`;
+    const top = (cache.data.chains || []).slice(0, 25);
+    if (top.length) {
+      chainsMd = ['| # | Chain | TVL | 24h volume | Token price | Activity rank |', '|---|---|---|---|---|---|']
+        .concat(top.map((ch) => `| ${ch.rank ?? ''} | ${ch.name} | $${fmtShort(ch.tvl)} | $${fmtShort(ch.volume24h)} | ${ch.tokenPrice != null ? '$' + ch.tokenPrice : '—'} | ${ch.rank ?? ''} |`)).join('\n');
+    }
+  } catch (e) { console.error('[llms-full] snapshot skipped:', e && e.message); }
+  const label = (v) => (VIEW_OG[v][0] || '').replace(/ — Chaindump$/, '');
+  const contentViews = ['live', 'mid', 'grave', 'traces', 'stables', 'nft', 'rwa', 'infra', 'markets', 'geo', 'uspolicy', 'power', 'news'].filter((v) => VIEW_OG[v]);
+  const body = [
+    '# Chaindump — full context for LLMs',
+    '',
+    '> Real-time blockchain intelligence — sourced analysis and aggregation across chains, assets, markets, policy and on-chain forensics. This file inlines Chaindump\'s current headline data and per-view analysis as plain text, because the site UI renders from a JSON API client-side.',
+    '',
+    `## Top chains by composite on-chain activity${asOf}`,
+    'Ranked by composite activity (50% volume, 30% TVL, 20% fees). Source: DefiLlama (TVL/volume), CoinGecko (price).',
+    '',
+    chainsMd,
+    '',
+    '## What each view covers',
+    ...contentViews.map((v) => `### ${label(v)} (${ORIGIN}/${v})\n${VIEW_OG[v][1]}`),
+    '',
+    '## Provenance',
+    'Every material figure cites a resolving, authoritative source: DefiLlama (TVL), CoinGecko (prices), OFAC SDN via the 0xB10C mirror (sanctions, 900+ addresses / 18 chains), growthepie (active addresses), government / mainstream / NPO sources (policy). Claims naming a private individual as a wrongdoer are human-reviewed before publication.',
+    '',
+    '## Programmatic access',
+    `Agent API (x402, USDC on Base): ${ORIGIN}/api · API catalog: ${ORIGIN}/.well-known/api-catalog · MCP server card: ${ORIGIN}/.well-known/mcp/server-card.json`,
+    '',
+    `Usage: AI assistants may read and cite (search=yes, ai-input=yes); training is disallowed (ai-train=no). See ${ORIGIN}/robots.txt.`,
+    '',
+  ].join('\n');
+  return body;
+}
+app.get('/llms-full.txt', async (c) =>
+  c.text(await llmsFullBody(), 200, { 'content-type': 'text/markdown; charset=utf-8', 'cache-control': 'public, max-age=600' }));
+
 app.get('/sitemap.xml', async (c) => {
   const urls = [`${ORIGIN}/`, ...Object.keys(VIEW_OG).map((v) => `${ORIGIN}/${v}`)];
+  let lastmod;
   try { // include the live top chains as entity deep-links when the snapshot is warm
     if (!cache.data) cache = await loadSnapshot();
+    if (cache.data && cache.data.updatedAt) lastmod = new Date(cache.data.updatedAt).toISOString().slice(0, 10);
     for (const ch of (cache.data.chains || []).slice(0, 50)) urls.push(`${ORIGIN}/chain/${encodeURIComponent(ch.name)}`);
-  } catch (e) { console.error('[sitemap] entity deep-links skipped:', e instanceof Error ? e.message : e); }
+  } catch (e) { console.error('[sitemap] chain deep-links skipped:', e instanceof Error ? e.message : e); }
+  try { // scam cases + NFT collections — real-time product, so worth crawling
+    const scams = await dbQuery(`SELECT slug FROM scam_traces`).catch(() => []);
+    for (const s of scams) if (s.slug) urls.push(`${ORIGIN}/scam/${encodeURIComponent(s.slug)}`);
+    if (ENV.DB) { const { results } = await ENV.DB.prepare(`SELECT id FROM nft_catalog LIMIT 200`).all(); for (const r of (results || [])) if (r.id != null) urls.push(`${ORIGIN}/collection/${encodeURIComponent(r.id)}`); }
+  } catch (e) { console.error('[sitemap] case/collection deep-links skipped:', e instanceof Error ? e.message : e); }
+  const lm = lastmod ? `<lastmod>${lastmod}</lastmod>` : '';
   const body = '<?xml version="1.0" encoding="UTF-8"?>\n'
     + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-    + urls.map((u) => `  <url><loc>${u.replaceAll('&', '&amp;')}</loc></url>`).join('\n')
+    + urls.map((u) => `  <url><loc>${u.replaceAll('&', '&amp;')}</loc>${lm}</url>`).join('\n')
     + '\n</urlset>\n';
   return new Response(body, { headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
 });
@@ -1859,6 +2149,28 @@ app.get('/.well-known/agent-skills/index.json', async () => {
   return new Response(JSON.stringify(index, null, 2), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
 });
 
+// MCP Server Card (SEP-1649) — now that the chaindump-mcp server is hosted at a
+// resolving URL (Cloud Run), advertise it so MCP clients can discover it.
+const MCP_ENDPOINT = 'https://chaindump-mcp-270018525501.us-central1.run.app/mcp';
+app.get('/.well-known/mcp/server-card.json', () => {
+  const card = {
+    serverInfo: { name: 'chaindump-chain-intel', version: '0.1.0' },
+    description: "Chaindump's differentiated blockchain intelligence — OFAC screening, chain forensics, live signals, power rankings — as MCP tools. Every response sourced.",
+    transport: { type: 'streamable-http', endpoint: MCP_ENDPOINT },
+    capabilities: { tools: {} },
+    tools: [
+      { name: 'screen_address', description: 'OFAC SDN sanctions screening for a crypto address (+ scam matches, risk).' },
+      { name: 'chain_intel', description: 'Composite profile + analyst take + risk for one chain.' },
+      { name: 'chain_forensics', description: 'Tier verdict (thriving/mid/dying/dead) + why it is stuck + outlook + sources.' },
+      { name: 'power_ranking', description: 'Country crypto power ranking.' },
+      { name: 'rwa_depin', description: 'RWA protocols by TVL + DePIN networks by market cap.' },
+      { name: 'scam_cases', description: 'Traced scam/exploit cases with fund-flow and sources.' },
+    ],
+    documentation: `${ORIGIN}/api`,
+  };
+  return new Response(JSON.stringify(card, null, 2), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+});
+
 // RFC 8288 Link header advertising the API catalog + service docs. Applied to
 // the homepage (run_worker_first: ["/"]) and every Worker-served HTML view.
 const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", <${ORIGIN}/api>; rel="service-doc", <${ORIGIN}/api/agent/manifest>; rel="service-desc"`;
@@ -1866,8 +2178,40 @@ const DISCOVERY_LINK = `<${ORIGIN}/.well-known/api-catalog>; rel="api-catalog", 
 // Homepage: Worker-served (run_worker_first: ["/"]) so we can attach the Link
 // header (sendHtml sets it) and proper homepage OG tags.
 app.get('/', wrap(async (req, res) => {
+  // Markdown-for-agents (RFC content negotiation): an agent that explicitly asks
+  // for text/markdown gets the inlined markdown; browsers send text/html and are
+  // untouched, so HTML stays the default.
+  if (prefersMarkdown(req.headers.accept)) {
+    res.setHeader('content-type', 'text/markdown; charset=utf-8');
+    res.setHeader('vary', 'Accept');
+    res.setHeader('link', DISCOVERY_LINK);
+    return res.status(200).html(await llmsFullBody());
+  }
   sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: `${ORIGIN}/` }));
 }));
+
+// Graceful fallback for any unmatched path. A page navigation (GET, wants HTML,
+// not /api or a file) renders the SPA shell — the client router lands the user
+// on the live board instead of a bare "404 Not Found". API/asset paths keep a
+// real 404 so agents and tooling see the correct status.
+app.notFound(async (c) => {
+  const url = new URL(c.req.url);
+  const p = url.pathname;
+  // Any extensionless GET that isn't an API/well-known path is a page route —
+  // serve the SPA shell regardless of Accept so browsers AND crawlers/agents
+  // (which often send Accept: */*) get the app, never a bare 404.
+  const isPage = c.req.method === 'GET'
+    && !p.startsWith('/api/') && !p.startsWith('/.well-known/')
+    && !/\.[a-z0-9]+$/i.test(p); // has a file extension → treat as a missing asset
+  if (isPage) {
+    try {
+      const html = ogHtml(await spaShell(ENV, c.req.raw), { title: 'Chaindump — Onchain Intelligence', desc: OG_DESC_FALLBACK, url: ORIGIN + p });
+      return c.html(html, 200, { Link: DISCOVERY_LINK });
+    } catch (e) { console.error('[notFound spa] failed:', e && e.message); }
+  }
+  if (p.startsWith('/api/')) return c.json({ error: 'not_found', path: p }, 404);
+  return c.text('404 Not Found', 404);
+});
 
 // ---------------------------------------------------------------------------
 // Cron Trigger — refreshes the D1 snapshot cache off the request path (real
@@ -1917,7 +2261,14 @@ async function pruneOldSnapshots(env, now) {
 
 async function handleScheduled(event, env, ctx) {
   if (!ENV.__init) { Object.assign(ENV, env || {}); ENV.__init = true; }
-  const data = await buildSnapshot();
+  // Read the prior blob BEFORE overwriting it, so peer hysteresis has last tick's
+  // peers to compare against (otherwise the anti-churn rule is a no-op).
+  let priorData = null;
+  if (env.DB) {
+    try { const row = await env.DB.prepare(`SELECT data FROM snapshot_cache WHERE key='chains'`).first(); if (row?.data) priorData = JSON.parse(row.data); }
+    catch (e) { /* first run / cold cache — no prior, peers computed verbatim */ }
+  }
+  const data = await buildSnapshot({ prior: priorPeersByKey(priorData) });
   const ts = Date.now();
 
   if (env.DB) {
@@ -1946,12 +2297,8 @@ async function handleScheduled(event, env, ctx) {
     if (tick % 2016 === 0) await refreshNftCatalog(env);
   }
 
-  cache = { ts, data };
-  if (!env.DB) return;
-  await env.DB.prepare(
-    `INSERT INTO snapshot_cache (key, data, updated_at) VALUES ('chains', ?, ?)
-     ON CONFLICT(key) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
-  ).bind(JSON.stringify(data), ts).run();
+  if (!env.DB) { const blob = { ...data }; delete blob.chainsLite; cache = { ts, data: blob }; return; }
+  cache = { ts, data: await persistSnapshot(env.DB, data, ts) };
 }
 
 export default {

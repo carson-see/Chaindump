@@ -1,0 +1,24 @@
+{
+  "name": "chaindump-agent-desk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Autonomous Chaindump research desk — keeps the forensic / graveyard / policy / trend-analysis data fresh via a verified, sourced, human-gated research loop (Claude Agent SDK). Consumes the chain-intel MCP server + web research.",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.207",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.0"
+  }
+}
