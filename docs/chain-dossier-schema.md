@@ -130,21 +130,32 @@
 
 ---
 
-## Storage & backward compatibility
+## Storage (split, v1)
 
-- **v1 stores the dossier as structured JSON** in the existing `profile` column of
-  `dead_chains` / `mid_chains`. The fixed schema makes it queryable via
-  `json_extract` (e.g. cohort aggregates, cause-tag rollups) and drives the
-  aggregate analysis programmatically instead of by hand.
-- **The current render-facing keys are retained** as a compatibility surface so
-  the SPA keeps working unchanged: `founded`, `founders`, `raised`,
+The desk produces a ~21KB structured dossier per chain. A single agent cannot be
+trusted to re-emit that verbatim on write (it summarizes and drops blocks — proven
+in the Scroll/Osmosis pilot), so storage is **split** into a slim render layer and
+a structured dataset layer:
+
+- **`dead_chains` / `mid_chains`.`profile`** — the **slim render profile** (~4KB):
+  the render-facing keys the SPA reads (`founded`, `founders`, `raised`,
   `token_symbol`, `token_ath`, `token_ath_date`, `token_current`, `purpose`,
   `situation`, `postmortem`, `non_economic`, `lessons_learned`, `could_differ`,
-  `outlook`, `cause_tags`, `sources`. These are populated **from** the structured
-  blocks by the editor. New structure is added underneath, nothing breaks.
-- **Later:** promote hot numeric fields (`tvl_current_usd`, `token_ath_usd`,
-  `total_raised_usd`, …) to real columns / a `chain_facts` table if we build heavy
-  analytics on them. Not required for v1.
+  `outlook`, `cause_tags`, `sources`). Small enough to write reliably; keeps the
+  human-facing `/api/dead` response lean.
+- **`chain_facts(chain, dimension, data, sources, updated_at)`** (migration
+  `0008`) — the **structured dataset**: one row per (chain, dimension) block
+  (`identity`|`token`|`capital`|`onchain`|`team`|`narrative`|`risk`|`synthesis`)
+  plus a `_meta` row holding `{completeness, confidence, unsourced_fields}` and the
+  deduped master source list. Each block is small enough for its specialist to
+  write reliably. Queryable via `json_extract` for cohort aggregates, cause-tag
+  rollups, cross-chain comparisons, and to drive the aggregate analysis
+  programmatically instead of by hand.
+
+Backward-compatible: the SPA is unchanged; the structured layer lives beside it.
+**Later:** promote hot numeric fields (`tvl_current_usd`, `token_ath_usd`,
+`total_raised_usd`, …) to real `chain_facts` columns, or expose a dataset/agent
+endpoint, if consumers query facts directly.
 
 ## Quality gates (editor)
 
