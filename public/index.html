@@ -343,6 +343,10 @@
   .watchdetail { margin-top:10px; border:1px solid var(--accent2); border-radius:10px; padding:12px 14px; background:var(--surface2); }
   .watchdetail .ghead { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
   .watchdetail .gexpand { cursor:pointer; color:var(--muted); font-size:11px; margin-top:8px; }
+  .peerwrap { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .peerchip { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; font-weight:600; padding:5px 9px; border:1px solid var(--border); border-radius:7px; background:var(--surface2); transition:border-color .12s; }
+  .peerchip:hover { border-color:var(--accent2); }
+  .peerchip .pcv { color:var(--red); font-weight:700; font-size:11px; font-variant-numeric:tabular-nums; }
   .acc { border:1px solid var(--border); border-radius:9px; margin-bottom:8px; overflow:hidden; background:var(--surface2); }
   .acchead { width:100%; display:flex; justify-content:space-between; align-items:center; background:none; border:none; color:var(--text); font-size:12.5px; font-weight:600; padding:11px 13px; cursor:pointer; text-align:left; }
   .acchead:hover { color:var(--accent); }
@@ -1977,6 +1981,10 @@ function renderGraveyard(data){
     <span class="gvf${gf==='dead'?' on':''}" data-gf="dead">☠ Dead (${nDead})</span>
     <span class="gvf${gf==='dying'?' on':''}" data-gf="dying">🩸 Dying / declining (${nDying})</span>
   </div>`;
+  // "Died the same way" — peer chains sharing the same canonical primary cause.
+  const CC = { outcompeted:'competition', lost_competition:'competition', mercenary_liquidity:'mercenary_tvl', lost_narrative:'narrative_death', founder_exit:'team_abandonment' };
+  const primaryCause = (x) => { const t0=((x.profile&&x.profile.cause_tags)||[])[0]||'other'; return CC[t0]||t0; };
+  const peersOf = (x) => { const k=primaryCause(x); return (data.chains||[]).filter(y=>y.chain!==x.chain && primaryCause(y)===k).sort((a,b)=>Math.abs(b.drawdown_pct||0)-Math.abs(a.drawdown_pct||0)).slice(0,8); };
   // Shared expanded-profile markup, reused by the grave cards AND the dying-watch
   // click-to-open detail. Handles both the dead-chain profile shape (postmortem /
   // lessons / could_differ) and the mid-chain shape (whats_working / whats_not).
@@ -2002,6 +2010,7 @@ function renderGraveyard(data){
       ${p.could_differ?`<div class="gsec">What they could've done differently — and why</div>${proseBox(p.could_differ)}`:''}
       ${(p.outlook||c.outlook)?`<div class="gsec">Outlook</div>${proseBox(p.outlook||c.outlook)}`:''}
       ${tags?`<div class="ctags">${tags}</div>`:''}
+      ${(()=>{ const pr=peersOf(c); if(!pr.length) return ''; return `<div class="gsec">Died the same way — ${esc(causeLabel(primaryCause(c)))} (${pr.length})</div><div class="peerwrap">${pr.map(x=>`<span class="peerchip" data-peer="${esc(x.chain)}">${esc(x.chain)}<span class="pcv">-${Math.abs(x.drawdown_pct||0).toFixed(0)}%</span></span>`).join('')}</div>`; })()}
       ${sources}${stamp(c.updated_at)}
     </div>`;
   };
@@ -2069,6 +2078,14 @@ document.getElementById('graveview').addEventListener('click', (e) => {
   if (wclose && state.graveData) { const y=window.scrollY; state.watchExpanded=null; renderGraveyard(state.graveData); window.scrollTo(0,y); return; }
   const wr = e.target.closest('.watchrow[data-watch]');
   if (wr && state.graveData) { const y=window.scrollY; const n=wr.dataset.watch; state.watchExpanded = state.watchExpanded===n?null:n; renderGraveyard(state.graveData); window.scrollTo(0,y); return; }
+  const peer = e.target.closest('.peerchip[data-peer]');
+  if (peer && state.graveData) {
+    const n=peer.dataset.peer; const pc=(state.graveData.chains||[]).find(x=>x.chain===n);
+    if (pc) { const raw=((pc.profile&&pc.profile.cause_tags)||[])[0]||'other'; const CCm={outcompeted:'competition',lost_competition:'competition',mercenary_liquidity:'mercenary_tvl',lost_narrative:'narrative_death',founder_exit:'team_abandonment'}; const k=CCm[raw]||raw; state.graveOpenGroups=state.graveOpenGroups||{}; state.graveOpenGroups[k]=true; }
+    state.graveExpanded=n; state.watchExpanded=null; renderGraveyard(state.graveData);
+    const tc=document.querySelector('.gcard[data-chain="'+(window.CSS&&CSS.escape?CSS.escape(n):n)+'"]'); if (tc) tc.scrollIntoView({behavior:'smooth',block:'center'});
+    return;
+  }
   const card = e.target.closest('.gcard');
   if (!card || !state.graveData) return;
   const name = card.dataset.chain;
