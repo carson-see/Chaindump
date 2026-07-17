@@ -51,6 +51,26 @@ export const RECONCILE_TOLERANCE_PCT = 10;
 // publishes on its own.
 export const AUTO_PUBLISH_TVL_MAX = 5e8;
 
+// BELOW this displayed TVL, the caveat is computed but NOT auto-published either.
+//
+// The harm the caveat prevents is a reader mistaking unverifiable TVL for a real,
+// comparable figure on a ranked board — Anubis's $200M sitting next to Robinhood
+// Chain's $211M as if the two meant the same thing. That mistake only exists at
+// scale. A $4.2M chain (Gala) is not mistaken for a major chain, so an adverse
+// public label does more harm to a real project than good to a reader who was
+// never going to be misled — and the three reasons the rule fires on are all
+// DefiLlama METADATA gaps ("no audit on DefiLlama" — a field the code itself
+// notes is unmaintained; "no bridge identified" — Gala has a bridge DefiLlama
+// doesn't index), not facts about the chain.
+//
+// Measured live 2026-07-17: 55 chains fire the rule; Anubis ($200.1M) is the ONLY
+// one above $15.8M. A $25M floor isolates Anubis — the exact documented case this
+// was built for — and stops the public label on 54 small chains (Gala, Strato,
+// RISE, aelf, Verus...) that were being branded on a coverage gap. Below the
+// floor the caveat still exists in the data for an agent that asks, but it is not
+// auto-published to a board row, a profile, or a social card.
+export const AUTO_PUBLISH_TVL_MIN = 25e6;
+
 // DefiLlama categories that represent value bridged in from another chain. Any
 // of these corroborates that the chain's assets came from somewhere checkable.
 const BRIDGE_CATEGORIES = new Set([
@@ -195,11 +215,12 @@ export function assessChainDataQuality(chainName, protocols, opts = {}) {
       'and no bridge is identified for the chain. The figure therefore cannot be independently ' +
       'verified and is not comparable to bridge-verified chains. This is a note about the data, ' +
       'not an allegation about the project.',
-    method: `Single-protocol share >= ${minShare}% of chain TVL, sole protocol reporting audits: 0, and no bridge-category protocol on the chain. Only published when our protocol-level total reconciles with the displayed TVL to within ${RECONCILE_TOLERANCE_PCT}%, and only automatically below $${(AUTO_PUBLISH_TVL_MAX / 1e6).toFixed(0)}M displayed TVL.`,
+    method: `Single-protocol share >= ${minShare}% of chain TVL, sole protocol reporting audits: 0, and no bridge-category protocol on the chain. Only published when our protocol-level total reconciles with the displayed TVL to within ${RECONCILE_TOLERANCE_PCT}%, and only automatically between $${(AUTO_PUBLISH_TVL_MIN / 1e6).toFixed(0)}M and $${(AUTO_PUBLISH_TVL_MAX / 1e6).toFixed(0)}M displayed TVL (below the floor a chain is too small to be mistaken for a real peer; above the ceiling the no-bridge premise likely fails).`,
     source: 'DefiLlama /protocols',
     // The rule's premise does not hold for native-asset/RWA chains, so a large
     // chain's caveat is computed but held for a human rather than published.
-    autoPublish: !(isFinite(displayed) && displayed > AUTO_PUBLISH_TVL_MAX),
+    // Auto-publish the public label only when the unverifiable TVL is large enough to be mistaken for a real peer, and not so large the premise likely fails (native-asset/RWA giants). Outside [MIN, MAX] the caveat is held.
+    autoPublish: isFinite(displayed) && displayed >= AUTO_PUBLISH_TVL_MIN && displayed <= AUTO_PUBLISH_TVL_MAX,
   };
 }
 
