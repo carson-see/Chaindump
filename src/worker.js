@@ -1276,7 +1276,11 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
     const target = String(req.params.name || '').toLowerCase();
-    let row = cache.data.chains.find((c) => c.name.toLowerCase() === target);
+    // norm() here too, or an alias skips the board and lands in the tail path:
+    // /chain/Binance published "Outside the top-50 activity board" for BSC (rank
+    // #4), /chain/Ethereum%20L1 denied the rank of the #1 chain, and /chain/BSC
+    // said "Rank #4" — two indexed URLs, contradictory claims, same chain.
+    let row = cache.data.chains.find((c) => norm(c.name) === norm(target));
     if (!row) { row = await resolveTailChain(target); } // beyond the top-50 → lite index
     if (!row) return res.status(404).json({ error: 'unknown chain' });
 
@@ -2256,7 +2260,7 @@ Object.keys(VIEW_OG).forEach((v) => {
 app.get('/chain/:name', wrap(async (req, res) => {
   const key = String(req.params.name || '');
   if (!cache.data) cache = await loadSnapshot();
-  let row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === key.toLowerCase());
+  let row = (cache.data.chains || []).find((c) => norm(c.name) === norm(key));   // see /api/chain/:name — an alias must not skip the board
   // Board-only lookup made every chain beyond the top-50 unfurl identically to a
   // nonsense string — /chain/Anubis and /chain/NotARealChain shared a title and
   // description, even though we hold a researched profile for one of them.
@@ -2285,7 +2289,12 @@ app.get('/chain/:name', wrap(async (req, res) => {
   if (row && row.volume24h != null) parts.push(`$${fmtShort(row.volume24h)} 24h volume`);
   const figures = !row ? ''
     : parts.length ? `${parts.join(', ')}.`
-    : 'No market data is available for this chain; Chaindump carries researched analysis only.';
+    // A claim about OUR coverage, not about the world. "No market data is
+    // available for this chain" is a false universal negative — Polkadot has a
+    // multi-billion-dollar market cap and a live CoinGecko price. The sharpest
+    // proof: Klaytn is Kaia renamed, so /chain/Klaytn said "no market data" while
+    // /chain/Kaia published $11.0M TVL from the same feed.
+    : 'Chaindump does not track live market data for this chain; researched analysis only.';
 
   const title = row ? `${row.name} — Chaindump` : 'Chain — Chaindump';
   const desc = row
