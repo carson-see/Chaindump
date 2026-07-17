@@ -499,9 +499,24 @@ async function persistSnapshot(db, data, ts) {
 // Resolve a chain beyond the top-50 from the lite index, and compute its peers at
 // request time against the top-50 (every peer resolves in the main blob, so no
 // dead links). Returns a basic profile row or null. Not the hot path.
+// The lite index is ~107KB / 456 rows, rewritten only by the cron that writes the
+// snapshot, so re-reading and re-parsing it per call is pure waste. One visit to a
+// tail chain now costs two calls — the server-rendered OG card and the SPA's
+// /api/chain/:name fetch — and a crawler hitting /chain/<garbage> pays one to
+// learn nothing. Same TTL as the snapshot it is written beside.
+let liteCache = { ts: 0, data: null };
+async function loadLiteIndex() {
+  const now = Date.now();
+  if (liteCache.data && now - liteCache.ts < TTL) return liteCache.data;
+  try {
+    const rows = await dbQuery(`SELECT data FROM snapshot_cache WHERE key='chains_lite' LIMIT 1`);
+    if (rows[0]?.data) liteCache = { ts: now, data: JSON.parse(rows[0].data) };
+  } catch (e) { /* table may not exist yet — fall through to whatever we hold */ }
+  return liteCache.data;
+}
+
 async function resolveTailChain(target) {
-  let lite = null;
-  try { const rows = await dbQuery(`SELECT data FROM snapshot_cache WHERE key='chains_lite' LIMIT 1`); if (rows[0]?.data) lite = JSON.parse(rows[0].data); } catch (e) {}
+  const lite = await loadLiteIndex();
   if (!Array.isArray(lite)) return null;
   const row = lite.find((c) => c.name.toLowerCase() === target);
   if (!row) return null;
