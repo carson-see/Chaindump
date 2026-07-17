@@ -8,6 +8,11 @@ on:
   push:
     branches: [main]
 
+# Least privilege: the job only checks out and runs tests. `npm ci` executes
+# dependency lifecycle scripts, so don't hand them a writable GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   vitest:
     runs-on: ubuntu-latest

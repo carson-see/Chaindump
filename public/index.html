@@ -357,10 +357,13 @@
   .watchdetail { margin-top:10px; border:1px solid var(--accent2); border-radius:10px; padding:12px 14px; background:var(--surface2); }
   .watchdetail .ghead { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
   .watchdetail .gexpand { cursor:pointer; color:var(--muted); font-size:11px; margin-top:8px; }
-  .peerwrap { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
-  .peerchip { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; font-weight:600; padding:5px 9px; border:1px solid var(--border); border-radius:7px; background:var(--surface2); transition:border-color .12s; }
-  .peerchip:hover { border-color:var(--accent2); }
-  .peerchip .pcv { color:var(--red); font-weight:700; font-size:11px; font-variant-numeric:tabular-nums; }
+  /* Graveyard "died the same way" chips. Namespaced (g-prefix) — plain .peerchip
+     is already owned by the live-chain "Related chains" UI above. */
+  .gpeerwrap { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+  .gpeerchip { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; font-weight:600; color:var(--text); padding:5px 9px; border:1px solid var(--border); border-radius:7px; background:var(--surface2); transition:border-color .12s; }
+  .gpeerchip:hover { border-color:var(--accent2); }
+  .gpeerchip:focus-visible { outline:2px solid var(--accent2); outline-offset:2px; }
+  .gpeerchip .pcv { color:var(--red); font-weight:700; font-size:11px; font-variant-numeric:tabular-nums; }
   .acc { border:1px solid var(--border); border-radius:9px; margin-bottom:8px; overflow:hidden; background:var(--surface2); }
   .acchead { width:100%; display:flex; justify-content:space-between; align-items:center; background:none; border:none; color:var(--text); font-size:12.5px; font-weight:600; padding:11px 13px; cursor:pointer; text-align:left; }
   .acchead:hover { color:var(--accent); }
@@ -589,7 +592,9 @@ function srcHtml(sources, label) {
     const u = typeof s === 'string' ? s : (s && s.url);
     if (!u || seen.has(u)) return ''; seen.add(u);
     const t = (s && typeof s === 'object' && s.title) || String(u).replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
-    return `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(t)} ↗</a>`;
+    // safeUrl() first: esc() blocks attribute breakout but not a javascript:/data:
+    // scheme, and these URLs are research-agent/third-party authored.
+    return `<a href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">${esc(t)} ↗</a>`;
   }).filter(Boolean);
   if (!links.length) return '';
   return `<div class="asrc">${label || 'Sources: '}${links.join(' · ')}</div>`;
@@ -1986,7 +1991,20 @@ function accordionHtml(title, html, open){
 }
 function tokenDrop(p){ return (p.token_ath && p.token_current!=null && p.token_ath>0) ? Math.round((1 - p.token_current/p.token_ath)*100) : null; }
 function gstat(val, label){ return `<div class="gsx"><div class="gsv">${val}</div><div class="gsl">${label}</div></div>`; }
-function tagLabel(data, tg){ const f=((data.trends&&data.trends.topTags)||[]).find(x=>x.tag===tg); return f?f.label:tg.replace(/_/g,' '); }
+// Cause vocabulary comes from the server (src/lib/causes.js via trends.causeVocab)
+// so the client never hand-mirrors the canon map. Falls back safely if absent.
+function causeVocab(data){ return (data && data.trends && data.trends.causeVocab) || (data && data.causeVocab) || {}; }
+function canonCause(data, tg){ const c=causeVocab(data).canon||{}; return (tg && Object.prototype.hasOwnProperty.call(c,tg)) ? c[tg] : tg; }
+// Canonicalize BEFORE the lookup: topTags only holds canonical tags, so a raw
+// synonym would otherwise fall through and render a different wording than the
+// folder it sits in (e.g. "mercenary liquidity" under "Mercenary / incentivized TVL exit").
+function tagLabel(data, tg){
+  const k=canonCause(data,tg);
+  const v=causeVocab(data).labels||{};
+  if (Object.prototype.hasOwnProperty.call(v,k)) return v[k];
+  const f=((data.trends&&data.trends.topTags)||[]).find(x=>x.tag===k);
+  return f?f.label:String(k).replace(/_/g,' ');
+}
 
 function renderGraveyard(data){
   const el = document.getElementById('graveview');
@@ -2027,9 +2045,12 @@ function renderGraveyard(data){
     <span class="gvf${gf==='dying'?' on':''}" data-gf="dying">🩸 Dying / declining (${nDying})</span>
   </div>`;
   // "Died the same way" — peer chains sharing the same canonical primary cause.
-  const CC = { outcompeted:'competition', lost_competition:'competition', mercenary_liquidity:'mercenary_tvl', lost_narrative:'narrative_death', founder_exit:'team_abandonment' };
-  const primaryCause = (x) => { const t0=((x.profile&&x.profile.cause_tags)||[])[0]||'other'; return CC[t0]||t0; };
-  const peersOf = (x) => { const k=primaryCause(x); return (data.chains||[]).filter(y=>y.chain!==x.chain && primaryCause(y)===k).sort((a,b)=>Math.abs(b.drawdown_pct||0)-Math.abs(a.drawdown_pct||0)).slice(0,8); };
+  // Mid-chain profiles express the same vocabulary as success_factors_missing;
+  // read both, or every mid-chain detail falls to 'other' and asserts a shared
+  // cause that doesn't exist.
+  const causeTagsOf = (x) => { const p=x.profile||{}; return p.cause_tags || p.success_factors_missing || []; };
+  const primaryCause = (x) => canonCause(data, causeTagsOf(x)[0] || 'other');
+  const peersOf = (x) => { const k=primaryCause(x); if(k==='other') return []; return (data.chains||[]).filter(y=>y.chain!==x.chain && primaryCause(y)===k).sort((a,b)=>Math.abs(b.drawdown_pct||0)-Math.abs(a.drawdown_pct||0)).slice(0,8); };
   // Shared expanded-profile markup, reused by the grave cards AND the dying-watch
   // click-to-open detail. Handles both the dead-chain profile shape (postmortem /
   // lessons / could_differ) and the mid-chain shape (whats_working / whats_not).
@@ -2055,7 +2076,7 @@ function renderGraveyard(data){
       ${p.could_differ?`<div class="gsec">What they could've done differently — and why</div>${proseBox(p.could_differ)}`:''}
       ${(p.outlook||c.outlook)?`<div class="gsec">Outlook</div>${proseBox(p.outlook||c.outlook)}`:''}
       ${tags?`<div class="ctags">${tags}</div>`:''}
-      ${(()=>{ const pr=peersOf(c); if(!pr.length) return ''; return `<div class="gsec">Died the same way — ${esc(causeLabel(primaryCause(c)))} (${pr.length})</div><div class="peerwrap">${pr.map(x=>`<span class="peerchip" data-peer="${esc(x.chain)}">${esc(x.chain)}<span class="pcv">-${Math.abs(x.drawdown_pct||0).toFixed(0)}%</span></span>`).join('')}</div>`; })()}
+      ${(()=>{ const pr=peersOf(c); if(!pr.length) return ''; return `<div class="gsec">Died the same way — ${esc(causeLabel(primaryCause(c)))} (${pr.length})</div><div class="gpeerwrap">${pr.map(x=>`<button type="button" class="gpeerchip" data-peer="${esc(x.chain)}">${esc(x.chain)}<span class="pcv">-${Math.abs(x.drawdown_pct||0).toFixed(0)}%</span></button>`).join('')}</div>`; })()}
       ${sources}${stamp(c.updated_at)}
     </div>`;
   };
@@ -2076,13 +2097,11 @@ function renderGraveyard(data){
       <div class="gexpand">${open?'Hide details ▲':'Full postmortem ▾'}</div>
     </div>`;
   };
-  // group into collapsible folders by primary death cause (the "why chains die" thesis)
-  // canonicalize synonym tags (mirror of the server's TAG_CANON) so folders don't fragment
-  const CAUSE_CANON = { outcompeted:'competition', lost_competition:'competition', mercenary_liquidity:'mercenary_tvl', lost_narrative:'narrative_death', founder_exit:'team_abandonment' };
-  const CAUSE_LABEL = { mercenary_tvl:'Mercenary / incentivized TVL exit', points_collapse:'Points-farming collapse', airdrop_farming:'Airdrop-farming exodus', token_unlock_dump:'Token unlock dump', vc_dump:'VC / insider dump', exploit_hack:'Hack / exploit', bridge_hack:'Bridge hack', team_abandonment:'Team abandonment', soft_rug:'Soft rug', unsustainable_yield:'Unsustainable yield', narrative_death:'Narrative death', no_real_users:'No real users', no_product_market_fit:'No product-market fit', no_killer_app:'No killer app', wash_trading:'Wash-traded volume', competition:'Out-competed', misallocated_treasury:'Misallocated treasury', regulatory:'Regulatory', token_overhang:'Token overhang', declining_volume:'Declining volume', wrong_ecosystem_bet:'Wrong-ecosystem bet', tech_no_adoption:'Tech, no adoption', weak_dev_ecosystem:'Weak dev ecosystem', governance_failure:'Governance failure', security_failure:'Security failure', ftx_contagion:'FTX contagion', centralization:'Centralization', token_inflation:'Token inflation', insider_concentration:'Insider concentration', gamed_metrics:'Gamed metrics', double_counted_tvl:'Double-counted TVL', other:'Other / mixed causes' };
-  const causeLabel = (k) => CAUSE_LABEL[k] || k.replace(/_/g,' ').replace(/\b\w/g, m=>m.toUpperCase());
+  // group into collapsible folders by primary (canonical) death cause — the
+  // "why chains die" thesis. Folder labels come from the server vocabulary.
+  const causeLabel = (k) => { const fl=causeVocab(data).folderLabels||{}; return Object.prototype.hasOwnProperty.call(fl,k) ? fl[k] : String(k).replace(/_/g,' ').replace(/\b\w/g, m=>m.toUpperCase()); };
   const groups = {};
-  filtered.forEach(c => { const t=(c.profile&&c.profile.cause_tags)||[]; const raw=t[0]||'other'; const k=CAUSE_CANON[raw]||raw; (groups[k]=groups[k]||[]).push(c); });
+  filtered.forEach(c => { const k=primaryCause(c); (groups[k]=groups[k]||[]).push(c); });
   const groupKeys = Object.keys(groups).sort((a,b)=>groups[b].length-groups[a].length);
   if (!state.graveOpenGroups) state.graveOpenGroups = groupKeys.length ? { [groupKeys[0]]: true } : {};
   const cards = `<div class="chainfolders">` + groupKeys.map(k => {
@@ -2123,11 +2142,21 @@ document.getElementById('graveview').addEventListener('click', (e) => {
   if (wclose && state.graveData) { const y=window.scrollY; state.watchExpanded=null; renderGraveyard(state.graveData); window.scrollTo(0,y); return; }
   const wr = e.target.closest('.watchrow[data-watch]');
   if (wr && state.graveData) { const y=window.scrollY; const n=wr.dataset.watch; state.watchExpanded = state.watchExpanded===n?null:n; renderGraveyard(state.graveData); window.scrollTo(0,y); return; }
-  const peer = e.target.closest('.peerchip[data-peer]');
+  const peer = e.target.closest('.gpeerchip[data-peer]');
   if (peer && state.graveData) {
-    const n=peer.dataset.peer; const pc=(state.graveData.chains||[]).find(x=>x.chain===n);
-    if (pc) { const raw=((pc.profile&&pc.profile.cause_tags)||[])[0]||'other'; const CCm={outcompeted:'competition',lost_competition:'competition',mercenary_liquidity:'mercenary_tvl',lost_narrative:'narrative_death',founder_exit:'team_abandonment'}; const k=CCm[raw]||raw; state.graveOpenGroups=state.graveOpenGroups||{}; state.graveOpenGroups[k]=true; }
-    state.graveExpanded=n; state.watchExpanded=null; renderGraveyard(state.graveData);
+    const d=state.graveData; const n=peer.dataset.peer;
+    const pc=(d.chains||[]).find(x=>x.chain===n);
+    if (pc) {
+      const p=pc.profile||{};
+      const raw=(p.cause_tags||p.success_factors_missing||[])[0]||'other';
+      const cv=(d.trends&&d.trends.causeVocab&&d.trends.causeVocab.canon)||{};
+      const k=Object.prototype.hasOwnProperty.call(cv,raw)?cv[raw]:raw;
+      state.graveOpenGroups=state.graveOpenGroups||{}; state.graveOpenGroups[k]=true;
+    }
+    // peers are drawn from the unfiltered set, so a peer can be hidden by the
+    // current filter — clear it or the click is a silent no-op.
+    state.graveFilter='all';
+    state.graveExpanded=n; state.watchExpanded=null; renderGraveyard(d);
     const tc=document.querySelector('.gcard[data-chain="'+(window.CSS&&CSS.escape?CSS.escape(n):n)+'"]'); if (tc) tc.scrollIntoView({behavior:'smooth',block:'center'});
     return;
   }

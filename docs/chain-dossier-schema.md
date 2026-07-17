@@ -1,5 +1,11 @@
 # Chain Dossier Schema v1
 
+> **Status (2026-07-16): partially implemented.** The `chain_facts` table exists
+> (migration `0009`) and is **seeded for 10 chains** (74 rows) by the research
+> desk, out of band. **No worker route reads it yet** — the SPA still renders from
+> the slim `dead_chains`/`mid_chains` profile. Treat the sections below as the
+> contract the desk writes to, not as behaviour the API exposes today.
+
 > The consistent set of data points every chain in Chaindump's intelligence
 > library must carry. Produced by the **research desk** (specialist team), not a
 > single generalist. Turns prose profiles into a typed, sourced, comparable
