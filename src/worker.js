@@ -8,7 +8,7 @@ import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 // Aliased deliberately: causes.js above exports TAG_LABELS/canonTags into this
 // same scope. An unaliased import would shadow the cause vocabulary silently —
 // no error, just wrong labels on the graveyard chips.
-import { cohortFor, tagVocab, canonTags as canonChainTags, isTheme as isChainTheme, themesForCategory } from './lib/tags.js';
+import { cohortFor, tagVocab, canonTags as canonChainTags, isTheme as isChainTheme, isCohort as isChainCohort, themesForCategory } from './lib/tags.js';
 import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
 import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from './lib/llama.js';
 
@@ -558,7 +558,7 @@ app.get('/api/chains', wrap(async (req, res) => {
     if (!cache.data || now - cache.ts > TTL) {
       cache = await loadSnapshot();
     }
-    res.json({ ...cache.data, scoreMeta: SCORE_META, tagVocab: tagVocab(), cachedAgeMs: Date.now() - cache.ts });
+    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: Date.now() - cache.ts });
   } catch (e) {
     console.error('snapshot error:', e.message);
     if (cache.data) return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, error: e.message });
@@ -983,25 +983,48 @@ async function chainFacts(chainName) {
 
 // Resolve a chain's tags: themes are curated (stored), the cohort is COMPUTED.
 //
-// The cohort is never read from storage. The board tail churns every 5 minutes —
-// a stored "top-50" is a claim that expires — and "up and coming" is a published
-// claim about a chain's age, so it has to be derived from a real launch date at
-// the moment we serve it. Note cohortFor treats an absent date as UNKNOWN, not
-// as pre-launch: Ethereum carries no `launched` on the live board, and the naive
-// rule would have published that Ethereum hasn't launched yet.
+// Field names here are taken FROM THE REAL ROWS, not from what a schema ought to
+// look like. The first version of this function read `identity.tier` and
+// `identity.permissioned` — neither exists in a single one of the 130 rows. It
+// then filtered the real cohorts out of `tags[]` with isTheme and read them back
+// from those non-existent fields, so 69 researched chains (every graveyard and
+// stuck one) computed a null cohort and rendered no chip. The tests passed
+// because their fixtures used the invented names too: the code agreed with
+// itself about a schema that did not exist.
+//
+// What the rows ACTUALLY carry:
+//   tags[]       cohort AND theme tags together   (Scroll: ['graveyard','l2','zk'])
+//   permissioned a THEME tag, not a field          (Canton: [...,'permissioned'])
+//   the launch date under one of three keys        (launched | mainnet_live | founded)
+const LAUNCH_KEYS = ['launched', 'mainnet_live', 'founded'];
+function launchDateOf(identity) {
+  for (const k of LAUNCH_KEYS) {
+    const v = identity[k];
+    // Strings only. `founded: 2021` appears as a NUMBER, and parseLaunch treats a
+    // number as epoch millis — 2021 would resolve to 1st Jan 1970.
+    if (typeof v === 'string' && /^\d{4}(-\d{2}){0,2}$/.test(v.trim())) return v.trim();
+  }
+  return null;
+}
+
 function resolveTags(row, facts, onBoard) {
   const identity = (facts && facts.identity && facts.identity.data) || {};
   const stored = canonChainTags(Array.isArray(identity.tags) ? identity.tags : []);
   const themes = stored.filter(isChainTheme);
-  // Fall back to the chain's own category when the desk has not tagged it, so a
-  // chain we have not researched still carries what we can honestly derive.
+  const storedCohort = stored.find(isChainCohort) || null;
+  // Fall back to the chain's own category when the desk has not tagged it, so an
+  // unresearched chain still carries what we can honestly derive.
   const derived = themes.length ? themes : themesForCategory(row.category);
   const cohort = cohortFor({
-    launched: identity.launched || null,
+    launched: launchDateOf(identity),
     onBoard: !!onBoard,
-    tier: identity.tier || null,
-    isPreLaunch: identity.status === 'pre-launch' || identity.status === 'anticipated',
-    isPrivate: identity.permissioned === true,
+    // The desk's own classification, which lives in tags[] — this is what makes
+    // graveyard and stuck reachable at all.
+    tier: storedCohort,
+    isPreLaunch: identity.status === 'pre-launch' || identity.status === 'anticipated' || storedCohort === 'anticipated',
+    // Canton is permissioned AND on the board; cohortFor checks this last so a
+    // private chain can never hide a real board position.
+    isPrivate: themes.includes('permissioned'),
   }, Date.now());
   return { cohort, themes: derived };
 }

@@ -117,7 +117,7 @@
   .tchip { font-size:10px; font-weight:600; letter-spacing:.03em; text-transform:uppercase; padding:2px 7px; border-radius:11px; border:1px solid var(--border2); color:var(--muted); white-space:nowrap; }
   .tchip.cohort { color:var(--accent); border-color:rgba(122,162,247,.35); background:rgba(122,162,247,.07); }
   /* "up and coming" is a fact about age, not a verdict — it must not read as praise. */
-  .tchip.cohort.anticipated, .tchip.cohort\.up-and-coming { color:var(--warn); border-color:rgba(217,164,65,.35); background:rgba(217,164,65,.07); }
+  .tchip.cohort.anticipated, .tchip.cohort.up-and-coming { color:var(--warn); border-color:rgba(217,164,65,.35); background:rgba(217,164,65,.07); }
   .olinks { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px; }
   .olink { font-size:11px; padding:3px 9px; border-radius:14px; border:1px solid var(--border2); color:var(--muted2); text-decoration:none; white-space:nowrap; }
   .olink:hover { border-color:var(--accent); color:var(--accent); }
@@ -965,7 +965,7 @@ function tagChipsHtml(d){
   const t = d && d.tags;
   if (!t) return '';
   const vocab = (d.tagVocab && d.tagVocab.labels) || {};
-  const label = (k) => vocab[k] || String(k).replace(/-/g, ' ');
+  const label = (k) => vocab[k] || String(k);   // server labels every tag; no second copy of tagLabel() here
   const chips = [];
   // The cohort is computed per request, never stored: "top 50" expires as the
   // board churns and "up and coming" is a claim about a chain's age today.

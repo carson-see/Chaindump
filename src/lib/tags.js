@@ -186,7 +186,12 @@ export function cohortFor(m, now) {
   //    evidence of non-launch (Ethereum carries no `launched` on the live
   //    board), so pre-launch must be asserted by the researched isPreLaunch
   //    flag or by a real date in the future.
-  if (o.isPreLaunch === true) return 'anticipated';
+  // A stale status must not outlive reality. isPreLaunch is an asserted flag with
+  // no expiry: Miden's row says status='anticipated' and expected_launch 'early
+  // September 2026', so if it ships and nobody hand-edits the row, we would keep
+  // publishing "Anticipated" for a live chain forever. A known PAST launch date
+  // is evidence the assertion is stale, and evidence beats assertion.
+  if (o.isPreLaunch === true && (launched == null || launched > nowMs)) return 'anticipated';
   if (launched != null && launched > nowMs) return 'anticipated';
 
   // 2. Under 30 days old. Strictly under — at exactly 30 days the chain ages
