@@ -259,12 +259,19 @@ describe('prose matches the code it describes', () => {
   });
 });
 
-// The index the USER sees is actScore() — inline in public/index.html, which
-// Vitest cannot import. scoring.js's activityIndex() had zero production
-// callers, so extracting it recreated the drift it was meant to kill, one layer
-// down. This reads the real client source and holds the two implementations
-// together. If they diverge, the served definition stops describing the UI.
-describe('the client index matches the served definition', () => {
+// activityIndex() is now the ONLY implementation of the published 1-100 scale:
+// the worker stamps it onto each board row and the client reads it.
+//
+// This suite used to hold a MIRROR test — it regexed actScore out of index.html,
+// rebuilt it, and asserted the two implementations agreed. That test passed while
+// the UI printed "Activity index -122". It could not see the bug because it only
+// sampled scores drawn from the board itself (members of [min,max] by
+// construction), and the failure lived outside that domain: a tail chain has no
+// score at all, so 0 rescaled against a 0.549-0.99 board gives -122. A test that
+// pins two implementations together is not a fix for having two implementations
+// — it is the tell that the extraction was never finished. It is finished now,
+// so these assert the duplicate stays gone.
+describe('the client does not re-implement the index', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const src = html.match(/function actScore\(c\)\{[\s\S]*?\n\}/);
 
@@ -272,15 +279,29 @@ describe('the client index matches the served definition', () => {
     expect(src).toBeTruthy();
   });
 
-  it('actScore is byte-for-byte the same arithmetic as activityIndex', () => {
-    // Rebuild actScore against a fake `state`, then compare over a grid.
-    const make = new Function('state', `${src[0]}; return actScore;`);
-    for (const board of [[0.2, 0.5, 0.9], [0.5883, 0.7, 0.991], [0.4], [0, 1]]) {
-      const client = make({ chains: board.map((score) => ({ score })) });
-      const mn = Math.min(...board), mx = Math.max(...board);
-      for (const score of board) {
-        expect(client({ score })).toBe(activityIndex(score, mn, mx));
-      }
-    }
+  it('actScore reads the stamped index — it does not rescale anything itself', () => {
+    // Assert on CODE, not prose: the comment inside actScore names state.chains
+    // while explaining why it no longer reads it, and an earlier version of this
+    // test flagged its own explanation.
+    const code = src[0].replace(/\/\/[^\n]*/g, '');
+    expect(code).not.toMatch(/Math\.min|Math\.max|state\.chains/);
+    expect(code).toContain('activityIndex');
+  });
+
+  it('a row with no index yields null, never a number outside the published scale', () => {
+    const actScore = new Function('state', `${src[0]}; return actScore;`)({ chains: [] });
+    expect(actScore({ name: 'Anubis' })).toBeNull();          // tail chain: no score, no index
+    expect(actScore({ activityIndex: 100 })).toBe(INDEX_MAX);
+    expect(actScore({ activityIndex: 1 })).toBe(INDEX_MIN);
+  });
+
+  it('the scale the client renders is the scale activityIndex defines', () => {
+    // The server stamps with activityIndex(); these are the bounds it can emit.
+    expect(activityIndex(0.99, 0.549, 0.99)).toBe(INDEX_MAX);
+    expect(activityIndex(0.549, 0.549, 0.99)).toBe(INDEX_MIN);
+    // The old client path fed score=0 (a row with no score) into that range.
+    // activityIndex would have produced the same -122; the fix is that no row
+    // without a score is ever handed to it.
+    expect(activityIndex(0, 0.549, 0.99)).toBeLessThan(0);
   });
 });

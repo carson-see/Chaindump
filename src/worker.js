@@ -9,7 +9,7 @@ import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 // same scope. An unaliased import would shadow the cause vocabulary silently —
 // no error, just wrong labels on the graveyard chips.
 import { cohortFor, tagVocab, parseLaunch, canonTags as canonChainTags, isTheme as isChainTheme, isCohort as isChainCohort, themesForCategory } from './lib/tags.js';
-import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
+import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk, activityIndex } from './lib/scoring.js';
 import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from './lib/llama.js';
 
 const ENV = {};
@@ -419,6 +419,18 @@ async function buildSnapshot(opts = {}) {
   for (const r of top) {
     r.signals = computeSignals(r, { medPf, medFeeYield, medTurnover, tvlRank: tvlRankMap[r.name], feeRank: feeRankMap[r.name], n: top.length });
   }
+
+  // Stamp the DISPLAYED index here, with the same activityIndex() the published
+  // 1-100 scale is defined by. The client used to recompute it by hand across
+  // state.chains — a second implementation of a rule that already had an owner,
+  // and it had no idea what to do with a row that has no score. A tail chain
+  // (rank > 50, served from chains_lite, no score) rescaled 0 against the board's
+  // 0.549-0.99 range and rendered "Activity index -122" on a scale we publish as
+  // 1-100. A rank-less row now simply has no index, and the UI renders it as "—"
+  // by the same nullish path it already uses for pf/feeYield.
+  const boardScores = top.map((r) => r.score || 0);
+  const mnScore = Math.min(...boardScores), mxScore = Math.max(...boardScores);
+  for (const r of top) r.activityIndex = activityIndex(r.score, mnScore, mxScore);
 
   const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
 

@@ -852,9 +852,12 @@ function riskBanner(risk){
   return `<div class="riskbanner ${cls}"><b>⚠ ${risk.level==='high'?'High risk / bad-actor concerns':'Caution'}</b> — ${esc(risk.summary||'')}${risk.evidence?` <span class="rkev">${esc(risk.evidence)}</span>`:''}${src}</div>`;
 }
 function actScore(c){
-  const scores = state.chains.map(x=>x.score||0);
-  const mn = Math.min(...scores), mx = Math.max(...scores);
-  return (mx > mn) ? Math.round(1 + (((c.score||0) - mn)/(mx - mn)) * 99) : 100;
+  // The index is a BOARD property, computed server-side by activityIndex() in
+  // src/lib/scoring.js — the one owner of the published 1-100 scale. This used to
+  // recompute it here across state.chains, which is how a tail chain (no score,
+  // not on the board) rendered "-122" on that scale. A row without an index has
+  // no index; say nothing rather than invent a number.
+  return c && c.activityIndex != null ? c.activityIndex : null;
 }
 
 function marketChips(c){
@@ -1179,7 +1182,7 @@ function detailHtml(c) {
     ${statH('Stablecoin Mcap', c.stables?fmtUsd(c.stables):'—', 'stables')}
     ${statH('Token Price', c.tokenPrice!=null?'$'+Intl.NumberFormat('en',{maximumFractionDigits:c.tokenPrice<1?4:2}).format(c.tokenPrice)+(c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''):'—', 'tokenPrice')}
     ${statH('Token Mcap', c.tokenMcap?fmtUsd(c.tokenMcap):'—', 'tokenMcap')}
-    ${statH('Activity Index', actScore(c), 'activityIndex')}
+    ${statH('Activity Index', actScore(c) ?? '—', 'activityIndex')}
   </div>`;
   let projects;
   if (!d) projects = '<div class="muted" style="padding:6px 2px">Loading top projects…</div>';
@@ -1195,12 +1198,18 @@ function detailHtml(c) {
   const markets = (L && (L.dex || L.nft)) ? `<div class="dsec">Markets</div><div class="mktbtns">${mbtn(L.dex,'DEX')}${mbtn(L.nft,'NFT')}</div>` : '';
   const tokensSection = (d && d.topTokens && d.topTokens.length) ? `<div class="dsec">Top tokens on this chain</div><div class="applist">${d.topTokens.map(t=>`<div class="app"><div class="apphead"><span class="pn">${esc(t.name)}</span><span class="pc">${esc(t.symbol)}</span><span class="pt">$${fmtTok(t.price)}${t.change24h!=null?' '+delta(t.change24h):''}</span></div><div class="applinks"><a href="${esc(safeUrl(t.url))}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a></div></div>`).join('')}</div>` : '';
   const nftsSection = (d && d.topNfts && d.topNfts.length) ? `<div class="dsec">Top NFT / Ordinals collections</div><div class="applist">${d.topNfts.map(n=>`<div class="app"><div class="apphead"><span class="pn">${esc(n.name)}</span><a class="pt" href="${esc(safeUrl(n.url))}" target="_blank" rel="noopener noreferrer">View ↗</a></div></div>`).join('')}</div>` : '';
-  const idx = actScore(c);
+  const idx = actScore(c);   // null for a chain that is not on the board
   const sent = (d && d.analysis && d.analysis.sentiment) || '';
-  const vline = (d && d.analysis && d.analysis.trend) || (`Rank #${c.rank} by composite activity`);
+  // Only claim a rank when the chain has one. A tail chain (rank > 50) has no
+  // board rank, and this rendered the literal "Rank #undefined by composite
+  // activity". The server already refuses to imply a rank it lacks in the OG
+  // description and the JSON-LD; this is the third place that rule is stated and
+  // the one that was missed.
+  const vline = (d && d.analysis && d.analysis.trend)
+    || (c.rank != null ? `Rank #${c.rank} by composite activity` : 'Outside the top-50 activity board');
   // Never "X/100" — the index is a relative composite, not a grade. Value + its
   // name + the rank line, with the glossary popover one tap away.
-  const verdict = `<div class="verdictstrip"><div class="vscoreblock"><div class="vscore">${idx}</div><div class="vslabel">Activity index <button type="button" class="qm" data-gloss="activityIndex" aria-label="What is the activity index?">?</button></div></div><div class="vmeta">${sent?`<span class="sent ${sent.toLowerCase().replace(/[^a-z]/g,'')}">${esc(sent)}</span>`:''}<div class="vline">${esc(vline)} · relative composite of volume, TVL &amp; fees — not a health score</div></div></div>`;
+  const verdict = `<div class="verdictstrip"><div class="vscoreblock"><div class="vscore">${idx ?? '—'}</div><div class="vslabel">Activity index <button type="button" class="qm" data-gloss="activityIndex" aria-label="What is the activity index?">?</button></div></div><div class="vmeta">${sent?`<span class="sent ${sent.toLowerCase().replace(/[^a-z]/g,'')}">${esc(sent)}</span>`:''}<div class="vline">${esc(vline)} · relative composite of volume, TVL &amp; fees — not a health score</div></div></div>`;
   const snapshot = stats + momentumHtml(c) + fundamentalsHtml(c);
   const ecosystem = markets + tokensSection + nftsSection + `<div class="dsec">Top apps on this chain</div>${projects}`;
   const related = relatedInner(c);
