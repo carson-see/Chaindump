@@ -3,13 +3,14 @@ import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } fro
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
+import { annotateDataQuality, assessChainDataQuality } from './lib/data-quality.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 // Aliased deliberately: causes.js above exports TAG_LABELS/canonTags into this
 // same scope. An unaliased import would shadow the cause vocabulary silently —
 // no error, just wrong labels on the graveyard chips.
-import { cohortFor, tagVocab, canonTags as canonChainTags, isTheme as isChainTheme, themesForCategory } from './lib/tags.js';
-import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
+import { cohortFor, tagVocab, parseLaunch, canonTags as canonChainTags, isTheme as isChainTheme, isCohort as isChainCohort, themesForCategory } from './lib/tags.js';
+import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk, activityIndex } from './lib/scoring.js';
 import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from './lib/llama.js';
 
 const ENV = {};
@@ -307,17 +308,42 @@ async function buildSnapshot(opts = {}) {
   // --- enrich candidates (bounded concurrency) ---
   await pool(candidates, async (r) => {
     const enc = encodeURIComponent(r.name);
-    const [dex, hist] = await Promise.allSettled([
+    const [dex, hist, fee] = await Promise.allSettled([
       fetchJson(`https://api.llama.fi/overview/dexs/${enc}?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`, 12000),
       fetchJson(`https://api.llama.fi/v2/historicalChainTvl/${enc}`, 12000),
+      fetchJson(`https://api.llama.fi/overview/fees/${enc}?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`, 12000),
     ]);
+    // Fees carry BOTH defects the volume axis had, and the aggregate is wrong in
+    // both directions. Measured 2026-07-17: Hyperliquid L1 read $0 against a real
+    // $3.83M/day (the same TVL-feed-vs-fee-feed name mismatch), while Provenance
+    // read $13,971 against $96 — 145x over — and Tron 4.4x, because
+    // /overview/fees spans 86 categories and the per-protocol breakdowns
+    // double-count. This is a 20%-weight axis AND the denominator of the P/F
+    // ratio, fee yield and fees-per-user we publish with definitions attached.
+    if (fee.status === 'fulfilled' && fee.value && fee.value.total24h != null) {
+      r.fees24h = Number(fee.value.total24h) || r.fees24h;
+      r.feeSource = 'perChain';   // authoritative: DefiLlama's own per-chain total
+    } else {
+      // Diagnose rather than guess: a silently-kept aggregate is indistinguishable
+      // from an enriched value in the payload, which is how the 145x Provenance
+      // figure survived a deploy that "fixed" it.
+      r.feeSource = 'aggregate';  // over-counts: 86 categories, double-counted breakdowns
+      console.error(`[fees] ${r.name}: per-chain fetch failed -> keeping aggregate. reason=${fee.status === 'rejected' ? String(fee.reason && fee.reason.message).slice(0, 90) : 'total24h null'}`);
+    }
+    // Provenance per FIELD, not per row: being selected for enrichment is not the
+    // same as having been enriched. A candidate whose per-chain call fails keeps
+    // the aggregate, and marking the row "enriched" regardless would republish
+    // that aggregate as though we had checked it.
     if (dex.status === 'fulfilled' && dex.value && dex.value.total24h != null) {
+      r.volumeSource = 'perChain';
       r.volume24h = Number(dex.value.total24h) || r.volume24h;
       r.volChange1d = dex.value.change_1d ?? null;
       r.volChange7d = dex.value.change_7d ?? null;
       r.volChange30d = dex.value.change_1m ?? null;
       r.volume7d = dex.value.total7d ?? null;
       r.volume30d = dex.value.total30d ?? null;
+    } else {
+      r.volumeSource = 'aggregate';   // over-counts, and reads 0 on a name mismatch
     }
     if (hist.status === 'fulfilled' && Array.isArray(hist.value) && hist.value.length) {
       const series = hist.value.slice(-30).map((p) => Number(p.tvl) || 0);
@@ -366,7 +392,20 @@ async function buildSnapshot(opts = {}) {
     r.pf = (r.tokenMcap && annFees > 0) ? +(r.tokenMcap / annFees).toFixed(1) : null;   // market cap / annualized fees
     r.feeYield = (r.tvl > 0 && annFees > 0) ? +((annFees / r.tvl) * 100).toFixed(1) : null; // % annual fee yield on TVL
     r.turnover = (r.tvl > 0) ? +(r.volume24h / r.tvl).toFixed(2) : null;                 // daily volume / TVL
-    r.feePerUser = (r.activeAddresses) ? +(r.fees24h / r.activeAddresses).toFixed(2) : null; // 24h fees per active address
+    // Guard fees the same way pf/feeYield do above. Without the annFees check a
+    // chain with fees24h = 0 published "fees per user: $0" — a measured-looking
+    // claim derived from a number we don't have.
+    //
+    // And keep precision below a cent: Celo earns $1,671/day across 483,704
+    // active addresses = $0.0035 per user, which toFixed(2) published as a flat
+    // "$0". Users pay a third of a cent; printing zero is not a rounding nicety,
+    // it is a different claim.
+    if (r.activeAddresses && annFees > 0) {
+      const per = r.fees24h / r.activeAddresses;
+      r.feePerUser = +per.toFixed(per < 0.01 ? 4 : 2);
+    } else {
+      r.feePerUser = null;
+    }
 
     const flags = [];
     const s = r.tvlSpark30;
@@ -402,6 +441,28 @@ async function buildSnapshot(opts = {}) {
     r.signals = computeSignals(r, { medPf, medFeeYield, medTurnover, tvlRank: tvlRankMap[r.name], feeRank: feeRankMap[r.name], n: top.length });
   }
 
+  // Stamp the DISPLAYED index here, with the same activityIndex() the published
+  // 1-100 scale is defined by. The client used to recompute it by hand across
+  // state.chains — a second implementation of a rule that already had an owner,
+  // and it had no idea what to do with a row that has no score. A tail chain
+  // (rank > 50, served from chains_lite, no score) rescaled 0 against the board's
+  // 0.549-0.99 range and rendered "Activity index -122" on a scale we publish as
+  // 1-100. A rank-less row now simply has no index, and the UI renders it as "—"
+  // by the same nullish path it already uses for pf/feeYield.
+  const boardScores = top.map((r) => r.score || 0);
+  const mnScore = Math.min(...boardScores), mxScore = Math.max(...boardScores);
+  for (const r of top) r.activityIndex = activityIndex(r.score, mnScore, mxScore);
+
+  // --- data-quality caveat: mark TVL figures that cannot be independently
+  // verified, so a TVL-ordered view doesn't imply two adjacent rows are peers.
+  // Best-effort: if /protocols is unavailable we annotate nothing rather than
+  // guess — a missing badge is a smaller error than a wrong one.
+  try {
+    annotateDataQuality(top, await getProtocols());
+  } catch (e) {
+    console.error('[buildSnapshot] data-quality annotation skipped:', e.message);
+  }
+
   const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
 
   // --- chain linking: bake a value-prop category + related peers onto each row ---
@@ -426,10 +487,21 @@ async function buildSnapshot(opts = {}) {
   // Lite index of the WHOLE universe (not just the top-50) so a direct visit to a
   // tail chain resolves to a real profile instead of a 404. Kept in a separate
   // cache key so it never bloats the /api/chains leaderboard payload.
+  // Only chains we ENRICHED have trustworthy volume/fees. Everything else holds
+  // the aggregate, which is wrong in both directions — it reads 0 for any chain
+  // the DEX/fee feeds name differently from the TVL feed (302 of 458), and
+  // over-counts elsewhere (Provenance 145x). Shipping those as numbers made 42 of
+  // 78 tail profiles publish "$0 volume" for chains that trade millions: XRPL
+  // showed $0 against a real $2.64M. This file's own linkRows comment already
+  // says it — "0 means unknown, not measured zero" — so null them and let the UI
+  // render "—", the way the Stablecoin tile already does.
   const chainsLite = rows.map((r) => ({
     key: r.key, name: r.name, symbol: r.symbol, gecko: r.gecko, chainId: r.chainId,
     category: r.category, categoryLabel: categoryLabel(r.category), coverage: coverageTier(r),
-    tvl: r.tvl, volume24h: r.volume24h, fees24h: r.fees24h, stables: r.stables,
+    tvl: r.tvl,
+    volume24h: r.volumeSource === 'perChain' ? r.volume24h : null,
+    fees24h: r.feeSource === 'perChain' ? r.fees24h : null,
+    stables: r.stables,
     activeAddresses: r.activeAddresses,
   }));
   const totals = ranked.reduce((a, r) => {
@@ -469,9 +541,24 @@ async function persistSnapshot(db, data, ts) {
 // Resolve a chain beyond the top-50 from the lite index, and compute its peers at
 // request time against the top-50 (every peer resolves in the main blob, so no
 // dead links). Returns a basic profile row or null. Not the hot path.
+// The lite index is ~107KB / 456 rows, rewritten only by the cron that writes the
+// snapshot, so re-reading and re-parsing it per call is pure waste. One visit to a
+// tail chain now costs two calls — the server-rendered OG card and the SPA's
+// /api/chain/:name fetch — and a crawler hitting /chain/<garbage> pays one to
+// learn nothing. Same TTL as the snapshot it is written beside.
+let liteCache = { ts: 0, data: null };
+async function loadLiteIndex() {
+  const now = Date.now();
+  if (liteCache.data && now - liteCache.ts < TTL) return liteCache.data;
+  try {
+    const rows = await dbQuery(`SELECT data FROM snapshot_cache WHERE key='chains_lite' LIMIT 1`);
+    if (rows[0]?.data) liteCache = { ts: now, data: JSON.parse(rows[0].data) };
+  } catch (e) { /* table may not exist yet — fall through to whatever we hold */ }
+  return liteCache.data;
+}
+
 async function resolveTailChain(target) {
-  let lite = null;
-  try { const rows = await dbQuery(`SELECT data FROM snapshot_cache WHERE key='chains_lite' LIMIT 1`); if (rows[0]?.data) lite = JSON.parse(rows[0].data); } catch (e) {}
+  const lite = await loadLiteIndex();
   if (!Array.isArray(lite)) return null;
   const row = lite.find((c) => c.name.toLowerCase() === target);
   if (!row) return null;
@@ -558,7 +645,7 @@ app.get('/api/chains', wrap(async (req, res) => {
     if (!cache.data || now - cache.ts > TTL) {
       cache = await loadSnapshot();
     }
-    res.json({ ...cache.data, scoreMeta: SCORE_META, tagVocab: tagVocab(), cachedAgeMs: Date.now() - cache.ts });
+    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: Date.now() - cache.ts });
   } catch (e) {
     console.error('snapshot error:', e.message);
     if (cache.data) return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, error: e.message });
@@ -983,25 +1070,53 @@ async function chainFacts(chainName) {
 
 // Resolve a chain's tags: themes are curated (stored), the cohort is COMPUTED.
 //
-// The cohort is never read from storage. The board tail churns every 5 minutes —
-// a stored "top-50" is a claim that expires — and "up and coming" is a published
-// claim about a chain's age, so it has to be derived from a real launch date at
-// the moment we serve it. Note cohortFor treats an absent date as UNKNOWN, not
-// as pre-launch: Ethereum carries no `launched` on the live board, and the naive
-// rule would have published that Ethereum hasn't launched yet.
+// Field names here are taken FROM THE REAL ROWS, not from what a schema ought to
+// look like. The first version of this function read `identity.tier` and
+// `identity.permissioned` — neither exists in a single one of the 130 rows. It
+// then filtered the real cohorts out of `tags[]` with isTheme and read them back
+// from those non-existent fields, so 69 researched chains (every graveyard and
+// stuck one) computed a null cohort and rendered no chip. The tests passed
+// because their fixtures used the invented names too: the code agreed with
+// itself about a schema that did not exist.
+//
+// What the rows ACTUALLY carry:
+//   tags[]       cohort AND theme tags together   (Scroll: ['graveyard','l2','zk'])
+//   permissioned a THEME tag, not a field          (Canton: [...,'permissioned'])
+//   the launch date under one of three keys        (launched | mainnet_live | founded)
+const LAUNCH_KEYS = ['launched', 'mainnet_live', 'founded'];
+const PRELAUNCH_STATUS = new Set(['pre-launch', 'anticipated']);
+function launchDateOf(identity) {
+  for (const k of LAUNCH_KEYS) {
+    const v = identity[k];
+    // Strings only: `founded: 2021` appears as a NUMBER, and parseLaunch treats a
+    // number as epoch millis, so 2021 would resolve to 1st Jan 1970. Beyond that
+    // guard, tags.js owns which date FORMATS are valid — this regex used to
+    // enumerate them a second time, so a format added there would be filtered out
+    // here before cohortFor ever saw it and the cohort would silently go null.
+    // That is the exact failure this function exists to fix.
+    if (typeof v === 'string' && parseLaunch(v) != null) return v.trim();
+  }
+  return null;
+}
+
 function resolveTags(row, facts, onBoard) {
   const identity = (facts && facts.identity && facts.identity.data) || {};
   const stored = canonChainTags(Array.isArray(identity.tags) ? identity.tags : []);
   const themes = stored.filter(isChainTheme);
-  // Fall back to the chain's own category when the desk has not tagged it, so a
-  // chain we have not researched still carries what we can honestly derive.
+  const storedCohort = stored.find(isChainCohort) || null;
+  // Fall back to the chain's own category when the desk has not tagged it, so an
+  // unresearched chain still carries what we can honestly derive.
   const derived = themes.length ? themes : themesForCategory(row.category);
   const cohort = cohortFor({
-    launched: identity.launched || null,
+    launched: launchDateOf(identity),
     onBoard: !!onBoard,
-    tier: identity.tier || null,
-    isPreLaunch: identity.status === 'pre-launch' || identity.status === 'anticipated',
-    isPrivate: identity.permissioned === true,
+    // The desk's own classification, which lives in tags[] — this is what makes
+    // graveyard and stuck reachable at all.
+    tier: storedCohort,
+    isPreLaunch: PRELAUNCH_STATUS.has(identity.status),   // cohortFor owns the 'anticipated' TIER itself
+    // Canton is permissioned AND on the board; cohortFor checks this last so a
+    // private chain can never hide a real board position.
+    isPrivate: themes.includes('permissioned'),
   }, Date.now());
   return { cohort, themes: derived };
 }
@@ -1014,10 +1129,24 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
     if (!row) { row = await resolveTailChain(target); } // beyond the top-50 → lite index
     if (!row) return res.status(404).json({ error: 'unknown chain' });
 
+    // Board membership decides several things below; compute it once.
+    const onBoard = (cache.data.chains || []).some((c) => c.name === row.name);
+
     let topProjects = [];
+    let dataQuality = row.dataQuality || null;
     try {
       const protos = await getProtocols();
       const name = row.name;
+      // Only assess here for chains OUTSIDE the ranked top-50 — the snapshot has
+      // already assessed every board row, and a clean board row legitimately
+      // carries no dataQuality. Guarding on `!dataQuality` instead made 49 of 50
+      // board chains re-scan all 7,867 protocols on every detail request just to
+      // re-derive null.
+      if (!onBoard) {
+        const dq = assessChainDataQuality(name, protos, { displayedTvl: row.tvl });
+        // A caveat above the auto-publish ceiling is held for review, not served.
+        if (dq && dq.autoPublish !== false) dataQuality = dq;
+      }
       const SKIP = new Set(['CEX', 'Chain', 'Bridge']);
       topProjects = (Array.isArray(protos) ? protos : [])
         .filter((p) => Array.isArray(p.chains) && p.chains.includes(name) && !SKIP.has(p.category))
@@ -1047,10 +1176,9 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
 
     const facts = await chainFacts(row.name);
 
-    const onBoard = (cache.data.chains || []).some((c) => c.name === row.name);
     const tags = resolveTags(row, facts, onBoard);
 
-    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk, facts, tags, tagVocab: tagVocab() });
+    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, dataQuality, topProjects, topNfts, topTokens, analysis, risk, facts, tags, tagVocab: tagVocab() });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -1740,7 +1868,12 @@ app.get('/api/agent/summary', wrap(async (req, res) => {
   res.json({
     schema_version: '2.0.0', data_as_of: cache.data.updatedAt,
     market: { total_tvl_usd: t.tvl, total_volume_24h_usd: t.volume24h, total_fees_24h_usd: t.fees24h, chains_tracked: c.length },
-    leaders: c.slice(0, 5).map((x) => ({ chain: x.name, rank: x.rank, tvl_usd: x.tvl, activity_score: x.score })),
+    leaders: c.slice(0, 5).map((x) => ({
+      chain: x.name, rank: x.rank, tvl_usd: x.tvl, activity_score: x.score,
+      // Present only when the TVL figure can't be independently verified, so an
+      // agent consuming this list doesn't treat it as equivalent to its peers.
+      ...(x.dataQuality ? { data_quality: x.dataQuality.flag, data_quality_note: x.dataQuality.summary } : {}),
+    })),
     top_signals: all.slice(0, 12),
     signal_counts: { critical: all.filter((s) => s.severity === 'critical').length, notable: all.filter((s) => s.severity === 'notable').length, total: all.length },
     provenance: { sources: ['defillama', 'coingecko', 'growthepie'], note: 'Every signal carries its own evidence + method + confidence (0–1). Full feed at /api/agent/signals.' },
@@ -1972,10 +2105,17 @@ Object.keys(VIEW_OG).forEach((v) => {
 app.get('/chain/:name', wrap(async (req, res) => {
   const key = String(req.params.name || '');
   if (!cache.data) cache = await loadSnapshot();
-  const row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === key.toLowerCase());
+  let row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === key.toLowerCase());
+  // Board-only lookup made every chain beyond the top-50 unfurl identically to a
+  // nonsense string — /chain/Anubis and /chain/NotARealChain shared a title and
+  // description, even though we hold a researched profile for one of them.
+  if (!row) { try { row = await resolveTailChain(key.toLowerCase()); } catch (e) { /* fall back to the generic card */ } }
   const title = row ? `${row.name} — Chaindump` : 'Chain — Chaindump';
   const desc = row
-    ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
+    ? (row.rank != null
+        ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
+        // A tail chain has no board rank — do not imply one it does not have.
+        : `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume. Outside the top-50 activity board. Metrics and research on Chaindump.`)
     : OG_DESC_FALLBACK;
   const url = `${ORIGIN}/chain/${encodeURIComponent(key)}`;
   let ld;
@@ -1984,8 +2124,9 @@ app.get('/chain/:name', wrap(async (req, res) => {
     const measured = [
       { '@type': 'PropertyValue', name: 'Total value locked (USD)', value: row.tvl },
       { '@type': 'PropertyValue', name: '24h DEX volume (USD)', value: row.volume24h },
-      { '@type': 'PropertyValue', name: 'Composite activity rank', value: row.rank },
     ];
+    // Only claim a rank when the chain actually has one.
+    if (row.rank != null) measured.push({ '@type': 'PropertyValue', name: 'Composite activity rank', value: row.rank });
     if (row.tokenPrice != null) measured.push({ '@type': 'PropertyValue', name: 'Token price (USD)', value: row.tokenPrice });
     ld = [
       { '@type': 'Dataset', '@id': url + '#dataset', name: `${row.name} on-chain metrics`, description: desc, url, isPartOf: { '@id': ORIGIN + '/#site' }, creator: { '@id': ORIGIN + '/#org' }, publisher: { '@id': ORIGIN + '/#org' }, dateModified: dm, variableMeasured: measured, citation: ['https://defillama.com/', 'https://www.coingecko.com/'] },
@@ -2101,7 +2242,12 @@ async function llmsFullBody() {
     const top = (cache.data.chains || []).slice(0, 25);
     if (top.length) {
       chainsMd = ['| # | Chain | TVL | 24h volume | Token price | Activity rank |', '|---|---|---|---|---|---|']
-        .concat(top.map((ch) => `| ${ch.rank ?? ''} | ${ch.name} | $${fmtShort(ch.tvl)} | $${fmtShort(ch.volume24h)} | ${ch.tokenPrice != null ? '$' + ch.tokenPrice : '—'} | ${ch.rank ?? ''} |`)).join('\n');
+        .concat(top.map((ch) => `| ${ch.rank ?? ''} | ${ch.name}${ch.dataQuality ? ' ⚠️' : ''} | $${fmtShort(ch.tvl)}${ch.dataQuality ? ' (unverified)' : ''} | $${fmtShort(ch.volume24h)} | ${ch.tokenPrice != null ? '$' + ch.tokenPrice : '—'} | ${ch.rank ?? ''} |`)).join('\n');
+      // Spell the caveat out in prose — a citing model reads the footnote, not just the glyph.
+      const caveats = top.filter((ch) => ch.dataQuality);
+      if (caveats.length) {
+        chainsMd += '\n\n' + caveats.map((ch) => `> ⚠️ **${ch.name} — unverified TVL.** ${ch.dataQuality.summary}`).join('\n>\n');
+      }
     }
   } catch (e) { console.error('[llms-full] snapshot skipped:', e && e.message); }
   const label = (v) => (VIEW_OG[v][0] || '').replace(/ — Chaindump$/, '');

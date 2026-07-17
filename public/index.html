@@ -113,11 +113,15 @@
   .dqwarn b { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:3px; }
   .fcorr { font-size:11px; line-height:1.55; color:var(--muted); border-left:2px solid var(--border2); padding:4px 0 4px 9px; margin:7px 0 2px; }
   .fcorr b { color:var(--muted2); display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .tailwrap { border:1px solid var(--border2); border-radius:12px; background:var(--surface2); margin:0 0 16px; overflow:hidden; }
+  .tailback { padding:10px 18px 0; font-size:12px; }
+  .tailback a { color:var(--muted2); text-decoration:none; }
+  .tailback a:hover { color:var(--accent); }
   .tchips { display:flex; flex-wrap:wrap; gap:5px; margin:0 0 12px; }
   .tchip { font-size:10px; font-weight:600; letter-spacing:.03em; text-transform:uppercase; padding:2px 7px; border-radius:11px; border:1px solid var(--border2); color:var(--muted); white-space:nowrap; }
   .tchip.cohort { color:var(--accent); border-color:rgba(122,162,247,.35); background:rgba(122,162,247,.07); }
   /* "up and coming" is a fact about age, not a verdict — it must not read as praise. */
-  .tchip.cohort.anticipated, .tchip.cohort\.up-and-coming { color:var(--warn); border-color:rgba(217,164,65,.35); background:rgba(217,164,65,.07); }
+  .tchip.cohort.anticipated, .tchip.cohort.up-and-coming { color:var(--warn); border-color:rgba(217,164,65,.35); background:rgba(217,164,65,.07); }
   .olinks { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px; }
   .olink { font-size:11px; padding:3px 9px; border-radius:14px; border:1px solid var(--border2); color:var(--muted2); text-decoration:none; white-space:nowrap; }
   .olink:hover { border-color:var(--accent); color:var(--accent); }
@@ -138,6 +142,20 @@
   .fv { color:var(--muted2); }
   .tierbadge.zombie { color:var(--warn); background:var(--warn-bg); border-color:rgba(217,164,65,.45); }
   .tierbadge.dead { color:var(--dead); background:var(--dead-bg); border-color:rgba(92,100,112,.35); }
+  /* Data-quality caveat on a TVL figure that cannot be independently verified.
+     Deliberately neutral (muted/warn, not the red "down" tone) — it flags an
+     unverifiable number, it does not accuse the project of anything. */
+  .dqbadge { display:inline-block; font-size:9px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; padding:1px 5px; border-radius:var(--r-sm); margin-left:6px; vertical-align:middle; cursor:help; font-family:var(--font-ui); color:var(--warn); background:var(--warn-bg); border:1px solid rgba(217,164,65,.30); }
+  /* it's a <button> for touch + keyboard access, so undo the UA button styling.
+     nowrap because the TVL column is narrow — without it the label wraps to
+     three lines and reads as a broken blob rather than a badge. */
+  button.dqbadge { line-height:1.5; text-align:center; white-space:nowrap; }
+  .dqnote { margin-top:10px; padding:10px 12px; border-radius:var(--r-sm); background:var(--warn-bg); border:1px solid rgba(217,164,65,.25); }
+  .dqnote .dqh { font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--warn); margin-bottom:5px; }
+  .dqnote .dqs { font-size:12.5px; color:var(--text); line-height:1.5; }
+  .dqnote ul { margin:7px 0 0; padding-left:16px; }
+  .dqnote li { font-size:12px; color:var(--muted2); line-height:1.55; }
+  .dqnote .dqsrc { margin-top:7px; font-size:10.5px; color:var(--muted); }
   .csym { color:var(--muted); font-size:11.5px; margin-left:5px; font-weight:500; }
   .cprice { display:block; font-size:11px; color:var(--muted2); font-variant-numeric:tabular-nums; margin-top:1px; }
   .delta { display:inline-block; font-size:11px; font-weight:600; margin-left:6px; padding:1px 5px; border-radius:5px; font-variant-numeric:tabular-nums; }
@@ -594,6 +612,11 @@
     <div class="legend"><b>Ranked by</b> composite activity — see the “?” on the Activity column. Click any column to re-sort.</div>
   </div>
 
+  <!-- A chain beyond the top-50 has no board row to expand into. Without this,
+       /chain/Anubis silently rendered the generic board: a researched chain was
+       byte-identical to a nonsense string. -->
+  <div id="tailprofile" class="liveonly"></div>
+
   <div class="tablewrap liveonly">
     <table>
       <thead>
@@ -716,6 +739,16 @@ function glossEntry(key){
     const m = state.scoreMeta;
     return { t: m.name || 'Activity index', d: [m.formula, m.caveat].filter(Boolean).join(' ') };
   }
+  // Unverified-TVL caveat. Content is per-chain, so it resolves off the live
+  // row (ranked board) or the fetched detail (chains outside it).
+  if (key.indexOf('dq:') === 0) {
+    const name = key.slice(3);
+    const row = (state.chains || []).find((c) => c.name === name);
+    const det = state.details && state.details[name];
+    const dq = (row && row.dataQuality) || (det && det.dataQuality);
+    if (!dq) return null;
+    return { t: dq.label, d: [dq.summary].concat((dq.reasons || []).map((r) => '• ' + r)).join(' ') };
+  }
   if (key.indexOf('tier:') === 0) {
     const parts = key.split(':'), tier = parts[1], curated = parts[2] === 'curated';
     const crit = (state.tiers && state.tiers.criteria) || {};
@@ -808,6 +841,29 @@ function tierBadge(name) {
   return `<button type="button" class="tierbadge ${esc(t)}" data-gloss="tier:${esc(t)}:computed" aria-label="What does this badge mean?">${esc(TIER_COMPUTED_LABEL[t])}</button>`;
 }
 
+// Caveat badge shown next to an unverified TVL figure. Uses the shared gloss
+// popover rather than a title attribute: `title` never fires on touch, which
+// would leave the badge unexplainable on mobile — the reason it exists at all.
+// glossEntry('dq:<chain>') resolves the reasons; gpShow writes them via
+// textContent, so the remote protocol name can't inject markup.
+function dqBadge(dq, chainName) {
+  if (!dq || !dq.label) return '';
+  return `<button type="button" class="dqbadge" data-gloss="dq:${esc(chainName)}" aria-label="Why is this TVL marked unverified?">⚠ ${esc(dq.label)}</button>`;
+}
+
+// The expanded/detail explanation — the badge alone can't carry the reasoning,
+// and a caveat the user can't interrogate is just an unexplained scarlet letter.
+function dqNote(dq) {
+  if (!dq || !dq.label) return '';
+  const reasons = (dq.reasons || []).map((r) => `<li>${esc(r)}</li>`).join('');
+  return `<div class="dqnote">
+    <div class="dqh">⚠ ${esc(dq.label)} — treat this figure with caution</div>
+    <div class="dqs">${esc(dq.summary || '')}</div>
+    ${reasons ? `<ul>${reasons}</ul>` : ''}
+    <div class="dqsrc">Method: ${esc(dq.method || '')} Source: ${esc(dq.source || '')}.</div>
+  </div>`;
+}
+
 function sparkline(values, w = 78, h = 22, pad = 3) {
   if (!values || values.length < 2) return '<span class="muted">—</span>';
   const min = Math.min(...values); let max = Math.max(...values);
@@ -843,9 +899,12 @@ function riskBanner(risk){
   return `<div class="riskbanner ${cls}"><b>⚠ ${risk.level==='high'?'High risk / bad-actor concerns':'Caution'}</b> — ${esc(risk.summary||'')}${risk.evidence?` <span class="rkev">${esc(risk.evidence)}</span>`:''}${src}</div>`;
 }
 function actScore(c){
-  const scores = state.chains.map(x=>x.score||0);
-  const mn = Math.min(...scores), mx = Math.max(...scores);
-  return (mx > mn) ? Math.round(1 + (((c.score||0) - mn)/(mx - mn)) * 99) : 100;
+  // The index is a BOARD property, computed server-side by activityIndex() in
+  // src/lib/scoring.js — the one owner of the published 1-100 scale. This used to
+  // recompute it here across state.chains, which is how a tail chain (no score,
+  // not on the board) rendered "-122" on that scale. A row without an index has
+  // no index; say nothing rather than invent a number.
+  return c && c.activityIndex != null ? c.activityIndex : null;
 }
 
 function marketChips(c){
@@ -853,6 +912,29 @@ function marketChips(c){
   if (!L || (!L.dex && !L.nft)) return '<span class="muted">—</span>';
   const a = (x,kind) => x && x.url ? `<a class="mchip" href="${esc(safeUrl(x.url))}" target="_blank" rel="noopener noreferrer"><span class="mk">${kind}</span>${esc(x.name)} ↗</a>` : '';
   return `<div class="mkts">${a(L.dex,'DEX')}${a(L.nft,'NFT')}</div>`;
+}
+
+// Render the profile of a chain that is NOT on the board (rank > 50). render()
+// maps state.chains and emits each profile inside that map, so a tail chain had
+// no node to render into: /chain/Anubis set state.expanded, fetched the profile
+// successfully, and then dropped it on the floor while showing the plain board.
+// The API resolves tail chains from the chains_lite index, so the data is there.
+function renderTailProfile(){
+  const el = document.getElementById('tailprofile');
+  if (!el) return;
+  const name = state.expanded;
+  if (!name || state.chains.some(c => c.name === name)) { el.innerHTML = ''; return; }  // on the board: the row owns it
+  const d = state.details[name];
+  if (d === undefined) { el.innerHTML = `<div class="tailwrap"><div class="skel">Loading ${esc(name)}…</div></div>`; return; }
+  // Resolved but carries no chain row => we do not cover it. Say so plainly
+  // rather than showing the board as if the request had succeeded.
+  if (!d || !d.chain) {
+    el.innerHTML = `<div class="tailwrap"><div class="pagehead"><div class="pagetitle">${esc(name)}</div>` +
+      `<div class="gvintro">Not covered by Chaindump. It may be too small to track, or the name may not match a chain we index.</div></div>` +
+      `<div class="tailback"><a href="/" data-view="live">← Back to the top 50</a></div></div>`;
+    return;
+  }
+  el.innerHTML = `<div class="tailwrap"><div class="tailback"><a href="/" data-view="live">← Back to the top 50</a></div>${detailHtml(d.chain)}</div>`;
 }
 
 function render() {
@@ -874,6 +956,7 @@ function render() {
   const rankMap = (key) => { const s=[...state.chains].sort((a,b)=>(b[key]||0)-(a[key]||0)); const m=new Map(); s.forEach((c,i)=>m.set(c.name,i+1)); return m; };
   const volR = rankMap('volume24h'), tvlR = rankMap('tvl'), feeR = rankMap('fees24h');
   const N = state.chains.length;
+  renderTailProfile();
   const tb = document.getElementById('rows');
   if (!rows.length) { tb.innerHTML = '<tr><td colspan="8" class="skel">No chains match.</td></tr>'; return; }
   tb.innerHTML = rows.map((c,i) => {
@@ -884,7 +967,7 @@ function render() {
       <td class="chain"><div class="chaincell"><span class="chev">${open?'▾':'▸'}</span>${logo(c)}<span><span class="cname">${esc(c.name)}</span>${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${tierBadge(c.name)}${c.tokenPrice!=null?`<span class="cprice">$${fmtTok(c.tokenPrice)}${c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''}</span>`:''}</span></div></td>
       <td class="num" data-label="Active">${fmtNum(c.activeAddresses)}</td>
       <td class="num" data-label="24h Volume">${fmtUsd(c.volume24h)}${delta(c.volChange1d)}</td>
-      <td class="num" data-label="TVL">${fmtUsd(c.tvl)}${c.tvlChange7d!=null?delta(c.tvlChange7d):''}</td>
+      <td class="num" data-label="TVL">${fmtUsd(c.tvl)}${c.tvlChange7d!=null?delta(c.tvlChange7d):''}${dqBadge(c.dataQuality, c.name)}</td>
       <td class="left hide-md" data-label="7d TVL">${sparkline(c.tvlSpark)}</td>
       <td class="left hide-sm" data-label="Markets">${marketChips(c)}</td>
       <td data-label="Activity" title="Activity index ${actIndex(c)} (relative composite — not a health score). Driven by: Volume #${volR.get(c.name)} · TVL #${tvlR.get(c.name)} · Fees #${feeR.get(c.name)} (of ${N})"><div class="scorecell"><span>${actIndex(c)}</span><span class="scorebar" style="width:${Math.max(5, actIndex(c)*0.5)}px"></span></div></td>
@@ -965,7 +1048,7 @@ function tagChipsHtml(d){
   const t = d && d.tags;
   if (!t) return '';
   const vocab = (d.tagVocab && d.tagVocab.labels) || {};
-  const label = (k) => vocab[k] || String(k).replace(/-/g, ' ');
+  const label = (k) => vocab[k] || String(k);   // server labels every tag; no second copy of tagLabel() here
   const chips = [];
   // The cohort is computed per request, never stored: "top 50" expires as the
   // board churns and "up and coming" is a claim about a chain's age today.
@@ -1146,7 +1229,7 @@ function detailHtml(c) {
     ${statH('Stablecoin Mcap', c.stables?fmtUsd(c.stables):'—', 'stables')}
     ${statH('Token Price', c.tokenPrice!=null?'$'+Intl.NumberFormat('en',{maximumFractionDigits:c.tokenPrice<1?4:2}).format(c.tokenPrice)+(c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''):'—', 'tokenPrice')}
     ${statH('Token Mcap', c.tokenMcap?fmtUsd(c.tokenMcap):'—', 'tokenMcap')}
-    ${statH('Activity Index', actScore(c), 'activityIndex')}
+    ${statH('Activity Index', actScore(c) ?? '—', 'activityIndex')}
   </div>`;
   let projects;
   if (!d) projects = '<div class="muted" style="padding:6px 2px">Loading top projects…</div>';
@@ -1162,17 +1245,26 @@ function detailHtml(c) {
   const markets = (L && (L.dex || L.nft)) ? `<div class="dsec">Markets</div><div class="mktbtns">${mbtn(L.dex,'DEX')}${mbtn(L.nft,'NFT')}</div>` : '';
   const tokensSection = (d && d.topTokens && d.topTokens.length) ? `<div class="dsec">Top tokens on this chain</div><div class="applist">${d.topTokens.map(t=>`<div class="app"><div class="apphead"><span class="pn">${esc(t.name)}</span><span class="pc">${esc(t.symbol)}</span><span class="pt">$${fmtTok(t.price)}${t.change24h!=null?' '+delta(t.change24h):''}</span></div><div class="applinks"><a href="${esc(safeUrl(t.url))}" target="_blank" rel="noopener noreferrer">CoinGecko ↗</a></div></div>`).join('')}</div>` : '';
   const nftsSection = (d && d.topNfts && d.topNfts.length) ? `<div class="dsec">Top NFT / Ordinals collections</div><div class="applist">${d.topNfts.map(n=>`<div class="app"><div class="apphead"><span class="pn">${esc(n.name)}</span><a class="pt" href="${esc(safeUrl(n.url))}" target="_blank" rel="noopener noreferrer">View ↗</a></div></div>`).join('')}</div>` : '';
-  const idx = actScore(c);
+  const idx = actScore(c);   // null for a chain that is not on the board
   const sent = (d && d.analysis && d.analysis.sentiment) || '';
-  const vline = (d && d.analysis && d.analysis.trend) || (`Rank #${c.rank} by composite activity`);
+  // Only claim a rank when the chain has one. A tail chain (rank > 50) has no
+  // board rank, and this rendered the literal "Rank #undefined by composite
+  // activity". The server already refuses to imply a rank it lacks in the OG
+  // description and the JSON-LD; this is the third place that rule is stated and
+  // the one that was missed.
+  const vline = (d && d.analysis && d.analysis.trend)
+    || (c.rank != null ? `Rank #${c.rank} by composite activity` : 'Outside the top-50 activity board');
   // Never "X/100" — the index is a relative composite, not a grade. Value + its
   // name + the rank line, with the glossary popover one tap away.
-  const verdict = `<div class="verdictstrip"><div class="vscoreblock"><div class="vscore">${idx}</div><div class="vslabel">Activity index <button type="button" class="qm" data-gloss="activityIndex" aria-label="What is the activity index?">?</button></div></div><div class="vmeta">${sent?`<span class="sent ${sent.toLowerCase().replace(/[^a-z]/g,'')}">${esc(sent)}</span>`:''}<div class="vline">${esc(vline)} · relative composite of volume, TVL &amp; fees — not a health score</div></div></div>`;
+  const verdict = `<div class="verdictstrip"><div class="vscoreblock"><div class="vscore">${idx ?? '—'}</div><div class="vslabel">Activity index <button type="button" class="qm" data-gloss="activityIndex" aria-label="What is the activity index?">?</button></div></div><div class="vmeta">${sent?`<span class="sent ${sent.toLowerCase().replace(/[^a-z]/g,'')}">${esc(sent)}</span>`:''}<div class="vline">${esc(vline)} · relative composite of volume, TVL &amp; fees — not a health score</div></div></div>`;
   const snapshot = stats + momentumHtml(c) + fundamentalsHtml(c);
   const ecosystem = markets + tokensSection + nftsSection + `<div class="dsec">Top apps on this chain</div>${projects}`;
   const related = relatedInner(c);
   const relatedAcc = related ? accordionHtml('Related chains — similar value prop & profile', related, false) : '';
-  return `<div class="detail">${head}${d&&d.risk?riskBanner(d.risk):''}${verdict}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${relatedAcc}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
+  // Prefer the row's flag (ranked snapshot); fall back to the detail payload,
+  // which recomputes it for chains outside the ranked set.
+  const dq = c.dataQuality || (d && d.dataQuality) || null;
+  return `<div class="detail">${head}${dqNote(dq)}${d&&d.risk?riskBanner(d.risk):''}${verdict}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${relatedAcc}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
 }
 
 function logoBig(c){ const slug=c.name.toLowerCase().trim().replace(/\s+/g,'-'); return `<span class="logo big" style="background:${hueFor(c.name)}">${esc(c.name[0].toUpperCase())}<img src="https://icons.llamao.fi/icons/chains/rsz_${encodeURIComponent(slug)}.jpg" alt="" onerror="this.remove()"></span>`; }
@@ -1242,6 +1334,15 @@ document.querySelectorAll('thead th').forEach(th => th.addEventListener('click',
   render();
 }));
 document.getElementById('search').addEventListener('input', (e) => { state.q = e.target.value.toLowerCase().trim(); render(); });
+
+document.getElementById('tailprofile').addEventListener('click', (e) => {
+  const back = e.target.closest('a[data-view="live"]');
+  if (!back) return;
+  e.preventDefault();
+  state.expanded = null;
+  history.pushState({}, '', '/');
+  render();
+});
 
 
 document.getElementById('rows').addEventListener('click', (e) => {
