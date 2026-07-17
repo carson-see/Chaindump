@@ -723,8 +723,15 @@ document.addEventListener('scroll', () => { if (gpAnchor) gpHide(); }, true);
 // forensic sections. Curated verdicts (dead_chains / mid_chains research) keep
 // their curated word and link to the entry; computed tiers say so honestly.
 function tierBadge(name) {
-  const t = tierMap[name];
+  let t = tierMap[name];
   if (!TIER_COMPUTED_LABEL[t]) return '';
+  // /api/tiers is cached for 45min and fetched once per page-load; the board
+  // repaints every 30s. A chain that dips off the board, gets classified, then
+  // returns would wear a stale "collapsed" badge while ranked on the live board
+  // — Linea sits at rank ~50 with a 98% drawdown, so this is one bad afternoon
+  // away from libeling Consensys. Board membership is the classifier's own
+  // first rule (TIER_CRITERIA.thriving), so trust the fresher of the two.
+  if (t !== 'thriving' && state.chains.some(c => c.name === name)) t = 'thriving';
   // Curated: this chain's tier comes from a researched case study (dead_chains /
   // mid_chains), not the classifier — say so, and link to its entry.
   if (state.curatedSet && state.curatedSet.has(name) && (t === 'dead' || t === 'mid')) {
@@ -986,16 +993,17 @@ function setTotals(t, cov) {
 let tierMap = {};
 let tiersFetched = false;
 async function loadTiers() {
-  if (tiersFetched) return; tiersFetched = true;
+  if (tiersFetched) return;
   try {
     const d = await fetch('api/tiers').then(r => r.json());
     if (d && d.tierMap) {
       tierMap = d.tierMap;
       state.tiers = { criteria: d.criteria || null };            // exact classifier rules → badge popovers
       state.curatedSet = new Set(d.curated || []);               // chains whose tier is a researched verdict
+      tiersFetched = true;                                       // only a usable payload counts as fetched
       if (state.activeView === 'live') render();
     }
-  } catch (e) { tiersFetched = false; } // allow a later retry
+  } catch (e) { /* leave tiersFetched false so the next load() retries */ }
 }
 async function load() {
   try {

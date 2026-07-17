@@ -93,6 +93,7 @@ export const SCORE_META = {
   formula: `${WEIGHTS.volume24h * 100}% 24h DEX volume + ${WEIGHTS.tvl * 100}% TVL + ${WEIGHTS.fees24h * 100}% 24h fees. Each input is log-scaled and divided by the largest value in the field, producing a raw 0-1 composite; the displayed index then rescales that composite across the chains on the board so the most active is ${INDEX_MAX} and the least active is ${INDEX_MIN}.`,
   caveat: `Measures relative activity among live tracked chains. NOT a health or quality score — a low index on a smaller chain is expected, and the index moves when other chains move.`,
   note: `The score field in this payload is the raw 0-1 composite. The displayed index is NOT score x 100: it is a min-max rescale of score across the ${BOARD_SIZE} chains on the board, to ${INDEX_MIN}-${INDEX_MAX}. Rank the score field directly rather than reconstructing the index.`,
+  inputCaveat: `The volume input to the score is DefiLlama's chain-aggregate 24h DEX volume at snapshot time. For chains on the board, the volume24h field is then refreshed from DefiLlama's per-chain DEX endpoint, so it can differ from the value the score was computed on (rarely, by a lot). Do not expect to reproduce score from the volume24h field alone.`,
 };
 
 export const TIER_CRITERIA = {

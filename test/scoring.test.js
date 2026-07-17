@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   WEIGHTS, BOARD_SIZE, INDEX_MIN, INDEX_MAX, MIGRATED,
+  DEAD_DRAWDOWN_PCT, DEAD_MIN_SPAN_DAYS, DYING_CHANGE_90D_PCT,
+  BASELINE_ABS_FLOOR, BASELINE_PEAK_FRACTION,
   scoreRows, activityIndex, baselineOk, classifyTier,
   SCORE_META, TIER_CRITERIA,
 } from '../src/lib/scoring.js';
@@ -121,17 +124,57 @@ describe('classifyTier', () => {
   });
 });
 
-// These are the guards that matter: the published prose IS a claim about the
-// code (CLAUDE.md 1.5). Every one of these caught a real live defect.
-describe('prose matches the code it describes', () => {
-  it('SCORE_META states the real weights', () => {
-    expect(SCORE_META.formula).toContain(`${WEIGHTS.volume24h * 100}% 24h DEX volume`);
-    expect(SCORE_META.formula).toContain(`${WEIGHTS.tvl * 100}% TVL`);
-    expect(SCORE_META.formula).toContain(`${WEIGHTS.fees24h * 100}% 24h fees`);
+// The guards that matter. An earlier version of this suite was TAUTOLOGICAL:
+// it asserted SCORE_META.formula contained `${WEIGHTS.volume24h*100}%`, i.e.
+// expect(x).toContain(x) — both sides read the same constant. A pre-mortem
+// mutated WEIGHTS to 70/10/20 and all 24 tests passed while the served formula
+// silently became "70% 24h DEX volume". Every assertion below is anchored to a
+// HARDCODED literal instead, so the constant, the arithmetic, and the English
+// are three independent witnesses. Changing any one alone fails the suite.
+describe('the weights are anchored, not self-referential', () => {
+  // Derive each weight from scoreRows' OUTPUT. A chain that maxes exactly one
+  // axis scores exactly that axis's weight, because the other two normalize to 0.
+  const weightOf = (axis) => {
+    const maxed = { name: 'MAX', volume24h: 1e9, tvl: 1e9, fees24h: 1e9 };
+    const only = { name: 'ONLY', volume24h: 1, tvl: 1, fees24h: 1 };
+    only[axis] = 1e9;
+    scoreRows([maxed, only]);
+    return only.score;
+  };
+
+  it('scoreRows ACTUALLY computes 50% volume / 30% TVL / 20% fees', () => {
+    expect(weightOf('volume24h')).toBeCloseTo(0.5, 4);
+    expect(weightOf('tvl')).toBeCloseTo(0.3, 4);
+    expect(weightOf('fees24h')).toBeCloseTo(0.2, 4);
   });
 
-  it('SCORE_META states the real displayed scale', () => {
-    expect(SCORE_META.scale).toBe(`${INDEX_MIN}-${INDEX_MAX}`);
+  it('the WEIGHTS constant matches what scoreRows computes', () => {
+    expect(WEIGHTS.volume24h).toBeCloseTo(weightOf('volume24h'), 4);
+    expect(WEIGHTS.tvl).toBeCloseTo(weightOf('tvl'), 4);
+    expect(WEIGHTS.fees24h).toBeCloseTo(weightOf('fees24h'), 4);
+    expect(WEIGHTS.volume24h + WEIGHTS.tvl + WEIGHTS.fees24h).toBeCloseTo(1, 6);
+  });
+
+  it('the SERVED formula states those same literal weights', () => {
+    expect(SCORE_META.formula).toContain('50% 24h DEX volume');
+    expect(SCORE_META.formula).toContain('30% TVL');
+    expect(SCORE_META.formula).toContain('20% 24h fees');
+  });
+
+  it('the board size is 50 in the constant AND in the served prose', () => {
+    expect(BOARD_SIZE).toBe(50);
+    expect(TIER_CRITERIA.thriving.rule).toContain('top 50');
+    expect(SCORE_META.note).toContain('50 chains');
+  });
+});
+
+describe('prose matches the code it describes', () => {
+  it('SCORE_META states the real displayed scale, anchored to literals', () => {
+    expect(INDEX_MIN).toBe(1);
+    expect(INDEX_MAX).toBe(100);
+    expect(SCORE_META.scale).toBe('1-100');
+    expect(activityIndex(0, 0, 1)).toBe(1);
+    expect(activityIndex(1, 0, 1)).toBe(100);
   });
 
   it('SCORE_META does not resurrect the "score x 100" claim', () => {
@@ -145,7 +188,6 @@ describe('prose matches the code it describes', () => {
   });
 
   it('TIER_CRITERIA.thriving admits the ordering — board wins over decline', () => {
-    expect(TIER_CRITERIA.thriving.rule).toContain(`top ${BOARD_SIZE}`);
     expect(TIER_CRITERIA.thriving.rule).toMatch(/never classed dead or dying/i);
   });
 
@@ -154,8 +196,15 @@ describe('prose matches the code it describes', () => {
     expect(TIER_CRITERIA.dying.rule).not.toMatch(/\$500K,? or /i);
   });
 
-  it('TIER_CRITERIA states the real thresholds', () => {
+  it('TIER_CRITERIA states the real thresholds, anchored to literals', () => {
+    expect(DYING_CHANGE_90D_PCT).toBe(-60);
+    expect(DEAD_DRAWDOWN_PCT).toBe(90);
+    expect(DEAD_MIN_SPAN_DAYS).toBe(45);
+    expect(BASELINE_ABS_FLOOR).toBe(5e5);
+    expect(BASELINE_PEAK_FRACTION).toBe(0.02);
     expect(TIER_CRITERIA.dying.rule).toContain('60%');
+    expect(TIER_CRITERIA.dying.rule).toContain('$500K');
+    expect(TIER_CRITERIA.dying.rule).toContain('2% of peak');
     expect(TIER_CRITERIA.dead.rule).toContain('90%');
     expect(TIER_CRITERIA.dead.rule).toContain('45 days');
   });
@@ -164,6 +213,32 @@ describe('prose matches the code it describes', () => {
     for (const t of ['thriving', 'mid', 'dying', 'dead']) {
       expect(TIER_CRITERIA[t]).toBeTruthy();
       expect(TIER_CRITERIA[t].rule.length).toBeGreaterThan(20);
+    }
+  });
+});
+
+// The index the USER sees is actScore() — inline in public/index.html, which
+// Vitest cannot import. scoring.js's activityIndex() had zero production
+// callers, so extracting it recreated the drift it was meant to kill, one layer
+// down. This reads the real client source and holds the two implementations
+// together. If they diverge, the served definition stops describing the UI.
+describe('the client index matches the served definition', () => {
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const src = html.match(/function actScore\(c\)\{[\s\S]*?\n\}/);
+
+  it('actScore still exists in the client (rename = update this test)', () => {
+    expect(src).toBeTruthy();
+  });
+
+  it('actScore is byte-for-byte the same arithmetic as activityIndex', () => {
+    // Rebuild actScore against a fake `state`, then compare over a grid.
+    const make = new Function('state', `${src[0]}; return actScore;`);
+    for (const board of [[0.2, 0.5, 0.9], [0.5883, 0.7, 0.991], [0.4], [0, 1]]) {
+      const client = make({ chains: board.map((score) => ({ score })) });
+      const mn = Math.min(...board), mx = Math.max(...board);
+      for (const score of board) {
+        expect(client({ score })).toBe(activityIndex(score, mn, mx));
+      }
     }
   });
 });
