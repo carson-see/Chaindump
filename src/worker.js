@@ -1211,8 +1211,13 @@ app.post('/api/desk/promote', wrap(async (req, res) => {
     const curated = (b.record && typeof b.record === 'object') ? b.record : payload;
     const plan = promotionPlan(dataset, slug, curated, sources); // throws on bad dataset / missing PK / empty
     const placeholders = plan.columns.map(() => '?').join(', ');
+    // ON CONFLICT DO UPDATE, not INSERT OR REPLACE: REPLACE deletes the whole
+    // existing row before re-inserting, so a partial curated record (a reviewer
+    // correcting just one field) would null out every column it didn't include.
+    const updateSet = plan.columns.filter((c) => c !== plan.pk).map((c) => `${c}=excluded.${c}`).join(', ');
     await ENV.DB.prepare(
-      `INSERT OR REPLACE INTO ${plan.table} (${plan.columns.join(', ')}) VALUES (${placeholders})`
+      `INSERT INTO ${plan.table} (${plan.columns.join(', ')}) VALUES (${placeholders})
+       ON CONFLICT(${plan.pk}) DO UPDATE SET ${updateSet}`
     ).bind(...plan.values).run();
     await ENV.DB.prepare(
       `UPDATE desk_proposals SET status='promoted', reviewer_note=?, reviewed_at=datetime('now') WHERE dataset=? AND slug=?`
