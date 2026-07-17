@@ -1995,10 +1995,17 @@ Object.keys(VIEW_OG).forEach((v) => {
 app.get('/chain/:name', wrap(async (req, res) => {
   const key = String(req.params.name || '');
   if (!cache.data) cache = await loadSnapshot();
-  const row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === key.toLowerCase());
+  let row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === key.toLowerCase());
+  // Board-only lookup made every chain beyond the top-50 unfurl identically to a
+  // nonsense string — /chain/Anubis and /chain/NotARealChain shared a title and
+  // description, even though we hold a researched profile for one of them.
+  if (!row) { try { row = await resolveTailChain(key.toLowerCase()); } catch (e) { /* fall back to the generic card */ } }
   const title = row ? `${row.name} — Chaindump` : 'Chain — Chaindump';
   const desc = row
-    ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
+    ? (row.rank != null
+        ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
+        // A tail chain has no board rank — do not imply one it does not have.
+        : `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume. Outside the top-50 activity board. Metrics and research on Chaindump.`)
     : OG_DESC_FALLBACK;
   const url = `${ORIGIN}/chain/${encodeURIComponent(key)}`;
   let ld;
@@ -2007,8 +2014,9 @@ app.get('/chain/:name', wrap(async (req, res) => {
     const measured = [
       { '@type': 'PropertyValue', name: 'Total value locked (USD)', value: row.tvl },
       { '@type': 'PropertyValue', name: '24h DEX volume (USD)', value: row.volume24h },
-      { '@type': 'PropertyValue', name: 'Composite activity rank', value: row.rank },
     ];
+    // Only claim a rank when the chain actually has one.
+    if (row.rank != null) measured.push({ '@type': 'PropertyValue', name: 'Composite activity rank', value: row.rank });
     if (row.tokenPrice != null) measured.push({ '@type': 'PropertyValue', name: 'Token price (USD)', value: row.tokenPrice });
     ld = [
       { '@type': 'Dataset', '@id': url + '#dataset', name: `${row.name} on-chain metrics`, description: desc, url, isPartOf: { '@id': ORIGIN + '/#site' }, creator: { '@id': ORIGIN + '/#org' }, publisher: { '@id': ORIGIN + '/#org' }, dateModified: dm, variableMeasured: measured, citation: ['https://defillama.com/', 'https://www.coingecko.com/'] },

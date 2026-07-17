@@ -113,6 +113,10 @@
   .dqwarn b { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:3px; }
   .fcorr { font-size:11px; line-height:1.55; color:var(--muted); border-left:2px solid var(--border2); padding:4px 0 4px 9px; margin:7px 0 2px; }
   .fcorr b { color:var(--muted2); display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .tailwrap { border:1px solid var(--border2); border-radius:12px; background:var(--surface2); margin:0 0 16px; overflow:hidden; }
+  .tailback { padding:10px 18px 0; font-size:12px; }
+  .tailback a { color:var(--muted2); text-decoration:none; }
+  .tailback a:hover { color:var(--accent); }
   .tchips { display:flex; flex-wrap:wrap; gap:5px; margin:0 0 12px; }
   .tchip { font-size:10px; font-weight:600; letter-spacing:.03em; text-transform:uppercase; padding:2px 7px; border-radius:11px; border:1px solid var(--border2); color:var(--muted); white-space:nowrap; }
   .tchip.cohort { color:var(--accent); border-color:rgba(122,162,247,.35); background:rgba(122,162,247,.07); }
@@ -594,6 +598,11 @@
     <div class="legend"><b>Ranked by</b> composite activity — see the “?” on the Activity column. Click any column to re-sort.</div>
   </div>
 
+  <!-- A chain beyond the top-50 has no board row to expand into. Without this,
+       /chain/Anubis silently rendered the generic board: a researched chain was
+       byte-identical to a nonsense string. -->
+  <div id="tailprofile" class="liveonly"></div>
+
   <div class="tablewrap liveonly">
     <table>
       <thead>
@@ -855,6 +864,29 @@ function marketChips(c){
   return `<div class="mkts">${a(L.dex,'DEX')}${a(L.nft,'NFT')}</div>`;
 }
 
+// Render the profile of a chain that is NOT on the board (rank > 50). render()
+// maps state.chains and emits each profile inside that map, so a tail chain had
+// no node to render into: /chain/Anubis set state.expanded, fetched the profile
+// successfully, and then dropped it on the floor while showing the plain board.
+// The API resolves tail chains from the chains_lite index, so the data is there.
+function renderTailProfile(){
+  const el = document.getElementById('tailprofile');
+  if (!el) return;
+  const name = state.expanded;
+  if (!name || state.chains.some(c => c.name === name)) { el.innerHTML = ''; return; }  // on the board: the row owns it
+  const d = state.details[name];
+  if (d === undefined) { el.innerHTML = `<div class="tailwrap"><div class="skel">Loading ${esc(name)}…</div></div>`; return; }
+  // Resolved but carries no chain row => we do not cover it. Say so plainly
+  // rather than showing the board as if the request had succeeded.
+  if (!d || !d.chain) {
+    el.innerHTML = `<div class="tailwrap"><div class="pagehead"><div class="pagetitle">${esc(name)}</div>` +
+      `<div class="gvintro">Not covered by Chaindump. It may be too small to track, or the name may not match a chain we index.</div></div>` +
+      `<div class="tailback"><a href="/" data-view="live">← Back to the top 50</a></div></div>`;
+    return;
+  }
+  el.innerHTML = `<div class="tailwrap"><div class="tailback"><a href="/" data-view="live">← Back to the top 50</a></div>${detailHtml(d.chain)}</div>`;
+}
+
 function render() {
   // load() repaints on a 30s timer, replacing every `?` anchor node. A popover
   // left open would hover over rebuilt content, describing the wrong row.
@@ -874,6 +906,7 @@ function render() {
   const rankMap = (key) => { const s=[...state.chains].sort((a,b)=>(b[key]||0)-(a[key]||0)); const m=new Map(); s.forEach((c,i)=>m.set(c.name,i+1)); return m; };
   const volR = rankMap('volume24h'), tvlR = rankMap('tvl'), feeR = rankMap('fees24h');
   const N = state.chains.length;
+  renderTailProfile();
   const tb = document.getElementById('rows');
   if (!rows.length) { tb.innerHTML = '<tr><td colspan="8" class="skel">No chains match.</td></tr>'; return; }
   tb.innerHTML = rows.map((c,i) => {
@@ -1242,6 +1275,15 @@ document.querySelectorAll('thead th').forEach(th => th.addEventListener('click',
   render();
 }));
 document.getElementById('search').addEventListener('input', (e) => { state.q = e.target.value.toLowerCase().trim(); render(); });
+
+document.getElementById('tailprofile').addEventListener('click', (e) => {
+  const back = e.target.closest('a[data-view="live"]');
+  if (!back) return;
+  e.preventDefault();
+  state.expanded = null;
+  history.pushState({}, '', '/');
+  render();
+});
 
 
 document.getElementById('rows').addEventListener('click', (e) => {
