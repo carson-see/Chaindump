@@ -329,13 +329,20 @@ async function buildSnapshot(opts = {}) {
       r.feeSource = 'aggregate';  // over-counts: 86 categories, double-counted breakdowns
       console.error(`[fees] ${r.name}: per-chain fetch failed -> keeping aggregate. reason=${fee.status === 'rejected' ? String(fee.reason && fee.reason.message).slice(0, 90) : 'total24h null'}`);
     }
+    // Provenance per FIELD, not per row: being selected for enrichment is not the
+    // same as having been enriched. A candidate whose per-chain call fails keeps
+    // the aggregate, and marking the row "enriched" regardless would republish
+    // that aggregate as though we had checked it.
     if (dex.status === 'fulfilled' && dex.value && dex.value.total24h != null) {
+      r.volumeSource = 'perChain';
       r.volume24h = Number(dex.value.total24h) || r.volume24h;
       r.volChange1d = dex.value.change_1d ?? null;
       r.volChange7d = dex.value.change_7d ?? null;
       r.volChange30d = dex.value.change_1m ?? null;
       r.volume7d = dex.value.total7d ?? null;
       r.volume30d = dex.value.total30d ?? null;
+    } else {
+      r.volumeSource = 'aggregate';   // over-counts, and reads 0 on a name mismatch
     }
     if (hist.status === 'fulfilled' && Array.isArray(hist.value) && hist.value.length) {
       const series = hist.value.slice(-30).map((p) => Number(p.tvl) || 0);
@@ -384,7 +391,10 @@ async function buildSnapshot(opts = {}) {
     r.pf = (r.tokenMcap && annFees > 0) ? +(r.tokenMcap / annFees).toFixed(1) : null;   // market cap / annualized fees
     r.feeYield = (r.tvl > 0 && annFees > 0) ? +((annFees / r.tvl) * 100).toFixed(1) : null; // % annual fee yield on TVL
     r.turnover = (r.tvl > 0) ? +(r.volume24h / r.tvl).toFixed(2) : null;                 // daily volume / TVL
-    r.feePerUser = (r.activeAddresses) ? +(r.fees24h / r.activeAddresses).toFixed(2) : null; // 24h fees per active address
+    // Guard fees the same way pf/feeYield do above. Without the annFees check a
+    // chain with fees24h = 0 published "fees per user: $0" — a measured-looking
+    // claim derived from a number we don't have.
+    r.feePerUser = (r.activeAddresses && annFees > 0) ? +(r.fees24h / r.activeAddresses).toFixed(2) : null;
 
     const flags = [];
     const s = r.tvlSpark30;
@@ -456,10 +466,21 @@ async function buildSnapshot(opts = {}) {
   // Lite index of the WHOLE universe (not just the top-50) so a direct visit to a
   // tail chain resolves to a real profile instead of a 404. Kept in a separate
   // cache key so it never bloats the /api/chains leaderboard payload.
+  // Only chains we ENRICHED have trustworthy volume/fees. Everything else holds
+  // the aggregate, which is wrong in both directions — it reads 0 for any chain
+  // the DEX/fee feeds name differently from the TVL feed (302 of 458), and
+  // over-counts elsewhere (Provenance 145x). Shipping those as numbers made 42 of
+  // 78 tail profiles publish "$0 volume" for chains that trade millions: XRPL
+  // showed $0 against a real $2.64M. This file's own linkRows comment already
+  // says it — "0 means unknown, not measured zero" — so null them and let the UI
+  // render "—", the way the Stablecoin tile already does.
   const chainsLite = rows.map((r) => ({
     key: r.key, name: r.name, symbol: r.symbol, gecko: r.gecko, chainId: r.chainId,
     category: r.category, categoryLabel: categoryLabel(r.category), coverage: coverageTier(r),
-    tvl: r.tvl, volume24h: r.volume24h, fees24h: r.fees24h, stables: r.stables,
+    tvl: r.tvl,
+    volume24h: r.volumeSource === 'perChain' ? r.volume24h : null,
+    fees24h: r.feeSource === 'perChain' ? r.fees24h : null,
+    stables: r.stables,
     activeAddresses: r.activeAddresses,
   }));
   const totals = ranked.reduce((a, r) => {
