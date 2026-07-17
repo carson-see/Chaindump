@@ -4,6 +4,7 @@ import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './li
 import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { annotateDataQuality, assessChainDataQuality } from './lib/data-quality.js';
+import { promotionPlan } from './lib/desk-promote.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 // Aliased deliberately: causes.js above exports TAG_LABELS/canonTags into this
@@ -1182,6 +1183,63 @@ app.get('/api/desk/pending', wrap(async (req, res) => {
       `SELECT id, dataset, slug, title, summary, names_individuals, confidence, needs_human_review, status, queued_at
        FROM desk_proposals WHERE status = ? ORDER BY queued_at DESC LIMIT 100`, [status]);
     res.json({ status, count: rows.length, proposals: rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+}));
+
+// Human-in-the-loop: promote a reviewed proposal into its live table. INJECTION-SAFE —
+// table + column names come only from the PROMOTABLE whitelist (never the proposal);
+// every value is bound. Marks the proposal status='promoted'.
+app.post('/api/desk/promote', wrap(async (req, res) => {
+  if (!deskAuth(req, res)) return;
+  if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
+  let b; try { b = await req.raw.json(); } catch (e) { return res.status(400).json({ error: 'invalid JSON body' }); }
+  const dataset = String(b.dataset || '').trim();
+  const slug = String(b.slug || '').trim();
+  if (!dataset || !slug) return res.status(400).json({ error: 'dataset and slug are required' });
+  try {
+    const row = await ENV.DB.prepare(
+      `SELECT dataset, slug, payload, sources, status FROM desk_proposals WHERE dataset = ? AND slug = ?`
+    ).bind(dataset, slug).first();
+    if (!row) return res.status(404).json({ error: 'proposal not found' });
+    if (row.status === 'promoted') return res.status(409).json({ error: 'proposal already promoted' });
+    let payload = {}, sources = null;
+    try { payload = row.payload ? JSON.parse(row.payload) : {}; } catch (e) {}
+    try { sources = row.sources ? JSON.parse(row.sources) : null; } catch (e) {}
+    // The desk's stored payload is free-form research and rarely matches the target
+    // columns 1:1. The reviewer curates the finding into the live schema and sends it
+    // as `record`; fall back to the raw payload only if no curated record is given.
+    const curated = (b.record && typeof b.record === 'object') ? b.record : payload;
+    const plan = promotionPlan(dataset, slug, curated, sources); // throws on bad dataset / missing PK / empty
+    const placeholders = plan.columns.map(() => '?').join(', ');
+    // ON CONFLICT DO UPDATE, not INSERT OR REPLACE: REPLACE deletes the whole
+    // existing row before re-inserting, so a partial curated record (a reviewer
+    // correcting just one field) would null out every column it didn't include.
+    const updateSet = plan.columns.filter((c) => c !== plan.pk).map((c) => `${c}=excluded.${c}`).join(', ');
+    await ENV.DB.prepare(
+      `INSERT INTO ${plan.table} (${plan.columns.join(', ')}) VALUES (${placeholders})
+       ON CONFLICT(${plan.pk}) DO UPDATE SET ${updateSet}`
+    ).bind(...plan.values).run();
+    await ENV.DB.prepare(
+      `UPDATE desk_proposals SET status='promoted', reviewer_note=?, reviewed_at=datetime('now') WHERE dataset=? AND slug=?`
+    ).bind(b.reviewer_note || null, dataset, slug).run();
+    res.json({ ok: true, promoted: { dataset, slug, table: plan.table, columns: plan.columns.length } });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+}));
+
+// Human-in-the-loop: reject a proposal (won't touch live tables).
+app.post('/api/desk/reject', wrap(async (req, res) => {
+  if (!deskAuth(req, res)) return;
+  if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
+  let b; try { b = await req.raw.json(); } catch (e) { return res.status(400).json({ error: 'invalid JSON body' }); }
+  const dataset = String(b.dataset || '').trim();
+  const slug = String(b.slug || '').trim();
+  if (!dataset || !slug) return res.status(400).json({ error: 'dataset and slug are required' });
+  try {
+    const r = await ENV.DB.prepare(
+      `UPDATE desk_proposals SET status='rejected', reviewer_note=?, reviewed_at=datetime('now')
+       WHERE dataset=? AND slug=? AND status != 'promoted'`
+    ).bind(b.reviewer_note || null, dataset, slug).run();
+    res.json({ ok: true, rejected: { dataset, slug }, changed: r.meta?.changes ?? null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 }));
 
