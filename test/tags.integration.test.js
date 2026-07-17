@@ -170,6 +170,23 @@ describe('chain tags on /api/chain/:name', () => {
     expect(body.tags.cohort).toBe('top-50');
   });
 
+  it('reads the status values that actually exist, not invented ones', async () => {
+    // PRELAUNCH_STATUS once contained 'pre-launch', which matches ZERO of the 130
+    // real rows — the same invented-schema defect as identity.tier, shipped in the
+    // very commit that called identity.tier out. The only real values are
+    // 'anticipated' (6), 'emerging' (8) and 'declining' (1). This row carries the
+    // status and NO cohort tag, so status is the only thing that can decide it.
+    const statusOnly = { chain: 'Miden', status: 'anticipated', launched: null, tags: ['privacy', 'zk'] };
+    const body = await get('Miden', [identity('Miden', statusOnly)]);
+    expect(body.tags.cohort).toBe('anticipated');
+  });
+
+  it('does not treat "emerging" as pre-launch — it tags Bittensor, which launched in 2021', async () => {
+    const emerging = { chain: 'Scroll', status: 'emerging', founded: '2021', tags: ['l2'] };
+    const body = await get('Scroll', [identity('Scroll', emerging)]);
+    expect(body.tags.cohort).not.toBe('anticipated');
+  });
+
   it('keeps a genuinely pre-launch chain anticipated', async () => {
     const body = await get('Miden', [identity('Miden', REAL.Miden)]);
     expect(body.tags.cohort).toBe('anticipated');

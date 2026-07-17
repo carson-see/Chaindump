@@ -169,7 +169,7 @@ describe('a chain we researched always resolves', () => {
     expect(body.chain.name).toBe('Karak');
     expect(body.chain.tvl).toBeNull();          // never 0 — we have no market feed for it
     expect(body.chain.volume24h).toBeNull();
-    expect(body.chain.marketData).toBe(false);
+    expect(body.chain.fees24h).toBeNull();
     expect(body.facts.synthesis).toBeTruthy();  // ...but the research is there
   });
 

@@ -388,7 +388,11 @@ async function buildSnapshot(opts = {}) {
 
   // --- derived fundamental ratios + anomaly flags (objective signal) ---
   for (const r of top) {
-    const annFees = r.fees24h ? r.fees24h * 365 : 0;
+    // Only fees we stand behind feed the ratios. A ratio derived from the
+    // over-counted aggregate is a published number with no source — Provenance's
+    // fee yield was 309,007% on exactly this path.
+    const feesOk = r.feeSource === 'perChain' ? r.fees24h : null;
+    const annFees = feesOk ? feesOk * 365 : 0;
     r.pf = (r.tokenMcap && annFees > 0) ? +(r.tokenMcap / annFees).toFixed(1) : null;   // market cap / annualized fees
     // Keep precision below 0.1%: Provenance earns $96/day on $1.5B of TVL — a
     // yield of ~0.0023% — and toFixed(1) published that as a flat 0. Same
@@ -399,7 +403,8 @@ async function buildSnapshot(opts = {}) {
     } else {
       r.feeYield = null;
     }
-    r.turnover = (r.tvl > 0) ? +(r.volume24h / r.tvl).toFixed(2) : null;                 // daily volume / TVL
+    const volOk = r.volumeSource === 'perChain' ? r.volume24h : null;
+    r.turnover = (r.tvl > 0 && volOk != null) ? +(volOk / r.tvl).toFixed(2) : null;      // daily volume / TVL
     // Guard fees the same way pf/feeYield do above. Without the annFees check a
     // chain with fees24h = 0 published "fees per user: $0" — a measured-looking
     // claim derived from a number we don't have.
@@ -409,7 +414,7 @@ async function buildSnapshot(opts = {}) {
     // "$0". Users pay a third of a cent; printing zero is not a rounding nicety,
     // it is a different claim.
     if (r.activeAddresses && annFees > 0) {
-      const per = r.fees24h / r.activeAddresses;
+      const per = feesOk / r.activeAddresses;
       r.feePerUser = +per.toFixed(per < 0.01 ? 4 : 2);
     } else {
       r.feePerUser = null;
@@ -479,9 +484,33 @@ async function buildSnapshot(opts = {}) {
   // Per-row provenance already tells us — refuse the build and let /api/chains
   // serve the last good board, marked stale.
   const enrichedRows = top.filter((r) => r.volumeSource === 'perChain' || r.feeSource === 'perChain').length;
-  if (top.length && enrichedRows === 0) throw new Error(`per-chain enrichment unavailable for all ${top.length} board chains (every row would carry the over-counted aggregate)`);
+  const allAggregate = top.length > 0 && enrichedRows === 0;
+  // opts.allowDegraded: the cron says NO (refuse, never persist, last-good
+  // stands); the request path says YES (a board marked degraded beats a 502 on a
+  // cold isolate when D1 is also unreachable). The refusal is about PERSISTING,
+  // not about existing.
+  if (allAggregate && !opts.allowDegraded) {
+    throw new Error(`per-chain enrichment unavailable for all ${top.length} board chains (every row would carry the over-counted aggregate)`);
+  }
 
-  const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
+  // The headline board must be as honest as the tail index. chainsLite already
+  // nulls a field whose per-chain call failed; `ranked` spread the same aggregate
+  // through as a live number, so the profile of a tail chain told the truth while
+  // the board did not. TLA found the 1-of-50 trace: one enriched row clears the
+  // all-aggregate guard, and the other 49 publish aggregates as measurements.
+  const ranked = top.map((r, i) => ({
+    rank: i + 1,
+    ...r,
+    volume24h: r.volumeSource === 'perChain' ? r.volume24h : null,
+    fees24h: r.feeSource === 'perChain' ? r.fees24h : null,
+    links: LINKS[norm(r.name)] || null,
+  }));
+  // Disclose the coverage rather than leaving it implicit in 50 per-row stamps.
+  const coverage = {
+    board: ranked.length,
+    volumePerChain: top.filter((r) => r.volumeSource === 'perChain').length,
+    feesPerChain: top.filter((r) => r.feeSource === 'perChain').length,
+  };
 
   // --- chain linking: bake a value-prop category + related peers onto each row ---
   // Peers are drawn from the enriched top-50 (so every peer resolves in this blob)
@@ -533,6 +562,10 @@ async function buildSnapshot(opts = {}) {
   return {
     schemaVersion: 2,
     updatedAt: new Date().toISOString(),
+    coverage,
+    // Built anyway because a last-good board was unreachable. Every figure the
+    // per-chain feeds could not confirm is already null; this says so at the top.
+    ...(allAggregate ? { degraded: true, degradedReason: 'per-chain enrichment was unavailable for every board chain; volume and fee figures are withheld rather than shown from the over-counted aggregate' } : {}),
     count: ranked.length,
     usersCoverage,
     totals,
@@ -603,9 +636,10 @@ async function deskOnlyChain(target) {
       symbol: null, gecko: null, chainId: null,
       category: resolveCategory(name, null),
       // No market feed covers this chain. null, never 0 — 0 is a measurement.
+      // (marketData/coverage:'research-only' were dead: written here, read by
+      // nothing, and 'research-only' leaked a third value into coverage's
+      // fixed 'full'|'basic' vocabulary via related.peers[].coverage.)
       tvl: null, volume24h: null, fees24h: null, stables: null, activeAddresses: null,
-      coverage: 'research-only',
-      marketData: false,
     };
   } catch (e) { return null; }
 }
@@ -629,6 +663,15 @@ async function resolveTailChain(target) {
   let row = Array.isArray(lite) ? lite.find((c) => norm(c.name) === key) : null;
   if (!row) row = await deskOnlyChain(target);
   if (!row) return null;
+  // Tail rows are never annotated by buildSnapshot (it only sees the board), so
+  // annotate here — the one place they are constructed. Every consumer then reads
+  // row.dataQuality instead of recomputing it per surface.
+  if (row.tvl != null && !row.dataQuality) {
+    try {
+      const dq = assessChainDataQuality(row.name, await getProtocols(), { displayedTvl: row.tvl });
+      if (dq && dq.autoPublish !== false) row.dataQuality = dq;
+    } catch (e) { /* best-effort — a missing caveat is bad, a 500 is worse */ }
+  }
   const top = (cache.data && cache.data.chains) || [];
   const linkRows = [row, ...top].map((r) => ({
     key: r.key || norm(r.name), name: r.name, category: r.category, coverage: r.coverage || 'basic',
@@ -652,17 +695,26 @@ async function loadSnapshot() {
     // Retry once before falling through to a live build: a single D1 hiccup was
     // enough to send a cold isolate into buildSnapshot, which can throw and 502
     // while a perfectly good row sits in the table.
+    let row = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const row = await ENV.DB.prepare(`SELECT data, updated_at FROM snapshot_cache WHERE key='chains'`).first();
-        if (row && row.data) return { data: JSON.parse(row.data), ts: row.updated_at };
-        break;   // no row at all — a build is the right answer
+        row = await ENV.DB.prepare(`SELECT data, updated_at FROM snapshot_cache WHERE key='chains'`).first();
+        break;
       } catch (e) {
         if (attempt) console.error('[loadSnapshot] D1 read failed twice:', e.message);
       }
     }
+    // Parse OUTSIDE the retry: a corrupt row is not a D1 hiccup, and retrying the
+    // identical read failed identically while logging "D1 read failed twice".
+    if (row && row.data) {
+      try {
+        return { data: JSON.parse(row.data), ts: row.updated_at };
+      } catch (e) {
+        console.error('[loadSnapshot] snapshot row is not valid JSON — rebuilding:', e.message);
+      }
+    }
   }
-  const data = await buildSnapshot();
+  const data = await buildSnapshot({ allowDegraded: true });   // serving beats 502ing; the cron still refuses to persist one
   const ts = Date.now();
   let blob;
   if (ENV.DB) blob = await persistSnapshot(ENV.DB, data, ts);
@@ -733,10 +785,15 @@ app.get('/api/chains', wrap(async (req, res) => {
     // `stale: true` it promised never appeared.
     const ageMs = Date.now() - cache.ts;
     const stale = ageMs > MAX_SNAPSHOT_AGE_MS;
-    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: ageMs, ...(stale ? { stale: true, staleReason: `snapshot is ${Math.round(ageMs / 60000)} minutes old; the refresh has not produced a usable board` } : {}) });
+    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: ageMs, ...(stale ? { stale: true, staleReason: `snapshot is ${Math.round(ageMs / 60000)} minutes old; the refresh has not produced a usable board`, error: `snapshot is ${Math.round(ageMs / 60000)} minutes old; the refresh has not produced a usable board` } : {}) });
   } catch (e) {
     console.error('snapshot error:', e.message);
-    if (cache.data) return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, error: e.message });
+    if (cache.data) {
+      // Carry BOTH keys: the age path sets staleReason and the client reads
+      // `error`, so an age-based stale banner rendered with an empty reason.
+      const ageMs = Date.now() - cache.ts;
+      return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, cachedAgeMs: ageMs, staleReason: e.message, error: e.message });
+    }
     res.status(502).json({ error: 'Failed to fetch chain data: ' + e.message });
   }
 }));
@@ -1172,7 +1229,13 @@ async function chainFacts(chainName) {
 //   permissioned a THEME tag, not a field          (Canton: [...,'permissioned'])
 //   the launch date under one of three keys        (launched | mainnet_live | founded)
 const LAUNCH_KEYS = ['launched', 'mainnet_live', 'founded'];
-const PRELAUNCH_STATUS = new Set(['pre-launch', 'anticipated']);
+// Verified against all 130 identity rows (2026-07-17): the ONLY status values in
+// existence are 'emerging' (8), 'anticipated' (6) and 'declining' (1).
+// 'pre-launch' matched nothing — I invented it, in the same commit that called
+// out identity.tier for being invented. Values, like field names, come from the
+// data or they come from nowhere. ('emerging' is NOT pre-launch: it tags
+// Bittensor, which launched in 2021.)
+const PRELAUNCH_STATUS = new Set(['anticipated']);
 function launchDateOf(identity) {
   for (const k of LAUNCH_KEYS) {
     const v = identity[k];
@@ -2204,13 +2267,14 @@ app.get('/chain/:name', wrap(async (req, res) => {
   // publishing exactly that number, uncaveated, to every unfurl and every
   // crawler. Recompute the rule here rather than trust the row: a tail chain is
   // never annotated by the snapshot.
-  let dq = row && row.dataQuality ? row.dataQuality : null;
-  if (row && !dq && row.tvl != null) {
-    try {
-      const d = assessChainDataQuality(row.name, await getProtocols(), { displayedTvl: row.tvl });
-      if (d && d.autoPublish !== false) dq = d;
-    } catch (e) { /* best-effort: a missing caveat is bad, a 500 on the card is worse */ }
-  }
+  // The caveat lives ON the row: buildSnapshot annotates board rows and
+  // resolveTailChain annotates tail rows, so every surface reads one value.
+  // Recomputing it here re-scanned all 7,867 protocols (an 8MB fetch, ~30MB heap)
+  // for every CLEAN board row — a clean row carries no dataQuality, so `!dq` is
+  // indistinguishable from "assessed and fine". That is the exact regression
+  // /api/chain/:name documents fixing, reintroduced one route over, on the
+  // crawler-facing path where cold isolates are most likely.
+  const dq = row && row.dataQuality ? row.dataQuality : null;
   const caveat = dq ? ' Chaindump cannot independently verify this TVL figure.' : '';
   // Quote only the figures we actually have. fmtShort coerces null to 0, so
   // building this string unconditionally published "$0 24h volume" for every

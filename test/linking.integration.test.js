@@ -346,14 +346,40 @@ describe('provenance stamps tell the truth', () => {
 // TLA modelled the snapshot lifecycle and found three reachable violations. Each
 // of these is a counterexample trace from that model, turned into a test.
 describe('the snapshot lifecycle tells the truth about itself', () => {
-  it('refuses a build where every row fell back to the aggregate', async () => {
-    // Global feeds healthy, per-chain endpoints all dead: feedIsDegenerate cannot
-    // see this, and the board would silently carry 50 over-counted rows.
+  it('serves an all-aggregate board MARKED degraded rather than 502ing', async () => {
+    // "May I persist this" and "may I serve this" are different questions. The
+    // cron refuses (next test); the request path — which only reaches a build on a
+    // cold isolate with no usable D1 row — serves it marked, because TLA found the
+    // throw could 502 a fresh isolate while D1 held a perfectly good board.
     stubFeed({ perChain: {} });   // no per-chain endpoint answers
     const worker = await freshWorker();
     const res = await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx());
-    expect(res.status).toBe(502);
-    expect((await res.json()).error).toMatch(/per-chain enrichment unavailable/i);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.degraded).toBe(true);
+    expect(body.degradedReason).toMatch(/withheld/i);
+    // ...and every figure it could not confirm is withheld, not shown from the
+    // over-counted aggregate.
+    for (const c of body.chains) {
+      expect(c.volume24h).toBeNull();
+      expect(c.fees24h).toBeNull();
+      expect(c.feeYield).toBeNull();
+      expect(c.pf).toBeNull();
+    }
+    expect(body.coverage.volumePerChain).toBe(0);
+  });
+
+  it('discloses how much of the board is authoritative', async () => {
+    stubFeed({ perChain: { Ethereum: 1 } });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    expect(body.degraded).toBeUndefined();               // not all-aggregate
+    expect(body.coverage.feesPerChain).toBe(1);          // ...but only one row is real
+    expect(body.coverage.board).toBe(body.chains.length);
+    // The board is now as honest as the tail index: rows we could not confirm
+    // withhold the figure instead of publishing the aggregate.
+    const other = body.chains.find((c) => c.name !== 'Ethereum');
+    if (other) expect(other.fees24h).toBeNull();
   });
 
   it('marks an aging snapshot stale even though nothing threw', async () => {
@@ -429,5 +455,33 @@ describe('a refused board does not take the cron down with it', () => {
     await mod.default.scheduled({}, { DB: db }, ctx());
     expect(db._store.chains).toBeTruthy();
     expect(JSON.parse(db._store.chains).chains.length).toBeGreaterThan(0);
+  });
+});
+
+// feeYield publishes a NUMBER, and the whole point of this work is false zeros —
+// it shipped without a test. feePerUser's equivalent already exists above.
+describe('feeYield never publishes a false zero', () => {
+  it('keeps sub-cent precision instead of rounding a real yield to 0', async () => {
+    // Provenance's real shape: $96/day of fees against $1.5B of TVL = ~0.0023%.
+    // toFixed(1) published that as a flat 0.
+    stubFeed({
+      universe: [{ name: 'Ethereum', tvl: 1.5e9, tokenSymbol: 'ETH', gecko_id: 'ethereum', chainId: 1 }],
+      volume: { Ethereum: 1e6 },
+      feeMap: { Ethereum: 96 },
+      perChain: { Ethereum: 96 },
+    });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    const eth = body.chains.find((c) => c.name === 'Ethereum');
+    expect(eth.fees24h).toBe(96);
+    expect(eth.feeYield).not.toBe(0);        // the bug
+    expect(eth.feeYield).toBeGreaterThan(0);
+  });
+
+  it('publishes no yield at all when there are no fees', async () => {
+    stubFeed({ feeMap: { SomeOtherChain: 1 }, perChain: { Ethereum: 1 } });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    for (const c of body.chains) if (!c.fees24h) expect(c.feeYield).toBeNull();
   });
 });
