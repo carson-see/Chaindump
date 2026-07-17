@@ -1043,8 +1043,28 @@ document.getElementById('rows').addEventListener('click', (e) => {
 });
 
 // ---- view switching (Live / Mid / Graveyard) ----
+// Views switched OFF while we focus the product on what users actually value:
+// the Top 50, Dead & Dying, Stuck/Mid, and the analysis. Nothing is deleted —
+// the routes, renderers and data all still exist. Remove a slug from this set to
+// bring a section back.
+const DISABLED_VIEWS = new Set(['traces', 'infra', 'geo', 'uspolicy', 'power', 'news']);
+const isEnabledView = (v) => !DISABLED_VIEWS.has(v);
+// Hide the nav entries, then any group heading left with nothing under it.
+function applyViewGating(){
+  document.querySelectorAll('.tab[data-view]').forEach((t) => { if (DISABLED_VIEWS.has(t.dataset.view)) t.hidden = true; });
+  document.querySelectorAll('.navgroup-h').forEach((h) => {
+    let n = h.nextElementSibling, any = false;
+    while (n && !n.classList.contains('navgroup-h')) {
+      if (n.classList.contains('tab') && !n.hidden) any = true;
+      n = n.nextElementSibling;
+    }
+    h.hidden = !any;
+  });
+}
 let graveLoaded = false, midLoaded = false, nftLoaded = false, infraLoaded = false, marketsLoaded = false, stablesLoaded = false, geoLoaded = false, rwaLoaded = false, usLoaded = false, newsLoaded = false, powerLoaded = false, tracesLoaded = false;
 function switchView(view, push){
+  // a deep-link to a disabled section falls back to the board rather than 404ing
+  if (!isEnabledView(view)) view = 'live';
   state.activeView = view;
   if (push !== false) { const path = view === 'live' ? '/' : '/' + view; if (location.pathname !== path) history.pushState({ view }, '', path); }
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
@@ -1076,12 +1096,14 @@ function switchView(view, push){
   if (view === 'geo' && !geoLoaded) loadGeo();
   if (view === 'uspolicy' && !usLoaded) loadUs();
 }
+applyViewGating();
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
 
 // ---- ⌘K command palette ----
 const cmdk = { open:false, items:[], filtered:[], sel:0 };
 function cmdkBuild(){
-  const views = [...document.querySelectorAll('.tab')].map(t => ({ type:'view', id:t.dataset.view, label:t.textContent.trim(), cat:'Views' }));
+  // disabled sections must not surface in search either
+  const views = [...document.querySelectorAll('.tab')].filter(t => isEnabledView(t.dataset.view)).map(t => ({ type:'view', id:t.dataset.view, label:t.textContent.trim(), cat:'Views' }));
   const chains = (state.chains||[]).map(c => ({ type:'chain', id:c.name, label:c.name + (c.symbol?' · '+c.symbol:''), cat:'Chains' }));
   cmdk.items = [...views, ...chains];
 }
