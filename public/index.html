@@ -279,14 +279,6 @@
   .peername { font-weight:600; font-size:13.5px; white-space:nowrap; }
   .peername::after { content:' ↗'; color:var(--muted); font-weight:400; }
   .peerreason { font-size:11.5px; color:var(--muted); text-align:right; }
-  .notable { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:0 0 14px; }
-  .notable:empty { display:none; }
-  .nlabel { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--yellow); margin-right:2px; }
-  .nchip { font-size:11px; padding:2px 8px; border-radius:14px; border:1px solid var(--border2); cursor:pointer; white-space:nowrap; transition:border-color .15s; }
-  .nchip b { font-weight:600; }
-  .nchip.up { color:var(--green); background:rgba(78,201,163,.07); border-color:rgba(78,201,163,.25); }
-  .nchip.down { color:var(--red); background:rgba(224,106,106,.07); border-color:rgba(224,106,106,.25); }
-  .nchip:hover { border-color:var(--accent); }
   .tabs { position:fixed; left:0; top:0; bottom:0; width:212px; display:flex; flex-direction:column; align-items:stretch; gap:1px; padding:16px 12px; border-right:1px solid var(--border); background:var(--surface); overflow-y:auto; z-index:30; scrollbar-width:thin; }
   .navbrand { font-size:15px; font-weight:800; letter-spacing:-.02em; padding:4px 8px 2px; color:var(--text); }
   .navtag { font-size:10px; color:var(--muted); padding:0 8px 12px; letter-spacing:.02em; }
@@ -539,8 +531,6 @@
     <div class="card"><div class="label">Stablecoin Mcap</div><div class="val f" id="c-stbl">—</div></div>
   </div>
 
-  <div id="notable" class="notable liveonly"></div>
-
   <div class="toolbar liveonly">
     <input class="search" id="search" placeholder="Search chains…" />
     <div class="legend"><b>Ranked by</b> composite activity (50% volume · 30% TVL · 20% fees). Click any column to re-sort.</div>
@@ -708,17 +698,6 @@ function render() {
 function stat(label, val){ return `<div class="stat"><div class="sl">${label}</div><div class="sv">${val}</div></div>`; }
 function statH(label, val, hint){ return `<div class="stat" title="${esc(hint)}"><div class="sl">${label} <span class="qm">?</span></div><div class="sv">${val}</div></div>`; }
 
-function renderNotable(){
-  const el = document.getElementById('notable');
-  if (!el) return;
-  const items = [];
-  state.chains.forEach(c => (c.flags||[]).forEach(f => items.push({ name:c.name, label:f.label, sev:f.sev })));
-  if (!items.length) { el.innerHTML = ''; return; }
-  items.sort((a,b)=> (a.sev==='down'?-1:1) - (b.sev==='down'?-1:1));
-  el.innerHTML = `<span class="nlabel">⚡ Notable moves</span>` +
-    items.map(it => `<span class="nchip ${it.sev}" data-name="${esc(it.name)}"><b>${esc(it.name)}</b> ${esc(it.label)}</span>`).join('');
-}
-
 function momentumText(c){
   const v = c.volChange30d, t = c.tvlChange30d;
   if (v == null && t == null) return '';
@@ -875,7 +854,6 @@ async function load() {
     state.chains = d.chains || [];
     setTotals(d.totals || {}, d.usersCoverage || 0);
     render();
-    renderNotable();
     loadTiers(); // non-blocking: badges appear when tiers resolve
     document.getElementById('err').innerHTML = d.stale ? `<div class="err">Showing cached data — live refresh failed: ${esc(d.error||'')}</div>` : '';
     document.getElementById('status').textContent = 'updated ' + new Date(d.updatedAt).toLocaleTimeString();
@@ -892,15 +870,6 @@ document.querySelectorAll('thead th').forEach(th => th.addEventListener('click',
   render();
 }));
 document.getElementById('search').addEventListener('input', (e) => { state.q = e.target.value.toLowerCase().trim(); render(); });
-
-document.getElementById('notable').addEventListener('click', (e) => {
-  const chip = e.target.closest('.nchip');
-  if (!chip) return;
-  const name = chip.dataset.name;
-  state.expanded = name; loadDetail(name);
-  const row = document.querySelector(`tr.crow[data-name="${CSS.escape(name)}"]`);
-  if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-});
 
 document.getElementById('rows').addEventListener('click', (e) => {
   if (e.target.closest('a')) return; // let market links open normally
@@ -920,8 +889,28 @@ document.getElementById('rows').addEventListener('click', (e) => {
 });
 
 // ---- view switching (Live / Mid / Graveyard) ----
+// Views switched OFF while we focus the product on what users actually value:
+// the Top 50, Dead & Dying, Stuck/Mid, and the analysis. Nothing is deleted —
+// the routes, renderers and data all still exist. Remove a slug from this set to
+// bring a section back.
+const DISABLED_VIEWS = new Set(['traces', 'infra', 'geo', 'uspolicy', 'power', 'news']);
+const isEnabledView = (v) => !DISABLED_VIEWS.has(v);
+// Hide the nav entries, then any group heading left with nothing under it.
+function applyViewGating(){
+  document.querySelectorAll('.tab[data-view]').forEach((t) => { if (DISABLED_VIEWS.has(t.dataset.view)) t.hidden = true; });
+  document.querySelectorAll('.navgroup-h').forEach((h) => {
+    let n = h.nextElementSibling, any = false;
+    while (n && !n.classList.contains('navgroup-h')) {
+      if (n.classList.contains('tab') && !n.hidden) any = true;
+      n = n.nextElementSibling;
+    }
+    h.hidden = !any;
+  });
+}
 let graveLoaded = false, midLoaded = false, nftLoaded = false, infraLoaded = false, marketsLoaded = false, stablesLoaded = false, geoLoaded = false, rwaLoaded = false, usLoaded = false, newsLoaded = false, powerLoaded = false, tracesLoaded = false;
 function switchView(view, push){
+  // a deep-link to a disabled section falls back to the board rather than 404ing
+  if (!isEnabledView(view)) view = 'live';
   state.activeView = view;
   if (push !== false) { const path = view === 'live' ? '/' : '/' + view; if (location.pathname !== path) history.pushState({ view }, '', path); }
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
@@ -953,12 +942,14 @@ function switchView(view, push){
   if (view === 'geo' && !geoLoaded) loadGeo();
   if (view === 'uspolicy' && !usLoaded) loadUs();
 }
+applyViewGating();
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
 
 // ---- ⌘K command palette ----
 const cmdk = { open:false, items:[], filtered:[], sel:0 };
 function cmdkBuild(){
-  const views = [...document.querySelectorAll('.tab')].map(t => ({ type:'view', id:t.dataset.view, label:t.textContent.trim(), cat:'Views' }));
+  // disabled sections must not surface in search either
+  const views = [...document.querySelectorAll('.tab')].filter(t => isEnabledView(t.dataset.view)).map(t => ({ type:'view', id:t.dataset.view, label:t.textContent.trim(), cat:'Views' }));
   const chains = (state.chains||[]).map(c => ({ type:'chain', id:c.name, label:c.name + (c.symbol?' · '+c.symbol:''), cat:'Chains' }));
   cmdk.items = [...views, ...chains];
 }
