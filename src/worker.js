@@ -8,7 +8,7 @@ import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 // Aliased deliberately: causes.js above exports TAG_LABELS/canonTags into this
 // same scope. An unaliased import would shadow the cause vocabulary silently —
 // no error, just wrong labels on the graveyard chips.
-import { cohortFor, tagVocab, canonTags as canonChainTags, isTheme as isChainTheme, isCohort as isChainCohort, themesForCategory } from './lib/tags.js';
+import { cohortFor, tagVocab, parseLaunch, canonTags as canonChainTags, isTheme as isChainTheme, isCohort as isChainCohort, themesForCategory } from './lib/tags.js';
 import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
 import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from './lib/llama.js';
 
@@ -1018,9 +1018,13 @@ const LAUNCH_KEYS = ['launched', 'mainnet_live', 'founded'];
 function launchDateOf(identity) {
   for (const k of LAUNCH_KEYS) {
     const v = identity[k];
-    // Strings only. `founded: 2021` appears as a NUMBER, and parseLaunch treats a
-    // number as epoch millis — 2021 would resolve to 1st Jan 1970.
-    if (typeof v === 'string' && /^\d{4}(-\d{2}){0,2}$/.test(v.trim())) return v.trim();
+    // Strings only: `founded: 2021` appears as a NUMBER, and parseLaunch treats a
+    // number as epoch millis, so 2021 would resolve to 1st Jan 1970. Beyond that
+    // guard, tags.js owns which date FORMATS are valid — this regex used to
+    // enumerate them a second time, so a format added there would be filtered out
+    // here before cohortFor ever saw it and the cohort would silently go null.
+    // That is the exact failure this function exists to fix.
+    if (typeof v === 'string' && parseLaunch(v) != null) return v.trim();
   }
   return null;
 }
