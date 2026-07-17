@@ -1432,7 +1432,7 @@ export function priorMetricsByChain(tierData) {
   return map;
 }
 
-export async function classifyChains(priorMetrics = priorMetricsByChain(tiersCache.data)) {
+export async function classifyChains(priorMetrics = {}) {
   const all = await fetchJson(CHAINS_URL);
   if (!Array.isArray(all)) throw new Error('chains feed unavailable');
   if (!cache.data) cache = await loadSnapshot();
@@ -1515,10 +1515,13 @@ async function curatedTierMap() {
 
 async function getTiers() {
   const now = Date.now();
-  if (!tiersCache.data) tiersCache = { ts: now, data: await classifyChains() };
+  // Pass the last cycle's own output back in as `priorMetrics` — this is what
+  // lets a failed historicalChainTvl fetch recover a chain's known peak
+  // instead of manufacturing a 0% drawdown (see classifyChains above).
+  if (!tiersCache.data) tiersCache = { ts: now, data: await classifyChains(priorMetricsByChain(tiersCache.data)) };
   else if (now - tiersCache.ts > TIERS_TTL && !tiersBuilding) {
     tiersBuilding = true;
-    classifyChains().then((d) => { tiersCache = { ts: Date.now(), data: d }; })
+    classifyChains(priorMetricsByChain(tiersCache.data)).then((d) => { tiersCache = { ts: Date.now(), data: d }; })
       .catch((e) => console.error('tiers refresh:', e.message)).finally(() => { tiersBuilding = false; });
   }
   return tiersCache.data;
