@@ -103,3 +103,45 @@ describe('capital rounds render readably, in every shape the desk writes', () =>
     expect(render(SHAPE_RAISES)).toContain('Polychain Capital');
   });
 });
+
+// The verdict must come from the rule that can retract it — not from prose.
+//
+// Two components rendered the same claim: dataQualityHtml scanned the desk's
+// free-text `data_quality` and emitted "⚠ Unverified data", while the computed
+// rule emitted "⚠ Unverified TVL". Both fired on Anubis, live. The prose has NO
+// expiry; the rule self-retracts (bridge/audit appears, figures stop
+// reconciling, chain crosses the $500M review ceiling). When the rule flips, the
+// prose would keep asserting UNVERIFIED about a named project — a stale adverse
+// claim, the exact §1.5 failure. Its whole install base was one row.
+describe('the data-quality verdict has exactly one source', () => {
+  const DQ = () => new Function([
+    'const esc = (s) => String(s).replace(/[&<>"\']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","\'":"&#39;" }[c]));',
+    grab('dataQualityHtml', 'fn'),
+  ].join('\n') + '; return dataQualityHtml;')();
+
+  it('renders the computed rule, with its reasons', () => {
+    const out = DQ()({ chain: { dataQuality: { label: 'Unverified TVL', summary: 'cannot be independently verified', reasons: ['100% of TVL sits in one protocol (X).'] } } });
+    expect(out).toContain('Unverified TVL');
+    expect(out).toContain('100% of TVL sits in one protocol');
+  });
+
+  it('does NOT render a verdict from desk prose — that channel cannot retract', () => {
+    // Anubis's real row: the rule is silent (say it retracted), the prose is not.
+    const out = DQ()({
+      chain: { /* no dataQuality: the rule has retracted */ },
+      facts: { synthesis: { data: { data_quality: 'UNVERIFIED — headline TVL is not independently corroborated' } } },
+    });
+    expect(out).toBe('');   // the stale claim does not survive the rule retracting
+  });
+
+  it('says nothing for a chain the rule cleared', () => {
+    expect(DQ()({ chain: { name: 'Ethereum' } })).toBe('');
+  });
+
+  it('escapes an agent-written label and summary', () => {
+    const out = DQ()({ chain: { dataQuality: { label: '<img src=x onerror=alert(1)>', summary: '"><script>bad()</script>', reasons: ['<b>x</b>'] } } });
+    expect(out).not.toMatch(/<img src=x/);
+    expect(out).not.toMatch(/<script>bad/);
+    expect(out).not.toMatch(/<b>x<\/b>/);
+  });
+});

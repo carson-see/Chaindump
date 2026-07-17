@@ -1214,24 +1214,38 @@ function factBlockHtml(f, label){
 // CHAIN, not one block, so it is hoisted to the top of the profile: a warning
 // buried three sections down, in whichever dimension happened to declare it, is
 // not a disclosure. Scanned across every dimension for exactly that reason.
-function dataQualityHtml(f){
-  for (const k of Object.keys(f)) {
-    const dq = f[k] && f[k].data && f[k].data.data_quality;
-    if (typeof dq === 'string' && /unverified|disputed|low confidence/i.test(dq)) {
-      return `<div class="dqwarn"><b>⚠ Unverified data</b>${esc(dq)}</div>`;
-    }
-  }
-  return '';
+// ONE verdict, from the rule that can retract it.
+//
+// This used to scan the desk's free-text `data_quality` prose and render its own
+// "⚠ Unverified data" box, while the computed rule rendered "⚠ Unverified TVL"
+// separately. Both fired on Anubis: two labels, two components, two sources for
+// one claim — the causes.js failure exactly.
+//
+// Worse than duplication: the prose is hand-written and has NO EXPIRY, while the
+// rule self-retracts (a bridge appears, an audit appears, the figures stop
+// reconciling, the chain crosses the $500M human-review ceiling). When the rule
+// flips, the prose would go on asserting UNVERIFIED about a named project with
+// nothing behind it — a stale adverse claim, which is what §1.5 exists to stop.
+// Its entire install base was ONE row, and that row is redundant with the rule.
+//
+// The desk still contributes EVIDENCE (its sources render with the block); it no
+// longer contributes a VERDICT. src/lib/data-quality.js is the sole authority.
+function dataQualityHtml(d){
+  const dq = d && d.chain && d.chain.dataQuality;
+  if (!dq || !dq.label) return '';
+  const reasons = Array.isArray(dq.reasons) && dq.reasons.length
+    ? `<ul class="evlist">${dq.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : '';
+  return `<div class="dqwarn"><b>⚠ ${esc(dq.label)}</b>${esc(dq.summary || '')}${reasons}</div>`;
 }
 
 function factsHtml(d){
   const f = d && d.facts;
-  // Tags stand alone: a chain we have not researched still has a cohort we can
-  // compute and themes we can derive, so they must not depend on facts existing.
-  if (!f) return tagChipsHtml(d);
+  // Tags and the data-quality verdict stand alone: a chain we have not researched
+  // still has a cohort we can compute and may still carry a computed caveat.
+  if (!f) return tagChipsHtml(d) + dataQualityHtml(d);
   const blocks = [
     tagChipsHtml(d),
-    dataQualityHtml(f),
+    dataQualityHtml(d),
     synthesisHtml(f.synthesis),
     ...FACT_SECTIONS.map(([k,label]) => factBlockHtml(f[k], label)),
     linksHtml(f.links),
