@@ -456,6 +456,31 @@ async function persistSnapshot(db, data, ts) {
 // Resolve a chain beyond the top-50 from the lite index, and compute its peers at
 // request time against the top-50 (every peer resolves in the main blob, so no
 // dead links). Returns a basic profile row or null. Not the hot path.
+// Read the structured dossier for a chain out of chain_facts (migration 0009).
+// Returns { dimension: { data, sources, updated_at }, ... } or null when the desk
+// hasn't covered this chain yet. Absence is a normal state, not an error — most
+// chains have no dossier, and the UI must say so rather than imply completeness.
+async function chainFacts(chainName) {
+  try {
+    const rows = await dbQuery(
+      `SELECT dimension, data, sources, updated_at FROM chain_facts WHERE chain = ?`,
+      [chainName],
+    );
+    if (!rows.length) return null;
+    const out = {};
+    for (const r of rows) {
+      let data = null, sources = null;
+      try { data = r.data ? JSON.parse(r.data) : null; } catch (e) { console.error('[chainFacts] bad data JSON', chainName, r.dimension, e.message); }
+      try { sources = r.sources ? JSON.parse(r.sources) : null; } catch (e) { console.error('[chainFacts] bad sources JSON', chainName, r.dimension, e.message); }
+      out[r.dimension] = { data, sources, updated_at: r.updated_at };
+    }
+    return out;
+  } catch (e) {
+    console.error('[chainFacts]', chainName, e.message);
+    return null;
+  }
+}
+
 async function resolveTailChain(target) {
   let lite = null;
   try { const rows = await dbQuery(`SELECT data FROM snapshot_cache WHERE key='chains_lite' LIMIT 1`); if (rows[0]?.data) lite = JSON.parse(rows[0].data); } catch (e) {}
@@ -978,7 +1003,12 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
     let risk = null;
     try { const rr = await dbQuery(`SELECT level, summary, evidence, sources FROM risk_flags WHERE entity_type='chain' AND entity_name = ? LIMIT 1`, [row.name]); if (rr[0]) risk = rr[0]; } catch (e) {}
 
-    res.json({ chain: row, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk });
+    // Structured dossier (chain_facts): one row per dimension + a _meta row with
+    // completeness/confidence/unsourced_fields. Written out-of-band by the research
+    // desk; this is the first read path. Shape: { identity:{data,sources}, ..., _meta }
+    const facts = await chainFacts(row.name);
+
+    res.json({ chain: row, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk, facts });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
