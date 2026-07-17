@@ -388,10 +388,23 @@ async function buildSnapshot(opts = {}) {
 
   // --- derived fundamental ratios + anomaly flags (objective signal) ---
   for (const r of top) {
-    const annFees = r.fees24h ? r.fees24h * 365 : 0;
+    // Only fees we stand behind feed the ratios. A ratio derived from the
+    // over-counted aggregate is a published number with no source — Provenance's
+    // fee yield was 309,007% on exactly this path.
+    const feesOk = r.feeSource === 'perChain' ? r.fees24h : null;
+    const annFees = feesOk ? feesOk * 365 : 0;
     r.pf = (r.tokenMcap && annFees > 0) ? +(r.tokenMcap / annFees).toFixed(1) : null;   // market cap / annualized fees
-    r.feeYield = (r.tvl > 0 && annFees > 0) ? +((annFees / r.tvl) * 100).toFixed(1) : null; // % annual fee yield on TVL
-    r.turnover = (r.tvl > 0) ? +(r.volume24h / r.tvl).toFixed(2) : null;                 // daily volume / TVL
+    // Keep precision below 0.1%: Provenance earns $96/day on $1.5B of TVL — a
+    // yield of ~0.0023% — and toFixed(1) published that as a flat 0. Same
+    // false-zero as feePerUser: printing 0 is a different claim from "tiny".
+    if (r.tvl > 0 && annFees > 0) {
+      const y = (annFees / r.tvl) * 100;
+      r.feeYield = +y.toFixed(y < 0.1 ? 4 : 1);
+    } else {
+      r.feeYield = null;
+    }
+    const volOk = r.volumeSource === 'perChain' ? r.volume24h : null;
+    r.turnover = (r.tvl > 0 && volOk != null) ? +(volOk / r.tvl).toFixed(2) : null;      // daily volume / TVL
     // Guard fees the same way pf/feeYield do above. Without the annFees check a
     // chain with fees24h = 0 published "fees per user: $0" — a measured-looking
     // claim derived from a number we don't have.
@@ -401,7 +414,7 @@ async function buildSnapshot(opts = {}) {
     // "$0". Users pay a third of a cent; printing zero is not a rounding nicety,
     // it is a different claim.
     if (r.activeAddresses && annFees > 0) {
-      const per = r.fees24h / r.activeAddresses;
+      const per = feesOk / r.activeAddresses;
       r.feePerUser = +per.toFixed(per < 0.01 ? 4 : 2);
     } else {
       r.feePerUser = null;
@@ -463,7 +476,41 @@ async function buildSnapshot(opts = {}) {
     console.error('[buildSnapshot] data-quality annotation skipped:', e.message);
   }
 
-  const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
+  // A board where EVERY row fell back to the aggregate is not a board — it is the
+  // per-chain enrichment having collapsed, and the aggregate is wrong in both
+  // directions (Hyperliquid $0 against a real $3.83M; Provenance 145x over).
+  // feedIsDegenerate only inspects the global maps, so it cannot see this; TLA
+  // found the trace where a fully-degraded build persists over a good snapshot.
+  // Per-row provenance already tells us — refuse the build and let /api/chains
+  // serve the last good board, marked stale.
+  const enrichedRows = top.filter((r) => r.volumeSource === 'perChain' || r.feeSource === 'perChain').length;
+  const allAggregate = top.length > 0 && enrichedRows === 0;
+  // opts.allowDegraded: the cron says NO (refuse, never persist, last-good
+  // stands); the request path says YES (a board marked degraded beats a 502 on a
+  // cold isolate when D1 is also unreachable). The refusal is about PERSISTING,
+  // not about existing.
+  if (allAggregate && !opts.allowDegraded) {
+    throw new Error(`per-chain enrichment unavailable for all ${top.length} board chains (every row would carry the over-counted aggregate)`);
+  }
+
+  // The headline board must be as honest as the tail index. chainsLite already
+  // nulls a field whose per-chain call failed; `ranked` spread the same aggregate
+  // through as a live number, so the profile of a tail chain told the truth while
+  // the board did not. TLA found the 1-of-50 trace: one enriched row clears the
+  // all-aggregate guard, and the other 49 publish aggregates as measurements.
+  const ranked = top.map((r, i) => ({
+    rank: i + 1,
+    ...r,
+    volume24h: r.volumeSource === 'perChain' ? r.volume24h : null,
+    fees24h: r.feeSource === 'perChain' ? r.fees24h : null,
+    links: LINKS[norm(r.name)] || null,
+  }));
+  // Disclose the coverage rather than leaving it implicit in 50 per-row stamps.
+  const coverage = {
+    board: ranked.length,
+    volumePerChain: top.filter((r) => r.volumeSource === 'perChain').length,
+    feesPerChain: top.filter((r) => r.feeSource === 'perChain').length,
+  };
 
   // --- chain linking: bake a value-prop category + related peers onto each row ---
   // Peers are drawn from the enriched top-50 (so every peer resolves in this blob)
@@ -515,6 +562,10 @@ async function buildSnapshot(opts = {}) {
   return {
     schemaVersion: 2,
     updatedAt: new Date().toISOString(),
+    coverage,
+    // Built anyway because a last-good board was unreachable. Every figure the
+    // per-chain feeds could not confirm is already null; this says so at the top.
+    ...(allAggregate ? { degraded: true, degradedReason: 'per-chain enrichment was unavailable for every board chain; volume and fee figures are withheld rather than shown from the over-counted aggregate' } : {}),
     count: ranked.length,
     usersCoverage,
     totals,
@@ -557,11 +608,70 @@ async function loadLiteIndex() {
   return liteCache.data;
 }
 
+// A chain the desk researched that DefiLlama does not carry. We know its name and
+// we hold a profile for it; we have no market metrics, and we say so by omitting
+// them rather than by 404ing a page we have real analysis for.
+async function deskOnlyChain(target) {
+  const key = norm(target);
+  try {
+    const rows = await dbQuery(
+      `SELECT chain FROM (
+         SELECT chain FROM chain_facts
+         UNION SELECT chain FROM dead_chains
+         UNION SELECT chain FROM mid_chains
+       ) WHERE lower(chain) = lower(?1)`,
+      [target]
+    );
+    let name = rows[0] && rows[0].chain;
+    if (!name) {
+      // norm() differences (spaces, punctuation) — scan the researched set once.
+      const all = await dbQuery(`SELECT DISTINCT chain FROM chain_facts UNION SELECT chain FROM dead_chains UNION SELECT chain FROM mid_chains`);
+      const hit = all.find((r) => r.chain && norm(r.chain) === key);
+      name = hit && hit.chain;
+    }
+    if (!name) return null;
+    return {
+      key,
+      name,
+      symbol: null, gecko: null, chainId: null,
+      category: resolveCategory(name, null),
+      // No market feed covers this chain. null, never 0 — 0 is a measurement.
+      // (marketData/coverage:'research-only' were dead: written here, read by
+      // nothing, and 'research-only' leaked a third value into coverage's
+      // fixed 'full'|'basic' vocabulary via related.peers[].coverage.)
+      tvl: null, volume24h: null, fees24h: null, stables: null, activeAddresses: null,
+    };
+  } catch (e) { return null; }
+}
+
+// Resolve a chain we hold research on but that is not on the board.
+//
+// Two ways this used to 404 on a chain the desk had actually researched:
+//   1. Raw lowercase matching, while the rest of the pipeline keys on norm().
+//      "Cosmos Hub" never matched DefiLlama's "CosmosHub".
+//   2. The chain isn't in DefiLlama's feed AT ALL (Polkadot, Karak, OKExChain),
+//      or is listed under a name only a human could map (Fuel -> "Fuel Ignition",
+//      Merlin Chain -> "Merlin", Manta Pacific -> "Manta" OR "Manta Atlantic"?).
+//      Those are ambiguous, and guessing an alias would put the WRONG chain's
+//      metrics on a researched profile — a worse error than the 404.
+// So: match on norm(), and if the market feed simply doesn't cover the chain,
+// still serve the research with no market figures rather than pretend it doesn't
+// exist. The UI already renders a missing figure as "—".
 async function resolveTailChain(target) {
   const lite = await loadLiteIndex();
-  if (!Array.isArray(lite)) return null;
-  const row = lite.find((c) => c.name.toLowerCase() === target);
+  const key = norm(target);
+  let row = Array.isArray(lite) ? lite.find((c) => norm(c.name) === key) : null;
+  if (!row) row = await deskOnlyChain(target);
   if (!row) return null;
+  // Tail rows are never annotated by buildSnapshot (it only sees the board), so
+  // annotate here — the one place they are constructed. Every consumer then reads
+  // row.dataQuality instead of recomputing it per surface.
+  if (row.tvl != null && !row.dataQuality) {
+    try {
+      const dq = assessChainDataQuality(row.name, await getProtocols(), { displayedTvl: row.tvl });
+      if (dq && dq.autoPublish !== false) row.dataQuality = dq;
+    } catch (e) { /* best-effort — a missing caveat is bad, a 500 is worse */ }
+  }
   const top = (cache.data && cache.data.chains) || [];
   const linkRows = [row, ...top].map((r) => ({
     key: r.key || norm(r.name), name: r.name, category: r.category, coverage: r.coverage || 'basic',
@@ -576,14 +686,35 @@ async function resolveTailChain(target) {
 // Read the cron-refreshed snapshot from D1 (instant, no live upstream calls on
 // the hot path). Falls back to a live build only on a cold/empty cache — and
 // best-effort primes the cache so subsequent requests don't repeat the miss.
+// A snapshot older than this is stale no matter why. The cron runs every 5
+// minutes, so 30 minutes is six missed ticks — well past a blip.
+const MAX_SNAPSHOT_AGE_MS = 30 * 60 * 1000;
+
 async function loadSnapshot() {
   if (ENV.DB) {
-    try {
-      const row = await ENV.DB.prepare(`SELECT data, updated_at FROM snapshot_cache WHERE key='chains'`).first();
-      if (row && row.data) return { data: JSON.parse(row.data), ts: row.updated_at };
-    } catch (e) { /* table may not exist yet or a D1 hiccup — fall through to a live build */ }
+    // Retry once before falling through to a live build: a single D1 hiccup was
+    // enough to send a cold isolate into buildSnapshot, which can throw and 502
+    // while a perfectly good row sits in the table.
+    let row = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        row = await ENV.DB.prepare(`SELECT data, updated_at FROM snapshot_cache WHERE key='chains'`).first();
+        break;
+      } catch (e) {
+        if (attempt) console.error('[loadSnapshot] D1 read failed twice:', e.message);
+      }
+    }
+    // Parse OUTSIDE the retry: a corrupt row is not a D1 hiccup, and retrying the
+    // identical read failed identically while logging "D1 read failed twice".
+    if (row && row.data) {
+      try {
+        return { data: JSON.parse(row.data), ts: row.updated_at };
+      } catch (e) {
+        console.error('[loadSnapshot] snapshot row is not valid JSON — rebuilding:', e.message);
+      }
+    }
   }
-  const data = await buildSnapshot();
+  const data = await buildSnapshot({ allowDegraded: true });   // serving beats 502ing; the cron still refuses to persist one
   const ts = Date.now();
   let blob;
   if (ENV.DB) blob = await persistSnapshot(ENV.DB, data, ts);
@@ -645,10 +776,24 @@ app.get('/api/chains', wrap(async (req, res) => {
     if (!cache.data || now - cache.ts > TTL) {
       cache = await loadSnapshot();
     }
-    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: Date.now() - cache.ts });
+    // Staleness is a property of AGE, not of whether an exception fired. This
+    // used to be set only in the catch below — but loadSnapshot returns whatever
+    // D1 holds without checking how old it is, and buildSnapshot only runs when
+    // there is no row at all. So when a feed died, the degenerate-feed guard
+    // correctly refused to persist and /api/chains then served the aging board
+    // forever with no marker, because nothing threw. The guard worked; the
+    // `stale: true` it promised never appeared.
+    const ageMs = Date.now() - cache.ts;
+    const stale = ageMs > MAX_SNAPSHOT_AGE_MS;
+    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: ageMs, ...(stale ? { stale: true, staleReason: `snapshot is ${Math.round(ageMs / 60000)} minutes old; the refresh has not produced a usable board`, error: `snapshot is ${Math.round(ageMs / 60000)} minutes old; the refresh has not produced a usable board` } : {}) });
   } catch (e) {
     console.error('snapshot error:', e.message);
-    if (cache.data) return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, error: e.message });
+    if (cache.data) {
+      // Carry BOTH keys: the age path sets staleReason and the client reads
+      // `error`, so an age-based stale banner rendered with an empty reason.
+      const ageMs = Date.now() - cache.ts;
+      return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, cachedAgeMs: ageMs, staleReason: e.message, error: e.message });
+    }
     res.status(502).json({ error: 'Failed to fetch chain data: ' + e.message });
   }
 }));
@@ -1084,7 +1229,13 @@ async function chainFacts(chainName) {
 //   permissioned a THEME tag, not a field          (Canton: [...,'permissioned'])
 //   the launch date under one of three keys        (launched | mainnet_live | founded)
 const LAUNCH_KEYS = ['launched', 'mainnet_live', 'founded'];
-const PRELAUNCH_STATUS = new Set(['pre-launch', 'anticipated']);
+// Verified against all 130 identity rows (2026-07-17): the ONLY status values in
+// existence are 'emerging' (8), 'anticipated' (6) and 'declining' (1).
+// 'pre-launch' matched nothing — I invented it, in the same commit that called
+// out identity.tier for being invented. Values, like field names, come from the
+// data or they come from nowhere. ('emerging' is NOT pre-launch: it tags
+// Bittensor, which launched in 2021.)
+const PRELAUNCH_STATUS = new Set(['anticipated']);
 function launchDateOf(identity) {
   for (const k of LAUNCH_KEYS) {
     const v = identity[k];
@@ -1125,7 +1276,11 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
     const target = String(req.params.name || '').toLowerCase();
-    let row = cache.data.chains.find((c) => c.name.toLowerCase() === target);
+    // norm() here too, or an alias skips the board and lands in the tail path:
+    // /chain/Binance published "Outside the top-50 activity board" for BSC (rank
+    // #4), /chain/Ethereum%20L1 denied the rank of the #1 chain, and /chain/BSC
+    // said "Rank #4" — two indexed URLs, contradictory claims, same chain.
+    let row = cache.data.chains.find((c) => norm(c.name) === norm(target));
     if (!row) { row = await resolveTailChain(target); } // beyond the top-50 → lite index
     if (!row) return res.status(404).json({ error: 'unknown chain' });
 
@@ -2105,26 +2260,64 @@ Object.keys(VIEW_OG).forEach((v) => {
 app.get('/chain/:name', wrap(async (req, res) => {
   const key = String(req.params.name || '');
   if (!cache.data) cache = await loadSnapshot();
-  let row = (cache.data.chains || []).find((c) => c.name.toLowerCase() === key.toLowerCase());
+  let row = (cache.data.chains || []).find((c) => norm(c.name) === norm(key));   // see /api/chain/:name — an alias must not skip the board
   // Board-only lookup made every chain beyond the top-50 unfurl identically to a
   // nonsense string — /chain/Anubis and /chain/NotARealChain shared a title and
   // description, even though we hold a researched profile for one of them.
   if (!row) { try { row = await resolveTailChain(key.toLowerCase()); } catch (e) { /* fall back to the generic card */ } }
+  // A caveat that only exists inside the page cannot ride on a social card or into
+  // a crawler's structured data. Anubis's own desk row says the headline number
+  // "should not be presented to users without a caveat" — and this route was
+  // publishing exactly that number, uncaveated, to every unfurl and every
+  // crawler. Recompute the rule here rather than trust the row: a tail chain is
+  // never annotated by the snapshot.
+  // The caveat lives ON the row: buildSnapshot annotates board rows and
+  // resolveTailChain annotates tail rows, so every surface reads one value.
+  // Recomputing it here re-scanned all 7,867 protocols (an 8MB fetch, ~30MB heap)
+  // for every CLEAN board row — a clean row carries no dataQuality, so `!dq` is
+  // indistinguishable from "assessed and fine". That is the exact regression
+  // /api/chain/:name documents fixing, reintroduced one route over, on the
+  // crawler-facing path where cold isolates are most likely.
+  const dq = row && row.dataQuality ? row.dataQuality : null;
+  const caveat = dq ? ' Chaindump cannot independently verify this TVL figure.' : '';
+  // Quote only the figures we actually have. fmtShort coerces null to 0, so
+  // building this string unconditionally published "$0 24h volume" for every
+  // chain we simply have no volume for — the same false zero the board and the
+  // tiles were fixed for, leaking out through the social card instead.
+  const parts = [];
+  if (row && row.tvl != null) parts.push(`$${fmtShort(row.tvl)} TVL`);
+  if (row && row.volume24h != null) parts.push(`$${fmtShort(row.volume24h)} 24h volume`);
+  const figures = !row ? ''
+    : parts.length ? `${parts.join(', ')}.`
+    // A claim about OUR coverage, not about the world. "No market data is
+    // available for this chain" is a false universal negative — Polkadot has a
+    // multi-billion-dollar market cap and a live CoinGecko price. The sharpest
+    // proof: Klaytn is Kaia renamed, so /chain/Klaytn said "no market data" while
+    // /chain/Kaia published $11.0M TVL from the same feed.
+    : 'Chaindump does not track live market data for this chain; researched analysis only.';
+
   const title = row ? `${row.name} — Chaindump` : 'Chain — Chaindump';
   const desc = row
     ? (row.rank != null
-        ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
+        ? `${row.name}: ${figures} Rank #${row.rank} by activity.${caveat} Live metrics, fundamentals and analyst take on Chaindump.`
         // A tail chain has no board rank — do not imply one it does not have.
-        : `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume. Outside the top-50 activity board. Metrics and research on Chaindump.`)
+        : `${row.name}: ${figures} Outside the top-50 activity board.${caveat} Metrics and research on Chaindump.`)
     : OG_DESC_FALLBACK;
   const url = `${ORIGIN}/chain/${encodeURIComponent(key)}`;
   let ld;
   if (row) {
     const dm = (cache.data && cache.data.updatedAt) ? new Date(cache.data.updatedAt).toISOString() : undefined;
-    const measured = [
-      { '@type': 'PropertyValue', name: 'Total value locked (USD)', value: row.tvl },
-      { '@type': 'PropertyValue', name: '24h DEX volume (USD)', value: row.volume24h },
-    ];
+    const measured = [];
+    // Omit a figure we don't have; never publish 0 as a stand-in for unknown.
+    if (row.tvl != null) {
+      measured.push({
+        '@type': 'PropertyValue',
+        name: dq ? 'Total value locked (USD) — unverified' : 'Total value locked (USD)',
+        value: row.tvl,
+        ...(dq ? { description: dq.summary } : {}),
+      });
+    }
+    if (row.volume24h != null) measured.push({ '@type': 'PropertyValue', name: '24h DEX volume (USD)', value: row.volume24h });
     // Only claim a rank when the chain actually has one.
     if (row.rank != null) measured.push({ '@type': 'PropertyValue', name: 'Composite activity rank', value: row.rank });
     if (row.tokenPrice != null) measured.push({ '@type': 'PropertyValue', name: 'Token price (USD)', value: row.tokenPrice });
@@ -2481,11 +2674,23 @@ async function handleScheduled(event, env, ctx) {
     try { const row = await env.DB.prepare(`SELECT data FROM snapshot_cache WHERE key='chains'`).first(); if (row?.data) priorData = JSON.parse(row.data); }
     catch (e) { /* first run / cold cache — no prior, peers computed verbatim */ }
   }
-  const data = await buildSnapshot({ prior: priorPeersByKey(priorData) });
+  // buildSnapshot REFUSES to return a board it cannot stand behind — a dead
+  // volume/fee feed, or every row falling back to the over-counted aggregate.
+  // That refusal must not take the rest of the cron with it: this call had no
+  // try/catch, so one transient DefiLlama rate-limit would silently skip the
+  // RWA/DePIN refresh, the OFAC sanctions update and the snapshot prune too.
+  // A refused board is the intended outcome — the last good snapshot stays, and
+  // /api/chains now reports it as stale by age.
+  let data = null;
+  try {
+    data = await buildSnapshot({ prior: priorPeersByKey(priorData) });
+  } catch (e) {
+    console.error('[cron] snapshot build refused, keeping last good:', e.message);
+  }
   const ts = Date.now();
 
   if (env.DB) {
-    const rows = data.chains || [];
+    const rows = (data && data.chains) || [];
     const stmt = env.DB.prepare(
       `INSERT INTO chain_snapshots (ts, chain, tvl, volume24h, fees24h, stables, active_addresses, token_price, token_mcap, score)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -2510,6 +2715,8 @@ async function handleScheduled(event, env, ctx) {
     if (tick % 2016 === 0) await refreshNftCatalog(env);
   }
 
+  // No board this tick: leave the cache and D1 holding the last good one.
+  if (!data) return;
   if (!env.DB) { const blob = { ...data }; delete blob.chainsLite; cache = { ts, data: blob }; return; }
   cache = { ts, data: await persistSnapshot(env.DB, data, ts) };
 }

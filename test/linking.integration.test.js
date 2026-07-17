@@ -38,10 +38,22 @@ const overviewFor = (perChain) => ({
 const VOLUME = { Ethereum: 1.1e9, Arbitrum: 1.5e8, Base: 8.3e8, Optimism: 2e7, Solana: 1.6e9 };
 const FEES = { Ethereum: 5e6, Arbitrum: 2e5, Base: 4e5, Optimism: 8e4, Solana: 3e6 };
 
-function stubFeed({ dexs = true, fees = true, universe = UNIVERSE, volume = VOLUME, feeMap = FEES, extra } = {}) {
+// perChain: which chains' PER-CHAIN endpoints answer. Default: all of them, with
+// their real figure. `{}` means none answer — which buildSnapshot now refuses,
+// because a board where every row fell back to the aggregate is not a board.
+function stubFeed({ dexs = true, fees = true, universe = UNIVERSE, volume = VOLUME, feeMap = FEES, perChain, extra } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (url) => {
     const u = String(url);
     if (u.includes('/v2/chains')) return json(universe);
+    if (u.includes('/overview/dexs/') || u.includes('/overview/fees/')) {
+      if (extra) { const r = extra(u); if (r) return r; }
+      const src = u.includes('/overview/fees/') ? feeMap : volume;
+      const map = perChain === undefined ? src : perChain;
+      for (const [chain, v] of Object.entries(map)) {
+        if (u.includes(`/${encodeURIComponent(chain)}?`)) return json({ total24h: v });
+      }
+      return new Response('', { status: 500 });
+    }
     // Match the GLOBAL overview only — the '?' is what separates
     // /overview/dexs?… from the per-chain /overview/dexs/Ethereum?… . Without it
     // the global branch swallowed every per-chain URL and handed back an overview
@@ -150,7 +162,7 @@ describe('chain-linking wiring (/api/chains)', () => {
     // Healthy upstream that happens to cover none of our chains: volume/fees fall
     // back to 0 → projected to null in the link view. (Simulating this by killing
     // the feed would now be a hard error — and rightly so; see the degraded tests.)
-    stubFeed({ volume: { SomeOtherChain: 5e8 }, feeMap: { SomeOtherChain: 1e5 } });
+    stubFeed({ volume: { SomeOtherChain: 5e8 }, feeMap: { SomeOtherChain: 1e5 }, perChain: { Ethereum: 1 } });
     const worker = await freshWorker();
     const res = await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx());
     const body = await res.json();
@@ -304,20 +316,22 @@ describe('provenance stamps tell the truth', () => {
     return null;
   };
 
-  it("stamps 'aggregate' when the per-chain call fails, and says so per field", async () => {
-    // Ethereum's per-chain endpoints 500; nothing else resolves either.
-    stubFeed();
+  it("stamps 'aggregate' on the rows whose per-chain call failed, and 'perChain' on the rest", async () => {
+    // A MIXED board is the realistic case (measured live: 4 of 95 candidates 500).
+    // An all-aggregate board can no longer be observed here at all — buildSnapshot
+    // refuses it, which is the next test.
+    stubFeed({ perChain: { Ethereum: 4242 } });
     const worker = await freshWorker();
     const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
-    for (const c of body.chains) {
-      // stubFeed 500s every per-chain URL, so every row must admit the fallback.
-      expect(c.feeSource).toBe('aggregate');
-      expect(c.volumeSource).toBe('aggregate');
+    const eth = body.chains.find((c) => c.name === 'Ethereum');
+    expect(eth.feeSource).toBe('perChain');
+    for (const c of body.chains.filter((x) => x.name !== 'Ethereum')) {
+      expect(c.feeSource).toBe('aggregate');   // honest about the fallback
     }
   });
 
   it("stamps 'perChain' only when the per-chain call actually returned", async () => {
-    stubFeed({ extra: perChainFees({ Ethereum: 4242 }) });
+    stubFeed({ perChain: { Ethereum: 4242 } });
     const worker = await freshWorker();
     const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
     const eth = body.chains.find((c) => c.name === 'Ethereum');
@@ -326,5 +340,148 @@ describe('provenance stamps tell the truth', () => {
     expect(eth.feeSource).toBe('perChain');
     const other = body.chains.find((c) => c.name !== 'Ethereum');
     if (other) expect(other.feeSource).toBe('aggregate');
+  });
+});
+
+// TLA modelled the snapshot lifecycle and found three reachable violations. Each
+// of these is a counterexample trace from that model, turned into a test.
+describe('the snapshot lifecycle tells the truth about itself', () => {
+  it('serves an all-aggregate board MARKED degraded rather than 502ing', async () => {
+    // "May I persist this" and "may I serve this" are different questions. The
+    // cron refuses (next test); the request path — which only reaches a build on a
+    // cold isolate with no usable D1 row — serves it marked, because TLA found the
+    // throw could 502 a fresh isolate while D1 held a perfectly good board.
+    stubFeed({ perChain: {} });   // no per-chain endpoint answers
+    const worker = await freshWorker();
+    const res = await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.degraded).toBe(true);
+    expect(body.degradedReason).toMatch(/withheld/i);
+    // ...and every figure it could not confirm is withheld, not shown from the
+    // over-counted aggregate.
+    for (const c of body.chains) {
+      expect(c.volume24h).toBeNull();
+      expect(c.fees24h).toBeNull();
+      expect(c.feeYield).toBeNull();
+      expect(c.pf).toBeNull();
+    }
+    expect(body.coverage.volumePerChain).toBe(0);
+  });
+
+  it('discloses how much of the board is authoritative', async () => {
+    stubFeed({ perChain: { Ethereum: 1 } });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    expect(body.degraded).toBeUndefined();               // not all-aggregate
+    expect(body.coverage.feesPerChain).toBe(1);          // ...but only one row is real
+    expect(body.coverage.board).toBe(body.chains.length);
+    // The board is now as honest as the tail index: rows we could not confirm
+    // withhold the figure instead of publishing the aggregate.
+    const other = body.chains.find((c) => c.name !== 'Ethereum');
+    if (other) expect(other.fees24h).toBeNull();
+  });
+
+  it('marks an aging snapshot stale even though nothing threw', async () => {
+    // The bug TLA found: loadSnapshot returns whatever D1 holds without checking
+    // its age, and buildSnapshot only runs when there is NO row — so a dead feed
+    // produced an aging board with no marker, because the catch never fired.
+    const old = { schemaVersion: 2, chains: [{ name: 'Ethereum', rank: 1, tvl: 1, volume24h: 1, fees24h: 1 }], updatedAt: 'old' };
+    const db = {
+      prepare: (sql) => ({
+        sql, binds: [], bind(...a) { this.binds = a; return this; },
+        async run() { return {}; },
+        // 90 minutes old — 18 missed cron ticks.
+        async first() { return sql.includes("key='chains'") ? { data: JSON.stringify(old), updated_at: Date.now() - 90 * 60000 } : null; },
+        async all() { return { results: [] }; },
+      }),
+      async batch() { return []; },
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })));
+    const worker = await freshWorker();
+    const res = await worker.fetch(new Request('http://localhost/api/chains'), { DB: db }, ctx());
+    const body = await res.json();
+    expect(res.status).toBe(200);          // last-good is still served — that part was right
+    expect(body.stale).toBe(true);         // ...and now it says so
+    expect(body.staleReason).toMatch(/minutes old/);
+  });
+
+  it('does not cry stale over a fresh snapshot', async () => {
+    stubFeed({ extra: (u) => (u.includes('/overview/fees/') || u.includes('/overview/dexs/') ? json({ total24h: 1 }) : null) });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    expect(body.stale).toBeUndefined();
+    expect(body.cachedAgeMs).toBeLessThan(60000);
+  });
+});
+
+// buildSnapshot refusing a board it cannot stand behind is the DESIGNED outcome.
+// But handleScheduled called it with no try/catch, so that refusal would have
+// aborted the whole cron — the RWA/DePIN refresh, the OFAC sanctions update and
+// the snapshot prune all silently skipped by one transient DefiLlama rate-limit.
+describe('a refused board does not take the cron down with it', () => {
+  const storeDB = (seed) => {
+    const store = { ...seed };
+    return {
+      _store: store,
+      prepare: (sql) => ({
+        sql, binds: [],
+        bind(...a) { this.binds = a; return this; },
+        async run() { const m = this.sql.match(/VALUES \('([a-z_]+)'/); if (m) store[m[1]] = this.binds[0]; return {}; },
+        async first() { const m = this.sql.match(/key='([a-z_]+)'/); return m && store[m[1]] ? { data: store[m[1]], updated_at: Date.now() } : null; },
+        async all() { return { results: [] }; },
+      }),
+      async batch() { return []; },
+    };
+  };
+
+  it('does not throw, and does not overwrite the last good snapshot', async () => {
+    const good = JSON.stringify({ schemaVersion: 2, chains: [{ name: 'Ethereum', rank: 1 }], updatedAt: 'good' });
+    const db = storeDB({ chains: good });
+    stubFeed({ perChain: {} });   // every per-chain call fails => the board is refused
+    vi.resetModules();
+    const mod = await import('../src/worker.js');
+    // The cron must complete, not reject.
+    await expect(mod.default.scheduled({}, { DB: db }, ctx())).resolves.toBeUndefined();
+    // ...and the good snapshot must survive untouched.
+    expect(db._store.chains).toBe(good);
+  });
+
+  it('persists normally when the board IS trustworthy', async () => {
+    const db = storeDB({});
+    stubFeed();   // per-chain endpoints answer by default
+    vi.resetModules();
+    const mod = await import('../src/worker.js');
+    await mod.default.scheduled({}, { DB: db }, ctx());
+    expect(db._store.chains).toBeTruthy();
+    expect(JSON.parse(db._store.chains).chains.length).toBeGreaterThan(0);
+  });
+});
+
+// feeYield publishes a NUMBER, and the whole point of this work is false zeros —
+// it shipped without a test. feePerUser's equivalent already exists above.
+describe('feeYield never publishes a false zero', () => {
+  it('keeps sub-cent precision instead of rounding a real yield to 0', async () => {
+    // Provenance's real shape: $96/day of fees against $1.5B of TVL = ~0.0023%.
+    // toFixed(1) published that as a flat 0.
+    stubFeed({
+      universe: [{ name: 'Ethereum', tvl: 1.5e9, tokenSymbol: 'ETH', gecko_id: 'ethereum', chainId: 1 }],
+      volume: { Ethereum: 1e6 },
+      feeMap: { Ethereum: 96 },
+      perChain: { Ethereum: 96 },
+    });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    const eth = body.chains.find((c) => c.name === 'Ethereum');
+    expect(eth.fees24h).toBe(96);
+    expect(eth.feeYield).not.toBe(0);        // the bug
+    expect(eth.feeYield).toBeGreaterThan(0);
+  });
+
+  it('publishes no yield at all when there are no fees', async () => {
+    stubFeed({ feeMap: { SomeOtherChain: 1 }, perChain: { Ethereum: 1 } });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    for (const c of body.chains) if (!c.fees24h) expect(c.feeYield).toBeNull();
   });
 });

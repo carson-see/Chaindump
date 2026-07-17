@@ -1126,6 +1126,50 @@ const FACT_SECTIONS = [
   ['identity','Identity'], ['capital','Capital & backers'], ['team','Team'],
   ['narrative','Narrative'], ['onchain','Onchain'], ['token','Token'], ['risk','Risk'],
 ];
+// A funding round, normalised. The desk writes rounds under three shapes — 45
+// objects as {amount_usd,date,lead,round,source_idx}, 21 as
+// {amount_usd,date,investors,lead,stage,valuation_usd}, one as
+// {amount_usd,announced,leads,participants,round,structure,valuation} — and the
+// generic renderer looked for name/claim/title, found none, and fell through to
+// JSON.stringify(). Every raise on every profile rendered as a raw JSON blob.
+// Normalising here rather than picking one shape: the rows already exist, and an
+// agent will write a fourth spelling tomorrow.
+const isRound = (x) => x && typeof x === 'object' && (x.amount_usd != null || x.valuation_usd != null || x.amount != null);
+function roundText(x){
+  const amt = x.amount_usd ?? x.amount;
+  const stage = x.round || x.stage || x.structure;
+  const when = x.date || x.announced;
+  // lead(s) may be a string or an array; investors/participants are the wider list.
+  const leadRaw = x.lead ?? x.leads;
+  const lead = Array.isArray(leadRaw) ? leadRaw.filter(Boolean).join(', ') : leadRaw;
+  const others = [].concat(x.investors || [], x.participants || [], x.angels || []).filter(Boolean);
+  const bits = [];
+  if (amt != null && isFinite(amt)) bits.push(fmtUsd(amt));
+  else if (amt) bits.push(String(amt));
+  if (stage) bits.push(String(stage));
+  if (lead) bits.push(`led by ${lead}`);
+  else if (others.length) bits.push(others.slice(0, 3).join(', ') + (others.length > 3 ? ` +${others.length - 3} more` : ''));
+  const val = x.valuation_usd ?? x.valuation;
+  if (val != null && isFinite(val)) bits.push(`at a ${fmtUsd(val)} valuation`);
+  else if (val) bits.push(`at a ${val} valuation`);
+  let line = bits.join(' — ');
+  if (when) line += ` (${when})`;
+  return line.trim();
+}
+// Rounds get their own list: a comma-joined string of six raises is unreadable,
+// and each one is a discrete cited fact.
+function roundsHtml(list){
+  const li = list.filter(isRound).map((x) => {
+    const t = roundText(x);
+    if (!t) return '';
+    // source_url is per-round provenance; safeUrl before esc, it is agent-written.
+    const cite = typeof x.source_url === 'string' && /^https?:\/\//i.test(x.source_url)
+      ? ` <a class="ecite" href="${esc(safeUrl(x.source_url))}" target="_blank" rel="noopener noreferrer">source ↗</a>` : '';
+    return `<li>${esc(t)}${cite}</li>`;
+  }).filter(Boolean).join('');
+  return li ? `<ul class="evlist">${li}</ul>` : '';
+}
+
 function factBlockHtml(f, label){
   if (!f || !f.data || typeof f.data !== 'object') return '';
   const d = f.data;
@@ -1135,19 +1179,34 @@ function factBlockHtml(f, label){
 
   const corr = typeof d._corrections === 'string'
     ? `<div class="fcorr"><b>Correction</b> ${esc(d._corrections)}</div>` : '';
-  const parts = Object.keys(d).map((k) => {
+  const rows = [];
+  for (const k of Object.keys(d)) {
     const v = d[k];
-    if (v == null || v === '' || k === 'sources' || k === 'source_idx') return '';
+    if (v == null || v === '' || k === 'sources' || k === 'source_idx' || k === '_corrections') continue;
+
+    // Funding rounds render as their own list, not as a field value.
+    if (Array.isArray(v) && v.some(isRound)) {
+      const html = roundsHtml(v);
+      if (html) rows.push(`<div class="dsub">${esc(k.replace(/_/g, ' '))}</div>${html}`);
+      continue;
+    }
+
     let txt;
-    if (k === '_corrections') return '';
     if (Array.isArray(v)) {
-      txt = v.map((x) => (x && typeof x === 'object') ? (x.name || x.claim || x.title || JSON.stringify(x)) : String(x)).filter(Boolean).join(', ');
-    } else if (typeof v === 'object') { return ''; }
+      txt = v.map((x) => (x && typeof x === 'object')
+        ? (x.name || x.claim || x.title || roundText(x) || '')   // never dump raw JSON at a reader
+        : String(x)).filter(Boolean).join(', ');
+    } else if (typeof v === 'object') { continue; }
+    else if (typeof v === 'number' && /(_usd|_uds)$/.test(k)) txt = fmtUsd(v);   // total_raised_usd etc: $200M, not 200000000
     else txt = String(v);
-    if (!txt) return '';
-    return `<div class="frow"><span class="fk">${esc(k.replace(/_/g,' '))}</span><span class="fv">${esc(txt)}</span></div>`;
-  }).filter(Boolean).join('');
-  return parts ? `<div class="dsec">${esc(label)} ${stamp}</div><div class="fgrid">${parts}</div>${corr}${srcHtml(f.sources)}` : '';
+    if (!txt) continue;
+    rows.push(`<div class="frow"><span class="fk">${esc(k.replace(/_/g,' '))}</span><span class="fv">${esc(txt)}</span></div>`);
+  }
+  // Field rows go in the grid; round lists sit outside it, full width.
+  const fieldRows = rows.filter((r) => r.startsWith('<div class="frow"')).join('');
+  const listRows = rows.filter((r) => !r.startsWith('<div class="frow"')).join('');
+  const parts = fieldRows || listRows ? `${fieldRows ? `<div class="fgrid">${fieldRows}</div>` : ''}${listRows}` : '';
+  return parts ? `<div class="dsec">${esc(label)} ${stamp}</div>${parts}${corr}${srcHtml(f.sources)}` : '';
 }
 
 // The desk marks entities it could not stand behind (Anubis: "UNVERIFIED —
@@ -1155,24 +1214,38 @@ function factBlockHtml(f, label){
 // CHAIN, not one block, so it is hoisted to the top of the profile: a warning
 // buried three sections down, in whichever dimension happened to declare it, is
 // not a disclosure. Scanned across every dimension for exactly that reason.
-function dataQualityHtml(f){
-  for (const k of Object.keys(f)) {
-    const dq = f[k] && f[k].data && f[k].data.data_quality;
-    if (typeof dq === 'string' && /unverified|disputed|low confidence/i.test(dq)) {
-      return `<div class="dqwarn"><b>⚠ Unverified data</b>${esc(dq)}</div>`;
-    }
-  }
-  return '';
+// ONE verdict, from the rule that can retract it.
+//
+// This used to scan the desk's free-text `data_quality` prose and render its own
+// "⚠ Unverified data" box, while the computed rule rendered "⚠ Unverified TVL"
+// separately. Both fired on Anubis: two labels, two components, two sources for
+// one claim — the causes.js failure exactly.
+//
+// Worse than duplication: the prose is hand-written and has NO EXPIRY, while the
+// rule self-retracts (a bridge appears, an audit appears, the figures stop
+// reconciling, the chain crosses the $500M human-review ceiling). When the rule
+// flips, the prose would go on asserting UNVERIFIED about a named project with
+// nothing behind it — a stale adverse claim, which is what §1.5 exists to stop.
+// Its entire install base was ONE row, and that row is redundant with the rule.
+//
+// The desk still contributes EVIDENCE (its sources render with the block); it no
+// longer contributes a VERDICT. src/lib/data-quality.js is the sole authority.
+function dataQualityHtml(d){
+  const dq = d && d.chain && d.chain.dataQuality;
+  if (!dq || !dq.label) return '';
+  const reasons = Array.isArray(dq.reasons) && dq.reasons.length
+    ? `<ul class="evlist">${dq.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : '';
+  return `<div class="dqwarn"><b>⚠ ${esc(dq.label)}</b>${esc(dq.summary || '')}${reasons}</div>`;
 }
 
 function factsHtml(d){
   const f = d && d.facts;
-  // Tags stand alone: a chain we have not researched still has a cohort we can
-  // compute and themes we can derive, so they must not depend on facts existing.
-  if (!f) return tagChipsHtml(d);
+  // Tags and the data-quality verdict stand alone: a chain we have not researched
+  // still has a cohort we can compute and may still carry a computed caveat.
+  if (!f) return tagChipsHtml(d) + dataQualityHtml(d);
   const blocks = [
     tagChipsHtml(d),
-    dataQualityHtml(f),
+    dataQualityHtml(d),
     synthesisHtml(f.synthesis),
     ...FACT_SECTIONS.map(([k,label]) => factBlockHtml(f[k], label)),
     linksHtml(f.links),
@@ -1345,16 +1418,29 @@ document.getElementById('tailprofile').addEventListener('click', (e) => {
 });
 
 
+// Peer navigation is delegated at the DOCUMENT, not at #rows.
+//
+// It used to live on the #rows listener only, so the 29 tail chains that have a
+// category rendered six peer chips that did nothing at all — the tail profile is
+// outside #rows. Binding per-surface means every new surface silently ships dead
+// buttons; the chips are the same component wherever they are, so the handler is
+// too. Capture + stopPropagation so a chip never also toggles the row behind it,
+// the same pattern the glossary popover uses.
+document.addEventListener('click', (e) => {
+  const peer = e.target.closest && e.target.closest('.peerchip');
+  if (!peer) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const pname = peer.dataset.peer;
+  if (!pname) return;
+  state.expanded = pname; loadDetail(pname); pushEntity('chain', pname);
+  const prow = document.querySelector(`tr.crow[data-name="${CSS.escape(pname)}"]`);
+  if (prow) prow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else { render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }   // tail chain: no row to scroll to
+}, true);
+
 document.getElementById('rows').addEventListener('click', (e) => {
   if (e.target.closest('a')) return; // let market links open normally
-  const peer = e.target.closest('.peerchip');
-  if (peer) { // navigate to a related chain instead of toggling the current row
-    const pname = peer.dataset.peer;
-    state.expanded = pname; loadDetail(pname); pushEntity('chain', pname);
-    const prow = document.querySelector(`tr.crow[data-name="${CSS.escape(pname)}"]`);
-    if (prow) prow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    return;
-  }
   const tr = e.target.closest('tr.crow');
   if (!tr) return;
   const name = tr.dataset.name;
@@ -1367,7 +1453,9 @@ document.getElementById('rows').addEventListener('click', (e) => {
 // the Top 50, Dead & Dying, Stuck/Mid, and the analysis. Nothing is deleted —
 // the routes, renderers and data all still exist. Remove a slug from this set to
 // bring a section back.
-const DISABLED_VIEWS = new Set(['traces', 'infra', 'geo', 'uspolicy', 'power', 'news']);
+// 'api' is the Agent API / x402 tab: hidden from the nav, not deleted — the
+// /api/* routes and the x402 gate keep working for agents that already use them.
+const DISABLED_VIEWS = new Set(['traces', 'infra', 'geo', 'uspolicy', 'power', 'news', 'api']);
 const isEnabledView = (v) => !DISABLED_VIEWS.has(v);
 // Hide the nav entries, then any group heading left with nothing under it.
 function applyViewGating(){
