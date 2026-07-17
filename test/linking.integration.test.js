@@ -38,10 +38,22 @@ const overviewFor = (perChain) => ({
 const VOLUME = { Ethereum: 1.1e9, Arbitrum: 1.5e8, Base: 8.3e8, Optimism: 2e7, Solana: 1.6e9 };
 const FEES = { Ethereum: 5e6, Arbitrum: 2e5, Base: 4e5, Optimism: 8e4, Solana: 3e6 };
 
-function stubFeed({ dexs = true, fees = true, universe = UNIVERSE, volume = VOLUME, feeMap = FEES, extra } = {}) {
+// perChain: which chains' PER-CHAIN endpoints answer. Default: all of them, with
+// their real figure. `{}` means none answer — which buildSnapshot now refuses,
+// because a board where every row fell back to the aggregate is not a board.
+function stubFeed({ dexs = true, fees = true, universe = UNIVERSE, volume = VOLUME, feeMap = FEES, perChain, extra } = {}) {
   vi.stubGlobal('fetch', vi.fn(async (url) => {
     const u = String(url);
     if (u.includes('/v2/chains')) return json(universe);
+    if (u.includes('/overview/dexs/') || u.includes('/overview/fees/')) {
+      if (extra) { const r = extra(u); if (r) return r; }
+      const src = u.includes('/overview/fees/') ? feeMap : volume;
+      const map = perChain === undefined ? src : perChain;
+      for (const [chain, v] of Object.entries(map)) {
+        if (u.includes(`/${encodeURIComponent(chain)}?`)) return json({ total24h: v });
+      }
+      return new Response('', { status: 500 });
+    }
     // Match the GLOBAL overview only — the '?' is what separates
     // /overview/dexs?… from the per-chain /overview/dexs/Ethereum?… . Without it
     // the global branch swallowed every per-chain URL and handed back an overview
@@ -150,7 +162,7 @@ describe('chain-linking wiring (/api/chains)', () => {
     // Healthy upstream that happens to cover none of our chains: volume/fees fall
     // back to 0 → projected to null in the link view. (Simulating this by killing
     // the feed would now be a hard error — and rightly so; see the degraded tests.)
-    stubFeed({ volume: { SomeOtherChain: 5e8 }, feeMap: { SomeOtherChain: 1e5 } });
+    stubFeed({ volume: { SomeOtherChain: 5e8 }, feeMap: { SomeOtherChain: 1e5 }, perChain: { Ethereum: 1 } });
     const worker = await freshWorker();
     const res = await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx());
     const body = await res.json();
@@ -304,20 +316,22 @@ describe('provenance stamps tell the truth', () => {
     return null;
   };
 
-  it("stamps 'aggregate' when the per-chain call fails, and says so per field", async () => {
-    // Ethereum's per-chain endpoints 500; nothing else resolves either.
-    stubFeed();
+  it("stamps 'aggregate' on the rows whose per-chain call failed, and 'perChain' on the rest", async () => {
+    // A MIXED board is the realistic case (measured live: 4 of 95 candidates 500).
+    // An all-aggregate board can no longer be observed here at all — buildSnapshot
+    // refuses it, which is the next test.
+    stubFeed({ perChain: { Ethereum: 4242 } });
     const worker = await freshWorker();
     const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
-    for (const c of body.chains) {
-      // stubFeed 500s every per-chain URL, so every row must admit the fallback.
-      expect(c.feeSource).toBe('aggregate');
-      expect(c.volumeSource).toBe('aggregate');
+    const eth = body.chains.find((c) => c.name === 'Ethereum');
+    expect(eth.feeSource).toBe('perChain');
+    for (const c of body.chains.filter((x) => x.name !== 'Ethereum')) {
+      expect(c.feeSource).toBe('aggregate');   // honest about the fallback
     }
   });
 
   it("stamps 'perChain' only when the per-chain call actually returned", async () => {
-    stubFeed({ extra: perChainFees({ Ethereum: 4242 }) });
+    stubFeed({ perChain: { Ethereum: 4242 } });
     const worker = await freshWorker();
     const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
     const eth = body.chains.find((c) => c.name === 'Ethereum');
@@ -326,5 +340,51 @@ describe('provenance stamps tell the truth', () => {
     expect(eth.feeSource).toBe('perChain');
     const other = body.chains.find((c) => c.name !== 'Ethereum');
     if (other) expect(other.feeSource).toBe('aggregate');
+  });
+});
+
+// TLA modelled the snapshot lifecycle and found three reachable violations. Each
+// of these is a counterexample trace from that model, turned into a test.
+describe('the snapshot lifecycle tells the truth about itself', () => {
+  it('refuses a build where every row fell back to the aggregate', async () => {
+    // Global feeds healthy, per-chain endpoints all dead: feedIsDegenerate cannot
+    // see this, and the board would silently carry 50 over-counted rows.
+    stubFeed({ perChain: {} });   // no per-chain endpoint answers
+    const worker = await freshWorker();
+    const res = await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx());
+    expect(res.status).toBe(502);
+    expect((await res.json()).error).toMatch(/per-chain enrichment unavailable/i);
+  });
+
+  it('marks an aging snapshot stale even though nothing threw', async () => {
+    // The bug TLA found: loadSnapshot returns whatever D1 holds without checking
+    // its age, and buildSnapshot only runs when there is NO row — so a dead feed
+    // produced an aging board with no marker, because the catch never fired.
+    const old = { schemaVersion: 2, chains: [{ name: 'Ethereum', rank: 1, tvl: 1, volume24h: 1, fees24h: 1 }], updatedAt: 'old' };
+    const db = {
+      prepare: (sql) => ({
+        sql, binds: [], bind(...a) { this.binds = a; return this; },
+        async run() { return {}; },
+        // 90 minutes old — 18 missed cron ticks.
+        async first() { return sql.includes("key='chains'") ? { data: JSON.stringify(old), updated_at: Date.now() - 90 * 60000 } : null; },
+        async all() { return { results: [] }; },
+      }),
+      async batch() { return []; },
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })));
+    const worker = await freshWorker();
+    const res = await worker.fetch(new Request('http://localhost/api/chains'), { DB: db }, ctx());
+    const body = await res.json();
+    expect(res.status).toBe(200);          // last-good is still served — that part was right
+    expect(body.stale).toBe(true);         // ...and now it says so
+    expect(body.staleReason).toMatch(/minutes old/);
+  });
+
+  it('does not cry stale over a fresh snapshot', async () => {
+    stubFeed({ extra: (u) => (u.includes('/overview/fees/') || u.includes('/overview/dexs/') ? json({ total24h: 1 }) : null) });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    expect(body.stale).toBeUndefined();
+    expect(body.cachedAgeMs).toBeLessThan(60000);
   });
 });

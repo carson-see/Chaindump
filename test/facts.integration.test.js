@@ -32,8 +32,12 @@ function stubFeed() {
   vi.stubGlobal('fetch', vi.fn(async (url) => {
     const u = String(url);
     if (u.includes('/v2/chains')) return json(UNIVERSE);
-    if (u.includes('/overview/dexs')) return json(overviewFor({ Ethereum: 1.1e9, Berachain: 2e7, Near: 5e6 }));
-    if (u.includes('/overview/fees')) return json(overviewFor({ Ethereum: 5e6, Berachain: 1e4, Near: 2e3 }));
+    if (u.includes('/overview/dexs?')) return json(overviewFor({ Ethereum: 1.1e9, Berachain: 2e7, Near: 5e6 }));
+    if (u.includes('/overview/fees?')) return json(overviewFor({ Ethereum: 5e6, Berachain: 1e4, Near: 2e3 }));
+    // PER_CHAIN_OK: the per-chain endpoints must answer, or buildSnapshot refuses
+    // a board on which every row fell back to the aggregate. These suites test
+    // facts/tags, not enrichment — they only need to get past it.
+    if (u.includes('/overview/dexs/') || u.includes('/overview/fees/')) return json({ total24h: 1 });
     return new Response('', { status: 500 });
   }));
 }

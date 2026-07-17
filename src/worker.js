@@ -463,6 +463,16 @@ async function buildSnapshot(opts = {}) {
     console.error('[buildSnapshot] data-quality annotation skipped:', e.message);
   }
 
+  // A board where EVERY row fell back to the aggregate is not a board — it is the
+  // per-chain enrichment having collapsed, and the aggregate is wrong in both
+  // directions (Hyperliquid $0 against a real $3.83M; Provenance 145x over).
+  // feedIsDegenerate only inspects the global maps, so it cannot see this; TLA
+  // found the trace where a fully-degraded build persists over a good snapshot.
+  // Per-row provenance already tells us — refuse the build and let /api/chains
+  // serve the last good board, marked stale.
+  const enrichedRows = top.filter((r) => r.volumeSource === 'perChain' || r.feeSource === 'perChain').length;
+  if (top.length && enrichedRows === 0) throw new Error(`per-chain enrichment unavailable for all ${top.length} board chains (every row would carry the over-counted aggregate)`);
+
   const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
 
   // --- chain linking: bake a value-prop category + related peers onto each row ---
@@ -576,12 +586,24 @@ async function resolveTailChain(target) {
 // Read the cron-refreshed snapshot from D1 (instant, no live upstream calls on
 // the hot path). Falls back to a live build only on a cold/empty cache — and
 // best-effort primes the cache so subsequent requests don't repeat the miss.
+// A snapshot older than this is stale no matter why. The cron runs every 5
+// minutes, so 30 minutes is six missed ticks — well past a blip.
+const MAX_SNAPSHOT_AGE_MS = 30 * 60 * 1000;
+
 async function loadSnapshot() {
   if (ENV.DB) {
-    try {
-      const row = await ENV.DB.prepare(`SELECT data, updated_at FROM snapshot_cache WHERE key='chains'`).first();
-      if (row && row.data) return { data: JSON.parse(row.data), ts: row.updated_at };
-    } catch (e) { /* table may not exist yet or a D1 hiccup — fall through to a live build */ }
+    // Retry once before falling through to a live build: a single D1 hiccup was
+    // enough to send a cold isolate into buildSnapshot, which can throw and 502
+    // while a perfectly good row sits in the table.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const row = await ENV.DB.prepare(`SELECT data, updated_at FROM snapshot_cache WHERE key='chains'`).first();
+        if (row && row.data) return { data: JSON.parse(row.data), ts: row.updated_at };
+        break;   // no row at all — a build is the right answer
+      } catch (e) {
+        if (attempt) console.error('[loadSnapshot] D1 read failed twice:', e.message);
+      }
+    }
   }
   const data = await buildSnapshot();
   const ts = Date.now();
@@ -645,7 +667,16 @@ app.get('/api/chains', wrap(async (req, res) => {
     if (!cache.data || now - cache.ts > TTL) {
       cache = await loadSnapshot();
     }
-    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: Date.now() - cache.ts });
+    // Staleness is a property of AGE, not of whether an exception fired. This
+    // used to be set only in the catch below — but loadSnapshot returns whatever
+    // D1 holds without checking how old it is, and buildSnapshot only runs when
+    // there is no row at all. So when a feed died, the degenerate-feed guard
+    // correctly refused to persist and /api/chains then served the aging board
+    // forever with no marker, because nothing threw. The guard worked; the
+    // `stale: true` it promised never appeared.
+    const ageMs = Date.now() - cache.ts;
+    const stale = ageMs > MAX_SNAPSHOT_AGE_MS;
+    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: ageMs, ...(stale ? { stale: true, staleReason: `snapshot is ${Math.round(ageMs / 60000)} minutes old; the refresh has not produced a usable board` } : {}) });
   } catch (e) {
     console.error('snapshot error:', e.message);
     if (cache.data) return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, error: e.message });
