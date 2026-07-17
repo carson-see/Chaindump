@@ -2601,11 +2601,23 @@ async function handleScheduled(event, env, ctx) {
     try { const row = await env.DB.prepare(`SELECT data FROM snapshot_cache WHERE key='chains'`).first(); if (row?.data) priorData = JSON.parse(row.data); }
     catch (e) { /* first run / cold cache — no prior, peers computed verbatim */ }
   }
-  const data = await buildSnapshot({ prior: priorPeersByKey(priorData) });
+  // buildSnapshot REFUSES to return a board it cannot stand behind — a dead
+  // volume/fee feed, or every row falling back to the over-counted aggregate.
+  // That refusal must not take the rest of the cron with it: this call had no
+  // try/catch, so one transient DefiLlama rate-limit would silently skip the
+  // RWA/DePIN refresh, the OFAC sanctions update and the snapshot prune too.
+  // A refused board is the intended outcome — the last good snapshot stays, and
+  // /api/chains now reports it as stale by age.
+  let data = null;
+  try {
+    data = await buildSnapshot({ prior: priorPeersByKey(priorData) });
+  } catch (e) {
+    console.error('[cron] snapshot build refused, keeping last good:', e.message);
+  }
   const ts = Date.now();
 
   if (env.DB) {
-    const rows = data.chains || [];
+    const rows = (data && data.chains) || [];
     const stmt = env.DB.prepare(
       `INSERT INTO chain_snapshots (ts, chain, tvl, volume24h, fees24h, stables, active_addresses, token_price, token_mcap, score)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -2630,6 +2642,8 @@ async function handleScheduled(event, env, ctx) {
     if (tick % 2016 === 0) await refreshNftCatalog(env);
   }
 
+  // No board this tick: leave the cache and D1 holding the last good one.
+  if (!data) return;
   if (!env.DB) { const blob = { ...data }; delete blob.chainsLite; cache = { ts, data: blob }; return; }
   cache = { ts, data: await persistSnapshot(env.DB, data, ts) };
 }

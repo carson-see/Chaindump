@@ -388,3 +388,46 @@ describe('the snapshot lifecycle tells the truth about itself', () => {
     expect(body.cachedAgeMs).toBeLessThan(60000);
   });
 });
+
+// buildSnapshot refusing a board it cannot stand behind is the DESIGNED outcome.
+// But handleScheduled called it with no try/catch, so that refusal would have
+// aborted the whole cron — the RWA/DePIN refresh, the OFAC sanctions update and
+// the snapshot prune all silently skipped by one transient DefiLlama rate-limit.
+describe('a refused board does not take the cron down with it', () => {
+  const storeDB = (seed) => {
+    const store = { ...seed };
+    return {
+      _store: store,
+      prepare: (sql) => ({
+        sql, binds: [],
+        bind(...a) { this.binds = a; return this; },
+        async run() { const m = this.sql.match(/VALUES \('([a-z_]+)'/); if (m) store[m[1]] = this.binds[0]; return {}; },
+        async first() { const m = this.sql.match(/key='([a-z_]+)'/); return m && store[m[1]] ? { data: store[m[1]], updated_at: Date.now() } : null; },
+        async all() { return { results: [] }; },
+      }),
+      async batch() { return []; },
+    };
+  };
+
+  it('does not throw, and does not overwrite the last good snapshot', async () => {
+    const good = JSON.stringify({ schemaVersion: 2, chains: [{ name: 'Ethereum', rank: 1 }], updatedAt: 'good' });
+    const db = storeDB({ chains: good });
+    stubFeed({ perChain: {} });   // every per-chain call fails => the board is refused
+    vi.resetModules();
+    const mod = await import('../src/worker.js');
+    // The cron must complete, not reject.
+    await expect(mod.default.scheduled({}, { DB: db }, ctx())).resolves.toBeUndefined();
+    // ...and the good snapshot must survive untouched.
+    expect(db._store.chains).toBe(good);
+  });
+
+  it('persists normally when the board IS trustworthy', async () => {
+    const db = storeDB({});
+    stubFeed();   // per-chain endpoints answer by default
+    vi.resetModules();
+    const mod = await import('../src/worker.js');
+    await mod.default.scheduled({}, { DB: db }, ctx());
+    expect(db._store.chains).toBeTruthy();
+    expect(JSON.parse(db._store.chains).chains.length).toBeGreaterThan(0);
+  });
+});
