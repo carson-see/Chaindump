@@ -183,6 +183,15 @@ describe('prose matches the code it describes', () => {
     expect(prose).not.toMatch(/(?<!NOT )(is|equals) score x 100/i);
   });
 
+  it('SCORE_META claims the board score is reproducible, and says why the tail is not', () => {
+    // Pass 2 rescores board chains on the authoritative per-chain volume, which
+    // IS the served volume24h — so this claim must hold. The tail is not
+    // enriched, hence the explicit carve-out.
+    expect(SCORE_META.inputCaveat).toMatch(/reproducible from this payload/i);
+    expect(SCORE_META.inputCaveat).toMatch(/spot DEX categories only/i);
+    expect(SCORE_META.inputCaveat).toMatch(/outside the board/i);
+  });
+
   it('SCORE_META refuses to present the index as a health grade', () => {
     expect(SCORE_META.caveat).toMatch(/not a health or quality score/i);
   });

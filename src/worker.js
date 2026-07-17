@@ -6,6 +6,7 @@ import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriv
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 import { SCORE_META, TIER_CRITERIA, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
+import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates } from './lib/llama.js';
 
 const ENV = {};
 const app = new Hono();
@@ -97,22 +98,6 @@ async function pool(items, worker, limit = 8) {
   return out;
 }
 
-// Sum a DefiLlama "overview" breakdown24h into { normKey: totalUSD }
-function aggregateBreakdown(overview) {
-  const out = {};
-  for (const proto of (overview && overview.protocols) || []) {
-    const b = proto.breakdown24h;
-    if (!b) continue;
-    for (const chain in b) {
-      if (chain === 'off_chain') continue;
-      let sum = 0;
-      for (const k in b[chain]) sum += Number(b[chain][k]) || 0;
-      const key = norm(chain);
-      out[key] = (out[key] || 0) + sum;
-    }
-  }
-  return out;
-}
 
 // growthepie master: chainId -> { origin, bucket, stack, da_layer } — origin for
 // the DAA lookup, the rest to derive a value-prop category when curated misses.
@@ -256,8 +241,18 @@ async function buildSnapshot(opts = {}) {
   const chains = val(chainsR, []);
   if (!Array.isArray(chains) || !chains.length) throw new Error('chains feed unavailable');
 
-  const volAgg = aggregateBreakdown(val(dexsR, {}));
-  const feeAgg = aggregateBreakdown(val(feesR, {}));
+  // Volume is filtered to real DEX categories: /overview/dexs also carries
+  // Derivatives, Prediction Markets, NFT marketplaces and Telegram bots, and
+  // counting those as "DEX volume" overstated Injective by 16x.
+  const volAgg = aggregateBreakdown(val(dexsR, {}), norm, { categories: DEX_CATEGORIES });
+  // Fees are chain-wide revenue, not one product — no category filter.
+  const feeAgg = aggregateBreakdown(val(feesR, {}), norm);
+  // A dead volume feed contributes zero to EVERY chain, which silently re-ranks
+  // the board on TVL+fees alone while we keep publishing "50% 24h DEX volume".
+  // Refuse to build rather than persist a plausible-looking wrong board; the
+  // /api/chains catch then serves the last good snapshot with stale: true.
+  if (feedIsDegenerate(volAgg, chains.length)) throw new Error('dex volume feed unavailable (empty breakdown)');
+  if (feedIsDegenerate(feeAgg, chains.length)) throw new Error('fees feed unavailable (empty breakdown)');
   const masterMap = gpMaster.status === 'fulfilled' ? gpMaster.value : {};
   const daaMap = val(daaByOrigin, {});
 
@@ -293,13 +288,18 @@ async function buildSnapshot(opts = {}) {
       };
     });
 
-  // --- log-value composite score over the FULL universe, volume-weighted ---
+  // --- PASS 1: provisional score, only to decide who is worth enriching ---
+  // These volumes come from the aggregated breakdown, which misses any chain the
+  // DEX feed names differently from the TVL feed (302 of 458: "Hyperliquid L1" vs
+  // "hyperliquid", "OP Mainnet" vs "optimism"). Those chains read 0 on a
+  // 50%-weight axis, so this ranking is NOT trustworthy on its own.
   scoreRows(rows);
-  rows.sort((a, b) => b.score - a.score);
-  const top = rows.slice(0, BOARD_SIZE);
+  // Hence candidates are picked on several axes, not just the provisional score:
+  // a chain zeroed on volume still enters on TVL or fees and gets corrected.
+  const candidates = selectCandidates(rows, { boardSize: BOARD_SIZE });
 
-  // --- enrich ONLY the top 50 (bounded concurrency) ---
-  await pool(top, async (r) => {
+  // --- enrich candidates (bounded concurrency) ---
+  await pool(candidates, async (r) => {
     const enc = encodeURIComponent(r.name);
     const [dex, hist] = await Promise.allSettled([
       fetchJson(`https://api.llama.fi/overview/dexs/${enc}?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`, 12000),
@@ -324,6 +324,18 @@ async function buildSnapshot(opts = {}) {
       r.tvlChange30d = mo > 0 ? +(((now - mo) / mo) * 100).toFixed(2) : null;
     }
   }, 8);
+
+  // --- PASS 2: rescore on the authoritative volumes just fetched ---
+  // r.volume24h now holds DefiLlama's own per-chain total24h for every candidate
+  // (it resolves chain names correctly and applies DefiLlama's parent-protocol
+  // dedup). Rescoring here is what makes the published formula actually
+  // reproduce the published score — previously volume24h was overwritten AFTER
+  // scoring and never rescored, so the board ranked Injective on $3.2M while
+  // serving $200K. The board is drawn from candidates only, so every ranked
+  // chain is one we enriched.
+  scoreRows(rows);
+  candidates.sort((a, b) => b.score - a.score);
+  const top = candidates.slice(0, BOARD_SIZE);
 
   // --- CoinGecko native-token price/mcap/24h (single batched call) ---
   const ids = [...new Set(top.map((r) => r.gecko).filter(Boolean))];
