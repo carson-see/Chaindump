@@ -307,10 +307,21 @@ async function buildSnapshot(opts = {}) {
   // --- enrich candidates (bounded concurrency) ---
   await pool(candidates, async (r) => {
     const enc = encodeURIComponent(r.name);
-    const [dex, hist] = await Promise.allSettled([
+    const [dex, hist, fee] = await Promise.allSettled([
       fetchJson(`https://api.llama.fi/overview/dexs/${enc}?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`, 12000),
       fetchJson(`https://api.llama.fi/v2/historicalChainTvl/${enc}`, 12000),
+      fetchJson(`https://api.llama.fi/overview/fees/${enc}?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`, 12000),
     ]);
+    // Fees carry BOTH defects the volume axis had, and the aggregate is wrong in
+    // both directions. Measured 2026-07-17: Hyperliquid L1 read $0 against a real
+    // $3.83M/day (the same TVL-feed-vs-fee-feed name mismatch), while Provenance
+    // read $13,971 against $96 — 145x over — and Tron 4.4x, because
+    // /overview/fees spans 86 categories and the per-protocol breakdowns
+    // double-count. This is a 20%-weight axis AND the denominator of the P/F
+    // ratio, fee yield and fees-per-user we publish with definitions attached.
+    if (fee.status === 'fulfilled' && fee.value && fee.value.total24h != null) {
+      r.fees24h = Number(fee.value.total24h) || r.fees24h;
+    }
     if (dex.status === 'fulfilled' && dex.value && dex.value.total24h != null) {
       r.volume24h = Number(dex.value.total24h) || r.volume24h;
       r.volChange1d = dex.value.change_1d ?? null;
