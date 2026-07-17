@@ -5,6 +5,7 @@ import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
+import { SCORE_META, TIER_CRITERIA, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
 
 const ENV = {};
 const app = new Hono();
@@ -293,15 +294,9 @@ async function buildSnapshot(opts = {}) {
     });
 
   // --- log-value composite score over the FULL universe, volume-weighted ---
-  const lg = (x) => Math.log10(Math.max(1, x));
-  const maxV = Math.max(...rows.map((r) => lg(r.volume24h)), 1);
-  const maxT = Math.max(...rows.map((r) => lg(r.tvl)), 1);
-  const maxF = Math.max(...rows.map((r) => lg(r.fees24h)), 1);
-  for (const r of rows) {
-    r.score = +(0.5 * (lg(r.volume24h) / maxV) + 0.3 * (lg(r.tvl) / maxT) + 0.2 * (lg(r.fees24h) / maxF)).toFixed(4);
-  }
+  scoreRows(rows);
   rows.sort((a, b) => b.score - a.score);
-  const top = rows.slice(0, 50);
+  const top = rows.slice(0, BOARD_SIZE);
 
   // --- enrich ONLY the top 50 (bounded concurrency) ---
   await pool(top, async (r) => {
@@ -538,16 +533,17 @@ function computeSignals(r, peers) {
   return sig;
 }
 
+
 app.get('/api/chains', wrap(async (req, res) => {
   try {
     const now = Date.now();
     if (!cache.data || now - cache.ts > TTL) {
       cache = await loadSnapshot();
     }
-    res.json({ ...cache.data, cachedAgeMs: Date.now() - cache.ts });
+    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: Date.now() - cache.ts });
   } catch (e) {
     console.error('snapshot error:', e.message);
-    if (cache.data) return res.json({ ...cache.data, stale: true, error: e.message });
+    if (cache.data) return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, error: e.message });
     res.status(502).json({ error: 'Failed to fetch chain data: ' + e.message });
   }
 }));
@@ -978,7 +974,7 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
     let risk = null;
     try { const rr = await dbQuery(`SELECT level, summary, evidence, sources FROM risk_flags WHERE entity_type='chain' AND entity_name = ? LIMIT 1`, [row.name]); if (rr[0]) risk = rr[0]; } catch (e) {}
 
-    res.json({ chain: row, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk });
+    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -1059,7 +1055,7 @@ app.get('/api/mid', wrap(async (req, res) => {
 // from LIVE data, so the leaderboards reflect current conditions.
 //   dead  = >=90% drawdown from all-time peak TVL (terminal)
 //   dying = down >=60% over the last 90 days (steep recent decline, not yet dead)
-//   thriving = currently in the live top-25 by activity
+//   thriving = currently on the live board (top-50 by composite activity)
 //   mid   = everything else meaningful (>= $1M TVL)
 // ---------------------------------------------------------------------------
 let tiersCache = { ts: 0, data: null };
@@ -1094,7 +1090,7 @@ async function classifyChains() {
     const drawdown = peak > 0 ? ((peak - cur) / peak) * 100 : 0;
     // 90d change only when there's ≥90d of history AND a non-trivial baseline (guards new-chain blowups)
     let change90 = null;
-    if (spanDays >= 90 && ago90 && ago90 >= Math.max(5e5, peak * 0.02)) change90 = ((cur - ago90) / ago90) * 100;
+    if (spanDays >= CHANGE_90D_MIN_SPAN_DAYS && baselineOk(ago90, peak)) change90 = ((cur - ago90) / ago90) * 100;
     return {
       chain: c.name, symbol: c.tokenSymbol || null, tvl: cur, spanDays: Math.round(spanDays),
       peak_tvl: peak, peak_date: peakDate ? toISO(peakDate) : null, current_tvl: cur,
@@ -1103,16 +1099,9 @@ async function classifyChains() {
     };
   }, 6);
 
-  // chains that migrated/rebranded (TVL moved elsewhere) — not genuine deaths
-  const MIGRATED = new Set(['fantom', 'terra', 'terraclassic', 'celo']);
   const b = { thriving: [], mid: [], dying: [], dead: [] };
-  for (const m of metrics) {
-    const key = norm(m.chain);
-    if (thrivingNames.has(m.chain)) b.thriving.push(m);
-    else if (m.spanDays >= 45 && m.drawdown_pct >= 90 && !MIGRATED.has(key)) b.dead.push(m);
-    else if (m.change_90d != null && m.change_90d <= -60) b.dying.push(m);
-    else b.mid.push(m);
-  }
+  const onBoard = (name) => thrivingNames.has(name);
+  for (const m of metrics) b[classifyTier(m, onBoard, norm)].push(m);
   b.mid.sort((x, y) => y.tvl - x.tvl);
   b.dying.sort((x, y) => (x.change_90d ?? 0) - (y.change_90d ?? 0));
   b.dead.sort((x, y) => y.peak_tvl - x.peak_tvl);
@@ -1167,6 +1156,7 @@ async function profileMap() {
   return out;
 }
 
+
 app.get('/api/tiers', wrap(async (req, res) => {
   try {
     const b = await getTiers();
@@ -1181,10 +1171,16 @@ app.get('/api/tiers', wrap(async (req, res) => {
     let narrative = null, successFactors = null;
     try { const m = await dbQuery(`SELECT v FROM graveyard_meta WHERE k='trends' LIMIT 1`); if (m[0]) narrative = m[0].v; } catch (e) {}
     try { const s = await dbQuery(`SELECT v FROM graveyard_meta WHERE k='success_factors' LIMIT 1`); if (s[0]) successFactors = s[0].v; } catch (e) {}
+    // curated = chains whose tier is a researched verdict (dead_chains/mid_chains),
+    // exposed so the UI can label those badges as research, not classifier output.
+    const curated = await curatedTierMap();
     res.json({
       updatedAt: new Date(tiersCache.ts).toISOString(),
+      criteria: TIER_CRITERIA,
+      computedNote: TIER_CRITERIA.computedNote,
       counts: { thriving: b.thriving.length, mid: b.mid.length, dying: b.dying.length, dead: b.dead.length },
-      tierMap: { ...tierMapFrom(b), ...(await curatedTierMap()) },
+      tierMap: { ...tierMapFrom(b), ...curated },
+      curated: Object.keys(curated),
       mid: attach(b.mid, 25), dying: attach(b.dying, 25), dead: attach(b.dead, 25), declining,
       narrative, successFactors,
     });
