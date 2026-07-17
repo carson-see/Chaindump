@@ -1025,14 +1025,24 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
     if (!row) { row = await resolveTailChain(target); } // beyond the top-50 → lite index
     if (!row) return res.status(404).json({ error: 'unknown chain' });
 
+    // Board membership decides several things below; compute it once.
+    const onBoard = (cache.data.chains || []).some((c) => c.name === row.name);
+
     let topProjects = [];
     let dataQuality = row.dataQuality || null;
     try {
       const protos = await getProtocols();
       const name = row.name;
-      // Recompute here rather than trusting the snapshot: the detail page is
-      // reachable for chains outside the ranked top-50, which are never annotated.
-      if (!dataQuality) dataQuality = assessChainDataQuality(name, protos);
+      // Only assess here for chains OUTSIDE the ranked top-50 — the snapshot has
+      // already assessed every board row, and a clean board row legitimately
+      // carries no dataQuality. Guarding on `!dataQuality` instead made 49 of 50
+      // board chains re-scan all 7,867 protocols on every detail request just to
+      // re-derive null.
+      if (!onBoard) {
+        const dq = assessChainDataQuality(name, protos, { displayedTvl: row.tvl });
+        // A caveat above the auto-publish ceiling is held for review, not served.
+        if (dq && dq.autoPublish !== false) dataQuality = dq;
+      }
       const SKIP = new Set(['CEX', 'Chain', 'Bridge']);
       topProjects = (Array.isArray(protos) ? protos : [])
         .filter((p) => Array.isArray(p.chains) && p.chains.includes(name) && !SKIP.has(p.category))
@@ -1062,7 +1072,6 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
 
     const facts = await chainFacts(row.name);
 
-    const onBoard = (cache.data.chains || []).some((c) => c.name === row.name);
     const tags = resolveTags(row, facts, onBoard);
 
     res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, dataQuality, topProjects, topNfts, topTokens, analysis, risk, facts, tags, tagVocab: tagVocab() });

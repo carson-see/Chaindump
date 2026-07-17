@@ -26,6 +26,31 @@ export const DQ_UNVERIFIED = 'unverified_tvl';
 // adapter without changing the conclusion.
 export const CONCENTRATION_MIN = 99;
 
+// The rule reads /protocols; the badge renders beside the TVL from /v2/chains.
+// Those are two different numbers, and when they disagree the published sentence
+// "N% of this chain's TVL sits in one protocol" is not about the figure the
+// reader is looking at. Measured 2026-07-17: XION displays $3,990 while protocols
+// report $25.4M (the reason string would have claimed 99.98% of the wrong total);
+// Movement displays $127.0M against $5.7M reported. If our view of a chain cannot
+// be reconciled with the number we are annotating, we do not have a verdict about
+// that number. Fail closed, the same way an unknown chain already does.
+export const RECONCILE_TOLERANCE_PCT = 10;
+
+// Above this displayed TVL, the caveat is computed but NOT auto-published.
+//
+// The rule's premise — "no bridge, so the value cannot be corroborated as having
+// arrived from anywhere" — assumes value ARRIVES. It doesn't for native-asset and
+// RWA chains, where assets are originated on-chain. Provenance is the live proof:
+// $1.5B, operated by Figure (a real US financial institution), 96.93% in one
+// protocol reporting audits:"0", no bridge — 2.07 points from being branded
+// automatically, on a public indexable surface, by a rule whose premise does not
+// apply to it. CLAUDE.md 1.5 keeps the highest-stakes adverse claims behind human
+// review; this is the same principle drawn at a defensible line rather than a
+// promise to be careful. Anubis ($200.1M) is the largest chain the rule actually
+// fires on and sits well under the ceiling, so the case this was built for still
+// publishes on its own.
+export const AUTO_PUBLISH_TVL_MAX = 5e8;
+
 // DefiLlama categories that represent value bridged in from another chain. Any
 // of these corroborates that the chain's assets came from somewhere checkable.
 const BRIDGE_CATEGORIES = new Set([
@@ -142,6 +167,15 @@ export function assessChainDataQuality(chainName, protocols, opts = {}) {
   if (!protocolIsUnaudited(conc.topProtocol)) return null;          // 2 — sole protocol is audited
   if (chainHasBridge(protocols, chainName, shared)) return null;    // 3 — a bridge corroborates the value
 
+  // 4 — can we even reconcile our view with the number being annotated? If the
+  // caller tells us what it displays and the totals disagree, the percentage we
+  // would publish is not about that figure. No verdict.
+  const displayed = Number(opts.displayedTvl);
+  if (isFinite(displayed) && displayed > 0) {
+    const drift = Math.abs(conc.total - displayed) / displayed * 100;
+    if (drift > RECONCILE_TOLERANCE_PCT) return null;
+  }
+
   const top = conc.topProtocol.name || 'a single protocol';
   const share = conc.topShare >= 99.95 ? '100%' : `${conc.topShare.toFixed(1)}%`;
   return {
@@ -161,8 +195,11 @@ export function assessChainDataQuality(chainName, protocols, opts = {}) {
       'and no bridge is identified for the chain. The figure therefore cannot be independently ' +
       'verified and is not comparable to bridge-verified chains. This is a note about the data, ' +
       'not an allegation about the project.',
-    method: `Single-protocol share >= ${minShare}% of chain TVL, sole protocol reporting audits: 0, and no bridge-category protocol on the chain.`,
+    method: `Single-protocol share >= ${minShare}% of chain TVL, sole protocol reporting audits: 0, and no bridge-category protocol on the chain. Only published when our protocol-level total reconciles with the displayed TVL to within ${RECONCILE_TOLERANCE_PCT}%, and only automatically below $${(AUTO_PUBLISH_TVL_MAX / 1e6).toFixed(0)}M displayed TVL.`,
     source: 'DefiLlama /protocols',
+    // The rule's premise does not hold for native-asset/RWA chains, so a large
+    // chain's caveat is computed but held for a human rather than published.
+    autoPublish: !(isFinite(displayed) && displayed > AUTO_PUBLISH_TVL_MAX),
   };
 }
 
@@ -173,8 +210,19 @@ export function annotateDataQuality(rows, protocols, opts = {}) {
   const shared = { ...opts, index: indexFor(protocols, opts) };  // built once for the whole board
   for (const r of rows) {
     if (!r || !r.name) continue;
-    const dq = assessChainDataQuality(r.name, protocols, shared);
-    if (dq) r.dataQuality = dq;
+    // Hand the rule the figure the badge will sit beside, so it can refuse a
+    // verdict it cannot reconcile with that number.
+    const dq = assessChainDataQuality(r.name, protocols, { ...shared, displayedTvl: r.tvl });
+    if (!dq) continue;
+    if (dq.autoPublish === false) {
+      // Computed, deliberately not published: above the ceiling the rule's
+      // premise may not apply (native-asset/RWA), and this is a public adverse
+      // claim about a named project. Log it so a human can look, rather than
+      // dropping it silently or shipping it silently.
+      console.error(`[data-quality] ${r.name}: tripped the unverified-TVL rule at $${Math.round(r.tvl).toLocaleString()} displayed TVL — held for review, not published. reasons=${JSON.stringify(dq.reasons)}`);
+      continue;
+    }
+    r.dataQuality = dq;
   }
   return rows;
 }
