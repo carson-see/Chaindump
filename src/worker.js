@@ -5,7 +5,7 @@ import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
-import { SCORE_META, TIER_CRITERIA, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
+import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
 import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates } from './lib/llama.js';
 
 const ENV = {};
@@ -1141,7 +1141,7 @@ async function classifyChains() {
     };
   }, 6);
 
-  const b = { thriving: [], mid: [], dying: [], dead: [] };
+  const b = Object.fromEntries(TIERS.map((t) => [t, []]));
   const onBoard = (name) => thrivingNames.has(name);
   for (const m of metrics) b[classifyTier(m, onBoard, norm)].push(m);
   b.mid.sort((x, y) => y.tvl - x.tvl);
@@ -1154,7 +1154,7 @@ async function classifyChains() {
 // badge each row with our own classification (progressive-enhancement fetch).
 function tierMapFrom(b) {
   const map = {};
-  for (const tier of ['thriving', 'mid', 'dying', 'dead']) for (const m of (b[tier] || [])) map[m.chain] = tier;
+  for (const tier of TIERS) for (const m of (b[tier] || [])) map[m.chain] = tier;
   return map;
 }
 
@@ -1220,7 +1220,7 @@ app.get('/api/tiers', wrap(async (req, res) => {
       updatedAt: new Date(tiersCache.ts).toISOString(),
       criteria: TIER_CRITERIA,
       computedNote: TIER_CRITERIA.computedNote,
-      counts: { thriving: b.thriving.length, mid: b.mid.length, dying: b.dying.length, dead: b.dead.length },
+      counts: Object.fromEntries(TIERS.map((t) => [t, (b[t] || []).length])),
       tierMap: { ...tierMapFrom(b), ...curated },
       curated: Object.keys(curated),
       mid: attach(b.mid, 25), dying: attach(b.dying, 25), dead: attach(b.dead, 25), declining,

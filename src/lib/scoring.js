@@ -70,19 +70,41 @@ export function baselineOk(ago90, peak) {
   return !!ago90 && ago90 >= Math.max(BASELINE_ABS_FLOOR, peak * BASELINE_PEAK_FRACTION);
 }
 
+/** Has this chain collapsed from its peak, by the measured rule? */
+function collapsedFromPeak(m, normalize) {
+  return m.spanDays >= DEAD_MIN_SPAN_DAYS
+    && m.drawdown_pct >= DEAD_DRAWDOWN_PCT
+    && !MIGRATED.has(normalize(m.chain));
+}
+
 /**
- * The classifier, as one pure decision. Order is load-bearing: a live-board
- * chain is `thriving` before decline is ever considered.
+ * The classifier, as one pure decision.
+ *
+ * `thriving` used to be returned for ANY chain on the board, before decline was
+ * ever considered — and that was a real, published falsehood. Berachain sits at
+ * board rank ~41 on live activity while down 98.5% from its $3.31B peak (BERA is
+ * -98.7% from an ATH set on launch day; its market cap now exceeds the TVL it
+ * secures). By DEAD_DRAWDOWN_PCT the same chain is dead. We called it thriving.
+ *
+ * Both facts are true, so the honest answer is neither label: a chain can be
+ * genuinely active TODAY and still have lost ~all of the capital it once held.
+ * That is `zombie`. It keeps us from libelling a live chain as collapsed AND
+ * from flattering a -98% chain as thriving — the two failure directions of the
+ * old short-circuit.
+ *
  * @param {{spanDays:number, drawdown_pct:number, change_90d:number|null, chain:string}} m
  * @param {(name:string)=>boolean} onBoard
  * @param {(name:string)=>string} normalize
  */
 export function classifyTier(m, onBoard, normalize) {
-  if (onBoard(m.chain)) return 'thriving';
-  if (m.spanDays >= DEAD_MIN_SPAN_DAYS && m.drawdown_pct >= DEAD_DRAWDOWN_PCT && !MIGRATED.has(normalize(m.chain))) return 'dead';
+  if (onBoard(m.chain)) return collapsedFromPeak(m, normalize) ? 'zombie' : 'thriving';
+  if (collapsedFromPeak(m, normalize)) return 'dead';
   if (m.change_90d != null && m.change_90d <= DYING_CHANGE_90D_PCT) return 'dying';
   return 'mid';
 }
+
+/** Every tier classifyTier can return. */
+export const TIERS = ['thriving', 'zombie', 'mid', 'dying', 'dead'];
 
 // --- Prose. Served to the UI and to agents; must describe the code above. ---
 
@@ -99,7 +121,11 @@ export const SCORE_META = {
 export const TIER_CRITERIA = {
   thriving: {
     label: 'Thriving',
-    rule: `Currently on the live board — one of the top ${BOARD_SIZE} chains ranked by the composite activity index (${WEIGHTS.volume24h * 100}% 24h DEX volume, ${WEIGHTS.tvl * 100}% TVL, ${WEIGHTS.fees24h * 100}% 24h fees, log-scaled). This check runs first, so a live-board chain is never classed dead or dying even if it is in measured decline.`,
+    rule: `Currently on the live board — one of the top ${BOARD_SIZE} chains ranked by the composite activity index (${WEIGHTS.volume24h * 100}% 24h DEX volume, ${WEIGHTS.tvl * 100}% TVL, ${WEIGHTS.fees24h * 100}% 24h fees, log-scaled) — AND not collapsed from its all-time peak. Measures current activity, not health or quality.`,
+  },
+  zombie: {
+    label: 'Active but collapsed',
+    rule: `On the live top-${BOARD_SIZE} board by current activity, yet down ${DEAD_DRAWDOWN_PCT}% or more from its all-time TVL peak (with at least ${DEAD_MIN_SPAN_DAYS} days of history). Both readings are real: the chain is genuinely being used today and has still lost almost all of the capital it once held. It is neither "thriving" nor "dead", and we will not round it to either.`,
   },
   mid: {
     label: 'Mid',
