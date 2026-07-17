@@ -42,8 +42,13 @@ function stubFeed({ dexs = true, fees = true, universe = UNIVERSE, volume = VOLU
   vi.stubGlobal('fetch', vi.fn(async (url) => {
     const u = String(url);
     if (u.includes('/v2/chains')) return json(universe);
-    if (u.includes('/overview/dexs')) return dexs ? json(overviewFor(volume)) : new Response('', { status: 500 });
-    if (u.includes('/overview/fees')) return fees ? json(overviewFor(feeMap)) : new Response('', { status: 500 });
+    // Match the GLOBAL overview only — the '?' is what separates
+    // /overview/dexs?… from the per-chain /overview/dexs/Ethereum?… . Without it
+    // the global branch swallowed every per-chain URL and handed back an overview
+    // payload with no total24h, so the per-chain enrichment path silently fell
+    // back to the aggregate in every test that thought it was exercising it.
+    if (u.includes('/overview/dexs?')) return dexs ? json(overviewFor(volume)) : new Response('', { status: 500 });
+    if (u.includes('/overview/fees?')) return fees ? json(overviewFor(feeMap)) : new Response('', { status: 500 });
     if (extra) { const r = extra(u); if (r) return r; }
     return new Response('', { status: 500 }); // everything else → best-effort default
   }));
@@ -281,5 +286,45 @@ describe('the lite index never presents an un-enriched figure as a measurement',
         expect(c.feeYield).toBeNull();
       }
     }
+  });
+});
+
+// scoreMeta.inputCaveat TELLS API consumers to trust these fields — "'aggregate'
+// means the per-chain call failed and the row kept the summed breakdown, which
+// over-counts". A payload could have claimed 'perChain' while carrying a 145x
+// aggregate and no test would have noticed: a mutant that always stamped
+// 'perChain' survived the whole suite.
+describe('provenance stamps tell the truth', () => {
+  // Answer only the per-chain FEES endpoint, for the named chains.
+  const perChainFees = (m) => (u) => {
+    if (!u.includes('/overview/fees/')) return null;
+    for (const [chain, v] of Object.entries(m)) {
+      if (u.includes(`/overview/fees/${encodeURIComponent(chain)}`)) return json({ total24h: v });
+    }
+    return null;
+  };
+
+  it("stamps 'aggregate' when the per-chain call fails, and says so per field", async () => {
+    // Ethereum's per-chain endpoints 500; nothing else resolves either.
+    stubFeed();
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    for (const c of body.chains) {
+      // stubFeed 500s every per-chain URL, so every row must admit the fallback.
+      expect(c.feeSource).toBe('aggregate');
+      expect(c.volumeSource).toBe('aggregate');
+    }
+  });
+
+  it("stamps 'perChain' only when the per-chain call actually returned", async () => {
+    stubFeed({ extra: perChainFees({ Ethereum: 4242 }) });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    const eth = body.chains.find((c) => c.name === 'Ethereum');
+    // The per-chain value must win over the aggregate, and be labelled honestly.
+    expect(eth.fees24h).toBe(4242);
+    expect(eth.feeSource).toBe('perChain');
+    const other = body.chains.find((c) => c.name !== 'Ethereum');
+    if (other) expect(other.feeSource).toBe('aggregate');
   });
 });

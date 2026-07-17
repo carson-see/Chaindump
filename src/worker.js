@@ -1073,6 +1073,7 @@ async function chainFacts(chainName) {
 //   permissioned a THEME tag, not a field          (Canton: [...,'permissioned'])
 //   the launch date under one of three keys        (launched | mainnet_live | founded)
 const LAUNCH_KEYS = ['launched', 'mainnet_live', 'founded'];
+const PRELAUNCH_STATUS = new Set(['pre-launch', 'anticipated']);
 function launchDateOf(identity) {
   for (const k of LAUNCH_KEYS) {
     const v = identity[k];
@@ -1101,7 +1102,7 @@ function resolveTags(row, facts, onBoard) {
     // The desk's own classification, which lives in tags[] — this is what makes
     // graveyard and stuck reachable at all.
     tier: storedCohort,
-    isPreLaunch: identity.status === 'pre-launch' || identity.status === 'anticipated' || storedCohort === 'anticipated',
+    isPreLaunch: PRELAUNCH_STATUS.has(identity.status),   // cohortFor owns the 'anticipated' TIER itself
     // Canton is permissioned AND on the board; cohortFor checks this last so a
     // private chain can never hide a real board position.
     isPrivate: themes.includes('permissioned'),

@@ -198,8 +198,13 @@ describe('cohortFor — derived from tier / board', () => {
   it('maps the board to top-50', () => {
     expect(cohortFor({ launched: '2015-07', onBoard: true }, NOW)).toBe('top-50');
   });
-  it('maps thriving to top-50 even without the board flag', () => {
-    expect(cohortFor({ launched: '2015-07', tier: 'thriving' }, NOW)).toBe('top-50');
+  it('does NOT take top-50 from a tier — only the live board grants it', () => {
+    // This test used to assert the opposite, and the opposite is a claim that
+    // expires: 'thriving' canonicalizes to top-50, so a stored or stale tier
+    // would republish a board rank the chain may no longer hold. The board is a
+    // fact we always have at serve time; there is no reason to infer it.
+    expect(cohortFor({ launched: '2015-07', tier: 'thriving' }, NOW)).not.toBe('top-50');
+    expect(cohortFor({ launched: '2015-07', tier: 'thriving', onBoard: true }, NOW)).toBe('top-50');
   });
   it('maps dead and dying to graveyard', () => {
     expect(cohortFor({ launched: '2021-06', tier: 'dead' }, NOW)).toBe('graveyard');
@@ -294,5 +299,31 @@ describe('tagVocab — what the SPA receives', () => {
     expect(v.canon).toEqual(TAG_CANON);
     expect(v.labels).toEqual(TAG_LABELS);
     expect(v.upAndComingDays).toBe(UP_AND_COMING_DAYS);
+  });
+});
+
+// The regression that nearly shipped: `tier: 'top-50'` returned 'top-50' even
+// with onBoard=false. The branch was unreachable while identity.tier was always
+// null; wiring the real stored tag in made it live, and 48 of 130 prod rows carry
+// a stored top-50 tag against a 50-slot board whose tail churns every 5 minutes.
+describe('a stored top-50 tag never outlives the board', () => {
+  const NOW = Date.parse('2026-07-17T00:00:00Z');
+
+  it('ignores a stored top-50 tag once the chain is off the board', () => {
+    // Somnia's real shape: rank 49 today, stored ['top-50','l1','evm'], launched 2025-09.
+    const somnia = { launched: '2025-09', onBoard: false, tier: 'top-50' };
+    expect(cohortFor(somnia, NOW)).not.toBe('top-50');
+    expect(cohortFor(somnia, NOW)).toBe('watchlist');
+  });
+
+  it('still says top-50 while the chain IS on the board', () => {
+    expect(cohortFor({ launched: '2025-09', onBoard: true, tier: 'top-50' }, NOW)).toBe('top-50');
+    // ...and the board alone is enough; no stored tag required.
+    expect(cohortFor({ launched: '2025-09', onBoard: true }, NOW)).toBe('top-50');
+  });
+
+  it('still honours graveyard and stuck off the board — those are desk verdicts, not a rank', () => {
+    expect(cohortFor({ launched: '2023-10', onBoard: false, tier: 'graveyard' }, NOW)).toBe('graveyard');
+    expect(cohortFor({ launched: '2023-10', onBoard: false, tier: 'stuck' }, NOW)).toBe('stuck');
   });
 });

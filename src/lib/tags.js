@@ -180,27 +180,38 @@ export function cohortFor(m, now) {
   const o = m || {};
   const nowMs = now instanceof Date ? now.getTime() : now;
   const launched = parseLaunch(o.launched);
+  const tier = canonTag(o.tier);
+  // An 'anticipated' TIER asserts the same thing as the isPreLaunch flag. Owning
+  // that here stops every caller from having to OR it in to cover a gap.
+  const preLaunch = o.isPreLaunch === true || tier === 'anticipated';
 
-  // 1. Pre-launch wins over everything — an unlaunched chain is never ranked.
-  //    Note what is NOT here: a missing launch date. Absence of a date is not
-  //    evidence of non-launch (Ethereum carries no `launched` on the live
-  //    board), so pre-launch must be asserted by the researched isPreLaunch
-  //    flag or by a real date in the future.
-  // A stale status must not outlive reality. isPreLaunch is an asserted flag with
-  // no expiry: Miden's row says status='anticipated' and expected_launch 'early
-  // September 2026', so if it ships and nobody hand-edits the row, we would keep
-  // publishing "Anticipated" for a live chain forever. A known PAST launch date
-  // is evidence the assertion is stale, and evidence beats assertion.
-  if (o.isPreLaunch === true && (launched == null || launched > nowMs)) return 'anticipated';
-  if (launched != null && launched > nowMs) return 'anticipated';
+  // 1. Pre-launch. A known date decides; absent a date, the assertion decides.
+  //
+  //    Note what is NOT here: "no date means unlaunched". Absence of a date is
+  //    not evidence of non-launch — Ethereum carries no `launched` on the live
+  //    board, and that rule would have published that Ethereum hasn't launched.
+  //
+  //    And the assertion must not outlive reality. isPreLaunch has no expiry:
+  //    Miden's row says status='anticipated', expected 'early September 2026'.
+  //    Ship it, nobody hand-edits the row, and we would call a live chain
+  //    Anticipated forever. A known PAST launch date is evidence the assertion
+  //    is stale, and evidence beats assertion.
+  if (launched != null ? launched > nowMs : preLaunch) return 'anticipated';
 
   // 2. Under 30 days old. Strictly under — at exactly 30 days the chain ages
   //    out. Requires a parseable date; an unknown date can never land here.
   if (launched != null && (nowMs - launched) < UP_AND_COMING_DAYS * 86400000) return 'up-and-coming';
 
   // 3. Otherwise derive from the hard ranked facts.
-  const tier = canonTag(o.tier);
-  if (o.onBoard === true || tier === 'top-50') return 'top-50';
+  //
+  //    top-50 comes from the LIVE board and nowhere else. A stored 'top-50' tag
+  //    is a claim that expires: the board's tail churns every 5 minutes (Ronin
+  //    fell off it mid-backfill), and 48 of our 130 rows carry one. Honouring a
+  //    stored tag would republish a rank the chain no longer holds — Somnia sits
+  //    at 49 today, and at 51 tomorrow it would still read "Top 50". graveyard
+  //    and stuck are different in kind: researched desk verdicts, not a rank, and
+  //    they do not go stale on a 5-minute clock.
+  if (o.onBoard === true) return 'top-50';
   if (tier === 'graveyard') return 'graveyard';
   if (tier === 'stuck') return 'stuck';
 

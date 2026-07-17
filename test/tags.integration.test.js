@@ -18,7 +18,7 @@ const json = (b) => new Response(JSON.stringify(b), { status: 200, headers: { 'c
 const UNIVERSE = [
   { name: 'Ethereum', tvl: 6e10, tokenSymbol: 'ETH', gecko_id: 'ethereum', chainId: 1 },
   { name: 'Berachain', tvl: 1e9, tokenSymbol: 'BERA', gecko_id: 'berachain', chainId: 80094 },
-  { name: 'Canton', tvl: 5e8, tokenSymbol: 'CC', gecko_id: null, chainId: null },
+  { name: 'Canton', tvl: 9e9, tokenSymbol: 'CC', gecko_id: null, chainId: null },   // big enough to actually make the board
   { name: 'Robinhood Chain', tvl: 2.1e8, tokenSymbol: null, gecko_id: null, chainId: 4663 },
   { name: 'Scroll', tvl: 4e7, tokenSymbol: 'SCR', gecko_id: 'scroll', chainId: 534352 },
   { name: 'Osmosis', tvl: 3e7, tokenSymbol: 'OSMO', gecko_id: 'osmosis', chainId: null },
@@ -41,8 +41,8 @@ afterEach(() => vi.unstubAllGlobals());
 const stub = () => vi.stubGlobal('fetch', vi.fn(async (u) => {
   u = String(u);
   if (u.includes('/v2/chains')) return json(UNIVERSE);
-  if (u.includes('/overview/dexs')) return json(ov(fillerVol({ Ethereum: 1.1e9, Berachain: 2e7, Canton: 1e7, 'Robinhood Chain': 5e6, Scroll: 1e5, Osmosis: 9e4 })));
-  if (u.includes('/overview/fees')) return json(ov(fillerFees({ Ethereum: 5e6, Berachain: 1e4, Canton: 1e3, 'Robinhood Chain': 8e2, Scroll: 40, Osmosis: 30 })));
+  if (u.includes('/overview/dexs')) return json(ov(fillerVol({ Ethereum: 1.1e9, Berachain: 2e7, Canton: 9e8, 'Robinhood Chain': 5e6, Scroll: 1e5, Osmosis: 9e4 })));
+  if (u.includes('/overview/fees')) return json(ov(fillerFees({ Ethereum: 5e6, Berachain: 1e4, Canton: 1e4, 'Robinhood Chain': 8e2, Scroll: 40, Osmosis: 30 })));
   return new Response('', { status: 500 });
 }));
 // An off-board chain resolves through the `chains_lite` index, so the stub must
@@ -134,11 +134,23 @@ describe('chain tags on /api/chain/:name', () => {
   });
 
   it('never reads `founded: 2021` as an epoch timestamp (1970)', async () => {
-    // parseLaunch treats a NUMBER as epoch millis, so 2021 would be 1st Jan 1970.
-    // Scroll carries both; mainnet_live must win and the number must be ignored.
-    const body = await get('Scroll', [identity('Scroll', REAL.Scroll)]);
-    expect(body.tags.cohort).not.toBe('up-and-coming');
-    expect(body.tags.cohort).toBe('graveyard');
+    // Two earlier versions of this test were VACUOUS and a mutant that deleted
+    // the guard survived both.
+    //   v1 used Scroll — which carries mainnet_live:'2023-10', and mainnet_live
+    //      precedes founded in LAUNCH_KEYS, so the guard never fired.
+    //   v2 used an on-board chain — 2021-as-millis lands in 1970, which is old,
+    //      and an on-board chain returns top-50 whatever the date says.
+    // The mis-parse only CHANGES the answer for an OFF-BOARD chain with no other
+    // date: guarded, we know no launch date and say nothing (null); unguarded,
+    // 1970 is a known past date and the chain becomes 'watchlist' — a cohort
+    // invented out of a number that was never a date.
+    const numericOnly = { tags: ['l1'], founded: 2021 };
+    const body = await get('Scroll', [identity('Scroll', numericOnly)]);   // Scroll is off the board here
+    expect(body.tags.cohort).toBeNull();
+
+    // The same value as a STRING is a real date, and the rule uses it.
+    const stringy = await get('Scroll', [identity('Scroll', { tags: ['l1'], founded: '2021' })]);
+    expect(stringy.tags.cohort).toBe('watchlist');
   });
 
   it('computes up-and-coming from a real 16-day-old row', async () => {
