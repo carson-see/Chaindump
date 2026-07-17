@@ -54,6 +54,9 @@ function makeDB(factRows = []) {
     async first() { const m = this.sql.match(/key='([a-z_]+)'/); return m && store[m[1]] ? { data: store[m[1]], updated_at: 1 } : null; },
     async all() {
       if (this.sql.includes('FROM chain_facts')) {
+        // The unbound UNION scan (deskOnlyChain's norm() fallback) selects every
+        // researched chain name; the bound query selects one chain's rows.
+        if (!this.binds.length) return { results: factRows.map((r) => ({ chain: r.chain })) };
         const want = String(this.binds[0] || '');
         return { results: factRows.filter((r) => r.chain === want || r.chain.toLowerCase() === want.toLowerCase()) };
       }
@@ -130,5 +133,50 @@ describe('research desk facts on /api/chain/:name', () => {
     const res = await worker.fetch(new Request('http://localhost/api/chain/Berachain'), {}, ctx());
     expect(res.status).toBe(200);
     expect((await res.json()).facts).toBeNull();
+  });
+});
+
+// 12 chains the desk had RESEARCHED 404'd on their own profile: their names come
+// from the desk, not DefiLlama, and resolveTailChain matched raw lowercase while
+// the rest of the pipeline keys on norm(). Some (Polkadot, Karak, OKExChain) are
+// not in DefiLlama's feed at all. Guessing an alias would put the wrong chain's
+// metrics on a researched page — a worse error than the 404 — so we resolve on
+// norm(), and fall back to the research with no market figures.
+describe('a chain we researched always resolves', () => {
+  const factRow = (chain) => ({
+    chain, dimension: 'synthesis', updated_at: '2026-07-17',
+    data: JSON.stringify({ thesis: `${chain} thesis`, bear: 'b', bull: 'B' }),
+    sources: JSON.stringify([{ title: 'DefiLlama', url: 'https://defillama.com' }]),
+  });
+
+  it('matches on norm(), so the desk\'s "Cosmos Hub" finds DefiLlama\'s "CosmosHub"', async () => {
+    stubFeed();
+    const worker = await freshWorker();
+    // The board fixture has no such chain; the desk row is the only trace.
+    const res = await worker.fetch(new Request('http://localhost/api/chain/Cosmos%20Hub'), { DB: makeDB([factRow('CosmosHub')]) }, ctx());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.chain.name).toBe('CosmosHub');
+    expect(body.facts.synthesis.data.thesis).toContain('CosmosHub');
+  });
+
+  it('serves the research for a chain DefiLlama does not carry, with no invented metrics', async () => {
+    stubFeed();
+    const worker = await freshWorker();
+    const res = await worker.fetch(new Request('http://localhost/api/chain/Karak'), { DB: makeDB([factRow('Karak')]) }, ctx());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.chain.name).toBe('Karak');
+    expect(body.chain.tvl).toBeNull();          // never 0 — we have no market feed for it
+    expect(body.chain.volume24h).toBeNull();
+    expect(body.chain.marketData).toBe(false);
+    expect(body.facts.synthesis).toBeTruthy();  // ...but the research is there
+  });
+
+  it('still 404s a chain we have never researched', async () => {
+    stubFeed();
+    const worker = await freshWorker();
+    const res = await worker.fetch(new Request('http://localhost/api/chain/NotARealChainXYZ'), { DB: makeDB([]) }, ctx());
+    expect(res.status).toBe(404);
   });
 });

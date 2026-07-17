@@ -567,10 +567,59 @@ async function loadLiteIndex() {
   return liteCache.data;
 }
 
+// A chain the desk researched that DefiLlama does not carry. We know its name and
+// we hold a profile for it; we have no market metrics, and we say so by omitting
+// them rather than by 404ing a page we have real analysis for.
+async function deskOnlyChain(target) {
+  const key = norm(target);
+  try {
+    const rows = await dbQuery(
+      `SELECT chain FROM (
+         SELECT chain FROM chain_facts
+         UNION SELECT chain FROM dead_chains
+         UNION SELECT chain FROM mid_chains
+       ) WHERE lower(chain) = lower(?1)`,
+      [target]
+    );
+    let name = rows[0] && rows[0].chain;
+    if (!name) {
+      // norm() differences (spaces, punctuation) — scan the researched set once.
+      const all = await dbQuery(`SELECT DISTINCT chain FROM chain_facts UNION SELECT chain FROM dead_chains UNION SELECT chain FROM mid_chains`);
+      const hit = all.find((r) => r.chain && norm(r.chain) === key);
+      name = hit && hit.chain;
+    }
+    if (!name) return null;
+    return {
+      key,
+      name,
+      symbol: null, gecko: null, chainId: null,
+      category: resolveCategory(name, null),
+      // No market feed covers this chain. null, never 0 — 0 is a measurement.
+      tvl: null, volume24h: null, fees24h: null, stables: null, activeAddresses: null,
+      coverage: 'research-only',
+      marketData: false,
+    };
+  } catch (e) { return null; }
+}
+
+// Resolve a chain we hold research on but that is not on the board.
+//
+// Two ways this used to 404 on a chain the desk had actually researched:
+//   1. Raw lowercase matching, while the rest of the pipeline keys on norm().
+//      "Cosmos Hub" never matched DefiLlama's "CosmosHub".
+//   2. The chain isn't in DefiLlama's feed AT ALL (Polkadot, Karak, OKExChain),
+//      or is listed under a name only a human could map (Fuel -> "Fuel Ignition",
+//      Merlin Chain -> "Merlin", Manta Pacific -> "Manta" OR "Manta Atlantic"?).
+//      Those are ambiguous, and guessing an alias would put the WRONG chain's
+//      metrics on a researched profile — a worse error than the 404.
+// So: match on norm(), and if the market feed simply doesn't cover the chain,
+// still serve the research with no market figures rather than pretend it doesn't
+// exist. The UI already renders a missing figure as "—".
 async function resolveTailChain(target) {
   const lite = await loadLiteIndex();
-  if (!Array.isArray(lite)) return null;
-  const row = lite.find((c) => c.name.toLowerCase() === target);
+  const key = norm(target);
+  let row = Array.isArray(lite) ? lite.find((c) => norm(c.name) === key) : null;
+  if (!row) row = await deskOnlyChain(target);
   if (!row) return null;
   const top = (cache.data && cache.data.chains) || [];
   const linkRows = [row, ...top].map((r) => ({
