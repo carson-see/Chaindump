@@ -6,6 +6,7 @@ import {
   chainConcentration,
   assessChainDataQuality,
   annotateDataQuality,
+  buildChainIndex,
 } from '../src/lib/data-quality.js';
 
 // A chain's headline TVL is only comparable to its neighbours if the figure is
@@ -112,6 +113,65 @@ describe('assessChainDataQuality', () => {
     for (const word of ['fraud', 'scam', 'fake', 'criminal', 'launder', 'steal', 'rug']) {
       expect(text).not.toContain(word);
     }
+  });
+});
+
+// Regression: /v2/chains says "BSC"/"OP Mainnet" while chainTvls says
+// "Binance"/"Optimism". Matching the raw name found nothing for 19 of the 149
+// chains over $1M TVL (BSC at $4.9B among them), so the rule silently could not
+// assess them — a false negative that looked exactly like "chain is fine".
+describe('chain-name normalization (feeds disagree on names)', () => {
+  const onBinance = { name: 'PancakeSwap', category: 'Dexs', audits: '2', chains: ['Binance'], chainTvls: { Binance: 100 } };
+
+  it('resolves an aliased chainTvls key to the /v2/chains name', () => {
+    const c = chainConcentration([onBinance], 'BSC');
+    expect(c).not.toBeNull();
+    expect(c.topProtocol.name).toBe('PancakeSwap');
+  });
+
+  it('resolves OP Mainnet <- Optimism', () => {
+    const p = { name: 'Velodrome', category: 'Dexs', audits: '2', chains: ['Optimism'], chainTvls: { Optimism: 50 } };
+    expect(chainConcentration([p], 'OP Mainnet')).not.toBeNull();
+  });
+
+  it('counts a bridge listed under an alias', () => {
+    const br = { name: 'B', category: 'Canonical Bridge', chains: ['Optimism'], chainTvls: { Optimism: 5 } };
+    expect(chainHasBridge([br], 'OP Mainnet')).toBe(true);
+  });
+
+  it('does NOT merge derived chainTvls keys into the real chain', () => {
+    const p = { name: 'X', category: 'Lending', audits: '0', chains: ['Ethereum'], chainTvls: { Ethereum: 100, 'Ethereum-borrowed': 900, staking: 500 } };
+    const c = chainConcentration([p], 'Ethereum');
+    expect(c.total).toBe(100); // borrowed/staking must not inflate the chain total
+  });
+
+  it('sums keys that normalize to the same chain rather than dropping one', () => {
+    const p = { name: 'X', category: 'Dexs', audits: '0', chains: ['BSC'], chainTvls: { BSC: 60, Binance: 40 } };
+    expect(chainConcentration([p], 'BSC').total).toBe(100);
+  });
+});
+
+describe('buildChainIndex', () => {
+  it('indexes by normalized chain and marks bridged chains', () => {
+    const { byChain, bridged } = buildChainIndex([rocketswap, lighter]);
+    expect(byChain.get('anubis')).toHaveLength(1);
+    expect(bridged.has('robinhoodchain')).toBe(true);
+    expect(bridged.has('anubis')).toBe(false);
+  });
+
+  // The index is memoized on the protocols array identity. getProtocols() swaps
+  // in a NEW array every 15 min, so a refresh must never be served a stale index.
+  it('a different protocols array is never served a stale memoized index', () => {
+    expect(assessChainDataQuality('Anubis', [rocketswap])).not.toBeNull();
+    const audited = [{ ...rocketswap, audits: '3', audit_links: ['https://a/audit'] }];
+    expect(assessChainDataQuality('Anubis', audited)).toBeNull(); // fresh array -> re-evaluated
+  });
+
+  it('a prebuilt index produces the same verdict as passing raw protocols', () => {
+    const index = buildChainIndex([rocketswap]);
+    const viaIndex = assessChainDataQuality('Anubis', [rocketswap], { index });
+    const viaRaw = assessChainDataQuality('Anubis', [rocketswap]);
+    expect(viaIndex).toEqual(viaRaw);
   });
 });
 

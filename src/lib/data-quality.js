@@ -17,6 +17,8 @@
 // explaining the reasons rather than silently suppressing the row: the user sees
 // the evidence and draws their own conclusion.
 
+import { norm } from './chainkit.js';
+
 export const DQ_UNVERIFIED = 'unverified_tvl';
 
 // Share of chain TVL in the single largest protocol, at/above which the chain's
@@ -32,13 +34,6 @@ const BRIDGE_CATEGORIES = new Set([
 
 const list = (v) => (Array.isArray(v) ? v : []);
 
-// TVL a protocol reports on exactly this chain. chainTvls also carries derived
-// keys ("Ethereum-staking", "-borrowed"); an exact chain-name match skips those.
-function tvlOnChain(p, chainName) {
-  const v = p && p.chainTvls && p.chainTvls[chainName];
-  return typeof v === 'number' && isFinite(v) && v > 0 ? v : 0;
-}
-
 // DefiLlama serves `audits` as a STRING ("0", "2") — a `=== 0` check silently
 // never matches. Audit links count as evidence of an audit even when the
 // count is 0, since the count is frequently unmaintained.
@@ -48,23 +43,80 @@ export function protocolIsUnaudited(p) {
   return (Number(p.audits) || 0) === 0;
 }
 
-// A chain "has a bridge" if any bridge-category protocol actually operates on
-// it — either reporting TVL there or listing it as a supported chain.
-export function chainHasBridge(protocols, chainName) {
-  return list(protocols).some(
-    (p) => p && BRIDGE_CATEGORIES.has(p.category) &&
-      (tvlOnChain(p, chainName) > 0 || list(p.chains).includes(chainName)),
-  );
+// Index every protocol's TVL by NORMALIZED chain name, once.
+//
+// Normalizing is load-bearing, not cosmetic: /v2/chains says "BSC" and "OP
+// Mainnet" while chainTvls says "Binance" and "Optimism". Matching on the raw
+// name found nothing for 19 of the 149 chains over $1M TVL — including BSC at
+// $4.9B — so the rule silently could not assess them at all. norm()/ALIAS is the
+// same reconciliation the Worker already applies to the DEX and fees feeds.
+//
+// chainTvls also carries derived keys ("Ethereum-staking", "borrowed"); those
+// normalize to distinct keys of their own and so never merge into a real chain.
+// Building this once also turns annotate from O(rows x protocols) into
+// O(protocols + rows) — it was ~80ms and ~400k temp objects per cron tick.
+export function buildChainIndex(protocols, normalize = norm) {
+  const byChain = new Map();   // normKey -> [{ p, tvl }]
+  const bridged = new Set();   // normKey of chains with a bridge-category protocol
+  for (const p of list(protocols)) {
+    if (!p) continue;
+    const isBridge = BRIDGE_CATEGORIES.has(p.category);
+    // Sum per normalized chain: one protocol could in principle list both an
+    // alias and the canonical name, and they are the same chain.
+    const per = new Map();
+    const ct = p.chainTvls || {};
+    for (const key in ct) {
+      const v = ct[key];
+      if (typeof v !== 'number' || !isFinite(v) || v <= 0) continue;
+      const k = normalize(key);
+      per.set(k, (per.get(k) || 0) + v);
+    }
+    for (const [k, tvl] of per) {
+      let entries = byChain.get(k);
+      if (!entries) { entries = []; byChain.set(k, entries); }
+      entries.push({ p, tvl });
+      if (isBridge) bridged.add(k);
+    }
+    // A bridge that lists the chain as supported corroborates it even if the
+    // adapter reports no TVL there right now.
+    if (isBridge) for (const c of list(p.chains)) bridged.add(normalize(c));
+  }
+  return { byChain, bridged };
+}
+
+// getProtocols() hands back the SAME array for 15 minutes, so rebuilding the
+// index per request is pure waste (~14ms on a route that otherwise spends ~7ms).
+// Keyed by array identity, so a fresh fetch is a fresh key and the index can
+// never go stale. WeakMap, not a plain memo: holding the previous 8MB payload
+// alive alongside the new one would roughly double peak heap against the
+// Worker's 128MB ceiling. Only memoize the default normalizer — a caller-
+// supplied one would make array identity the wrong key.
+const _indexCache = new WeakMap();
+
+function indexFor(protocols, opts) {
+  if (opts.index) return opts.index;
+  const normalize = opts.normalize || norm;
+  if (normalize !== norm) return buildChainIndex(protocols, normalize);
+  let index = _indexCache.get(protocols);
+  if (!index) {
+    index = buildChainIndex(protocols, norm);
+    _indexCache.set(protocols, index);
+  }
+  return index;
+}
+
+// A chain "has a bridge" if any bridge-category protocol operates on it.
+export function chainHasBridge(protocols, chainName, opts = {}) {
+  const { bridged } = indexFor(protocols, opts);
+  return bridged.has((opts.normalize || norm)(chainName));
 }
 
 // Concentration of a chain's TVL across the protocols reporting on it.
 // Returns null when no protocol reports TVL — absence of data is not evidence,
 // so an unknown chain must never be flagged.
-export function chainConcentration(protocols, chainName) {
-  const on = list(protocols)
-    .map((p) => ({ p, tvl: tvlOnChain(p, chainName) }))
-    .filter((x) => x.tvl > 0)
-    .sort((a, b) => b.tvl - a.tvl);
+export function chainConcentration(protocols, chainName, opts = {}) {
+  const { byChain } = indexFor(protocols, opts);
+  const on = (byChain.get((opts.normalize || norm)(chainName)) || []).slice().sort((a, b) => b.tvl - a.tvl);
   if (!on.length) return null;
   const total = on.reduce((a, x) => a + x.tvl, 0);
   if (!(total > 0)) return null;
@@ -82,12 +134,13 @@ export function chainConcentration(protocols, chainName) {
 export function assessChainDataQuality(chainName, protocols, opts = {}) {
   const minShare = opts.concentrationMin != null ? opts.concentrationMin : CONCENTRATION_MIN;
   if (!chainName || !list(protocols).length) return null;
+  const shared = { ...opts, index: indexFor(protocols, opts) };
 
-  const conc = chainConcentration(protocols, chainName);
+  const conc = chainConcentration(protocols, chainName, shared);
   if (!conc) return null;
-  if (conc.topShare < minShare) return null;                 // 1 — not concentrated
-  if (!protocolIsUnaudited(conc.topProtocol)) return null;   // 2 — sole protocol is audited
-  if (chainHasBridge(protocols, chainName)) return null;     // 3 — a bridge corroborates the value
+  if (conc.topShare < minShare) return null;                        // 1 — not concentrated
+  if (!protocolIsUnaudited(conc.topProtocol)) return null;          // 2 — sole protocol is audited
+  if (chainHasBridge(protocols, chainName, shared)) return null;    // 3 — a bridge corroborates the value
 
   const top = conc.topProtocol.name || 'a single protocol';
   const share = conc.topShare >= 99.95 ? '100%' : `${conc.topShare.toFixed(1)}%`;
@@ -117,9 +170,10 @@ export function assessChainDataQuality(chainName, protocols, opts = {}) {
 // (and every row, when protocol data is unavailable) are left untouched.
 export function annotateDataQuality(rows, protocols, opts = {}) {
   if (!list(rows).length || !list(protocols).length) return rows;
+  const shared = { ...opts, index: indexFor(protocols, opts) };  // built once for the whole board
   for (const r of rows) {
     if (!r || !r.name) continue;
-    const dq = assessChainDataQuality(r.name, protocols, opts);
+    const dq = assessChainDataQuality(r.name, protocols, shared);
     if (dq) r.dataQuality = dq;
   }
   return rows;
