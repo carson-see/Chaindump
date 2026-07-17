@@ -1126,6 +1126,50 @@ const FACT_SECTIONS = [
   ['identity','Identity'], ['capital','Capital & backers'], ['team','Team'],
   ['narrative','Narrative'], ['onchain','Onchain'], ['token','Token'], ['risk','Risk'],
 ];
+// A funding round, normalised. The desk writes rounds under three shapes — 45
+// objects as {amount_usd,date,lead,round,source_idx}, 21 as
+// {amount_usd,date,investors,lead,stage,valuation_usd}, one as
+// {amount_usd,announced,leads,participants,round,structure,valuation} — and the
+// generic renderer looked for name/claim/title, found none, and fell through to
+// JSON.stringify(). Every raise on every profile rendered as a raw JSON blob.
+// Normalising here rather than picking one shape: the rows already exist, and an
+// agent will write a fourth spelling tomorrow.
+const isRound = (x) => x && typeof x === 'object' && (x.amount_usd != null || x.valuation_usd != null || x.amount != null);
+function roundText(x){
+  const amt = x.amount_usd ?? x.amount;
+  const stage = x.round || x.stage || x.structure;
+  const when = x.date || x.announced;
+  // lead(s) may be a string or an array; investors/participants are the wider list.
+  const leadRaw = x.lead ?? x.leads;
+  const lead = Array.isArray(leadRaw) ? leadRaw.filter(Boolean).join(', ') : leadRaw;
+  const others = [].concat(x.investors || [], x.participants || [], x.angels || []).filter(Boolean);
+  const bits = [];
+  if (amt != null && isFinite(amt)) bits.push(fmtUsd(amt));
+  else if (amt) bits.push(String(amt));
+  if (stage) bits.push(String(stage));
+  if (lead) bits.push(`led by ${lead}`);
+  else if (others.length) bits.push(others.slice(0, 3).join(', ') + (others.length > 3 ? ` +${others.length - 3} more` : ''));
+  const val = x.valuation_usd ?? x.valuation;
+  if (val != null && isFinite(val)) bits.push(`at a ${fmtUsd(val)} valuation`);
+  else if (val) bits.push(`at a ${val} valuation`);
+  let line = bits.join(' — ');
+  if (when) line += ` (${when})`;
+  return line.trim();
+}
+// Rounds get their own list: a comma-joined string of six raises is unreadable,
+// and each one is a discrete cited fact.
+function roundsHtml(list){
+  const li = list.filter(isRound).map((x) => {
+    const t = roundText(x);
+    if (!t) return '';
+    // source_url is per-round provenance; safeUrl before esc, it is agent-written.
+    const cite = typeof x.source_url === 'string' && /^https?:\/\//i.test(x.source_url)
+      ? ` <a class="ecite" href="${esc(safeUrl(x.source_url))}" target="_blank" rel="noopener noreferrer">source ↗</a>` : '';
+    return `<li>${esc(t)}${cite}</li>`;
+  }).filter(Boolean).join('');
+  return li ? `<ul class="evlist">${li}</ul>` : '';
+}
+
 function factBlockHtml(f, label){
   if (!f || !f.data || typeof f.data !== 'object') return '';
   const d = f.data;
@@ -1135,19 +1179,34 @@ function factBlockHtml(f, label){
 
   const corr = typeof d._corrections === 'string'
     ? `<div class="fcorr"><b>Correction</b> ${esc(d._corrections)}</div>` : '';
-  const parts = Object.keys(d).map((k) => {
+  const rows = [];
+  for (const k of Object.keys(d)) {
     const v = d[k];
-    if (v == null || v === '' || k === 'sources' || k === 'source_idx') return '';
+    if (v == null || v === '' || k === 'sources' || k === 'source_idx' || k === '_corrections') continue;
+
+    // Funding rounds render as their own list, not as a field value.
+    if (Array.isArray(v) && v.some(isRound)) {
+      const html = roundsHtml(v);
+      if (html) rows.push(`<div class="dsub">${esc(k.replace(/_/g, ' '))}</div>${html}`);
+      continue;
+    }
+
     let txt;
-    if (k === '_corrections') return '';
     if (Array.isArray(v)) {
-      txt = v.map((x) => (x && typeof x === 'object') ? (x.name || x.claim || x.title || JSON.stringify(x)) : String(x)).filter(Boolean).join(', ');
-    } else if (typeof v === 'object') { return ''; }
+      txt = v.map((x) => (x && typeof x === 'object')
+        ? (x.name || x.claim || x.title || roundText(x) || '')   // never dump raw JSON at a reader
+        : String(x)).filter(Boolean).join(', ');
+    } else if (typeof v === 'object') { continue; }
+    else if (typeof v === 'number' && /(_usd|_uds)$/.test(k)) txt = fmtUsd(v);   // total_raised_usd etc: $200M, not 200000000
     else txt = String(v);
-    if (!txt) return '';
-    return `<div class="frow"><span class="fk">${esc(k.replace(/_/g,' '))}</span><span class="fv">${esc(txt)}</span></div>`;
-  }).filter(Boolean).join('');
-  return parts ? `<div class="dsec">${esc(label)} ${stamp}</div><div class="fgrid">${parts}</div>${corr}${srcHtml(f.sources)}` : '';
+    if (!txt) continue;
+    rows.push(`<div class="frow"><span class="fk">${esc(k.replace(/_/g,' '))}</span><span class="fv">${esc(txt)}</span></div>`);
+  }
+  // Field rows go in the grid; round lists sit outside it, full width.
+  const fieldRows = rows.filter((r) => r.startsWith('<div class="frow"')).join('');
+  const listRows = rows.filter((r) => !r.startsWith('<div class="frow"')).join('');
+  const parts = fieldRows || listRows ? `${fieldRows ? `<div class="fgrid">${fieldRows}</div>` : ''}${listRows}` : '';
+  return parts ? `<div class="dsec">${esc(label)} ${stamp}</div>${parts}${corr}${srcHtml(f.sources)}` : '';
 }
 
 // The desk marks entities it could not stand behind (Anubis: "UNVERIFIED —
