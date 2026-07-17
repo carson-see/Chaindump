@@ -947,6 +947,34 @@ app.get('/api/desk/pending', wrap(async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 }));
 
+// Read the research desk's per-dimension rows for one chain (identity, capital,
+// team, narrative, risk, token, onchain, synthesis, links...).
+//
+// This table held 248 rows of researched, cited analysis and NOTHING in src/ read
+// it — every dossier the desk wrote was invisible to users. That is the whole of
+// "berachain is thriving but we can't justify it, no citations or analysis".
+//
+// Match on the desk's name OR a case-insensitive match: chain_facts is keyed by
+// the researcher's spelling, which does not always match the TVL feed's ("NEAR"
+// in the desk, "Near" on the board).
+async function chainFacts(chainName) {
+  const out = {};
+  try {
+    const rows = await dbQuery(
+      `SELECT dimension, data, sources, updated_at FROM chain_facts WHERE chain = ?1 OR lower(chain) = lower(?1)`,
+      [chainName]
+    );
+    for (const r of rows) {
+      if (!r.dimension || r.dimension === '_meta') continue;
+      let data = null, sources = null;
+      try { data = r.data ? JSON.parse(r.data) : null; } catch (e) { continue; }   // skip malformed, never serve half-parsed research
+      try { sources = r.sources ? JSON.parse(r.sources) : null; } catch (e) { sources = null; }
+      out[r.dimension] = { data, sources, updatedAt: r.updated_at || null };
+    }
+  } catch (e) { /* facts are best-effort — the table may not exist yet */ }
+  return Object.keys(out).length ? out : null;
+}
+
 app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
@@ -986,7 +1014,9 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
     let risk = null;
     try { const rr = await dbQuery(`SELECT level, summary, evidence, sources FROM risk_flags WHERE entity_type='chain' AND entity_name = ? LIMIT 1`, [row.name]); if (rr[0]) risk = rr[0]; } catch (e) {}
 
-    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk });
+    const facts = await chainFacts(row.name);
+
+    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk, facts });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
