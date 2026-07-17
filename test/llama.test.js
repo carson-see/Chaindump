@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates } from '../src/lib/llama.js';
+import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from '../src/lib/llama.js';
 
 const norm = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -119,5 +119,49 @@ describe('selectCandidates', () => {
   it('handles a universe smaller than the board without inventing rows', () => {
     const tiny = [{ name: 'A', score: 1, tvl: 1, volume24h: 1, fees24h: 1 }];
     expect(selectCandidates(tiny, { boardSize: 50 })).toHaveLength(1);
+  });
+});
+
+// Real duplicates measured in DefiLlama's /v2/chains on 2026-07-17. Both aliases
+// carry $0 TVL, and two-pass enrichment hands them the real chain's DEX volume —
+// so without this the board lists the same chain twice, the ghost ranking higher.
+describe('dedupeChains', () => {
+  const BSC = { name: 'BSC', chainId: 56, tvl: 4.867e9 };
+  const BINANCE = { name: 'Binance', chainId: 56, tvl: 0 };
+  const OP = { name: 'OP Mainnet', chainId: 10, tvl: 2.903e8 };
+  const OPTIMISM = { name: 'Optimism', chainId: 10, tvl: 0 };
+
+  it('keeps the real chain and drops the $0 alias', () => {
+    const out = dedupeChains([BINANCE, BSC, OPTIMISM, OP]);
+    const names = out.map((r) => r.name).sort();
+    expect(names).toEqual(['BSC', 'OP Mainnet']);
+  });
+
+  it('leaves one entry per duplicated chainId — no chain appears twice', () => {
+    const out = dedupeChains([BSC, BINANCE, OP, OPTIMISM]);
+    const ids = out.map((r) => r.chainId);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('never drops chains that have no chainId (Solana, Bitcoin, Tron...)', () => {
+    const rows = [{ name: 'Solana', chainId: null, tvl: 9e9 }, { name: 'Bitcoin', chainId: null, tvl: 1e9 }, BSC];
+    expect(dedupeChains(rows)).toHaveLength(3);
+  });
+
+  it('never merges two DIFFERENT chains that share a name shape but not a chainId', () => {
+    const rows = [{ name: 'Base', chainId: 8453, tvl: 4e9 }, { name: 'Base', chainId: 1, tvl: 1e9 }];
+    expect(dedupeChains(rows)).toHaveLength(2);
+  });
+
+  it('is deterministic when both duplicates are empty — never reorders at random', () => {
+    const a = { name: 'Binance', chainId: 56, tvl: 0 };
+    const b = { name: 'BSC', chainId: 56, tvl: 0 };
+    expect(dedupeChains([a, b])[0].name).toBe('BSC');
+    expect(dedupeChains([b, a])[0].name).toBe('BSC');   // input order must not matter
+  });
+
+  it('passes a clean universe through untouched', () => {
+    const rows = [BSC, OP, { name: 'Solana', chainId: null, tvl: 9e9 }];
+    expect(dedupeChains(rows)).toHaveLength(3);
   });
 });

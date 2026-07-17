@@ -94,3 +94,33 @@ export function selectCandidates(rows, { boardSize, scoreBuffer = 30, axisTop = 
   ]);
   return [...chosen];
 }
+
+/**
+ * DefiLlama's /v2/chains double-lists some chains under one chainId: a real entry
+ * and a legacy alias carrying $0 TVL. Measured 2026-07-17 — exactly two:
+ *   chainId 56: BSC ($4.87B)        vs Binance ($0.00B)
+ *   chainId 10: OP Mainnet ($290M)  vs Optimism ($0.00B)
+ *
+ * The alias used to be harmless: it scored ~0 on the aggregate and sank. Two-pass
+ * scoring made it dangerous — DefiLlama's per-chain endpoint RESOLVES the alias,
+ * so "Binance" gets BNB Chain's real DEX volume while reporting $0 TVL, and a
+ * ghost outranks the genuine entry. The board then shows the same chain twice.
+ *
+ * Keep the row with the most TVL: the alias is the empty one by construction.
+ * Tie-break on name so a degenerate feed can't reorder the board at random.
+ */
+export function dedupeChains(rows) {
+  const byId = new Map();
+  const out = [];
+  for (const r of rows) {
+    if (r.chainId == null) { out.push(r); continue; }   // no chainId -> nothing to dedupe against
+    const k = String(r.chainId);
+    const prev = byId.get(k);
+    if (!prev) { byId.set(k, r); continue; }
+    const better = (Number(r.tvl) || 0) !== (Number(prev.tvl) || 0)
+      ? ((Number(r.tvl) || 0) > (Number(prev.tvl) || 0) ? r : prev)
+      : (String(r.name) < String(prev.name) ? r : prev);
+    byId.set(k, better);
+  }
+  return [...out, ...byId.values()];
+}

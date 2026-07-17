@@ -6,7 +6,7 @@ import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriv
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
-import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates } from './lib/llama.js';
+import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from './lib/llama.js';
 
 const ENV = {};
 const app = new Hono();
@@ -266,8 +266,10 @@ async function buildSnapshot(opts = {}) {
   }
 
   // --- assemble base rows from TVL feed (canonical names + chainId + gecko) ---
-  const rows = chains
-    .filter((c) => c && c.name)
+  // dedupeChains first: DefiLlama double-lists BSC/Binance and OP Mainnet/Optimism
+  // under one chainId, and the per-chain endpoint resolves the $0 alias to the real
+  // chain's volume — so the board would carry the same chain twice.
+  const rows = dedupeChains(chains.filter((c) => c && c.name))
     .map((c) => {
       const key = norm(c.name);
       const mrec = c.chainId != null ? masterRec(masterMap[Number(c.chainId)]) : null;
