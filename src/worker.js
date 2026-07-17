@@ -3,6 +3,7 @@ import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } fro
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
+import { annotateDataQuality, assessChainDataQuality } from './lib/data-quality.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 // Aliased deliberately: causes.js above exports TAG_LABELS/canonTags into this
@@ -451,6 +452,16 @@ async function buildSnapshot(opts = {}) {
   const boardScores = top.map((r) => r.score || 0);
   const mnScore = Math.min(...boardScores), mxScore = Math.max(...boardScores);
   for (const r of top) r.activityIndex = activityIndex(r.score, mnScore, mxScore);
+
+  // --- data-quality caveat: mark TVL figures that cannot be independently
+  // verified, so a TVL-ordered view doesn't imply two adjacent rows are peers.
+  // Best-effort: if /protocols is unavailable we annotate nothing rather than
+  // guess — a missing badge is a smaller error than a wrong one.
+  try {
+    annotateDataQuality(top, await getProtocols());
+  } catch (e) {
+    console.error('[buildSnapshot] data-quality annotation skipped:', e.message);
+  }
 
   const ranked = top.map((r, i) => ({ rank: i + 1, ...r, links: LINKS[norm(r.name)] || null }));
 
@@ -1118,10 +1129,24 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
     if (!row) { row = await resolveTailChain(target); } // beyond the top-50 → lite index
     if (!row) return res.status(404).json({ error: 'unknown chain' });
 
+    // Board membership decides several things below; compute it once.
+    const onBoard = (cache.data.chains || []).some((c) => c.name === row.name);
+
     let topProjects = [];
+    let dataQuality = row.dataQuality || null;
     try {
       const protos = await getProtocols();
       const name = row.name;
+      // Only assess here for chains OUTSIDE the ranked top-50 — the snapshot has
+      // already assessed every board row, and a clean board row legitimately
+      // carries no dataQuality. Guarding on `!dataQuality` instead made 49 of 50
+      // board chains re-scan all 7,867 protocols on every detail request just to
+      // re-derive null.
+      if (!onBoard) {
+        const dq = assessChainDataQuality(name, protos, { displayedTvl: row.tvl });
+        // A caveat above the auto-publish ceiling is held for review, not served.
+        if (dq && dq.autoPublish !== false) dataQuality = dq;
+      }
       const SKIP = new Set(['CEX', 'Chain', 'Bridge']);
       topProjects = (Array.isArray(protos) ? protos : [])
         .filter((p) => Array.isArray(p.chains) && p.chains.includes(name) && !SKIP.has(p.category))
@@ -1151,10 +1176,9 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
 
     const facts = await chainFacts(row.name);
 
-    const onBoard = (cache.data.chains || []).some((c) => c.name === row.name);
     const tags = resolveTags(row, facts, onBoard);
 
-    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk, facts, tags, tagVocab: tagVocab() });
+    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, dataQuality, topProjects, topNfts, topTokens, analysis, risk, facts, tags, tagVocab: tagVocab() });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -1844,7 +1868,12 @@ app.get('/api/agent/summary', wrap(async (req, res) => {
   res.json({
     schema_version: '2.0.0', data_as_of: cache.data.updatedAt,
     market: { total_tvl_usd: t.tvl, total_volume_24h_usd: t.volume24h, total_fees_24h_usd: t.fees24h, chains_tracked: c.length },
-    leaders: c.slice(0, 5).map((x) => ({ chain: x.name, rank: x.rank, tvl_usd: x.tvl, activity_score: x.score })),
+    leaders: c.slice(0, 5).map((x) => ({
+      chain: x.name, rank: x.rank, tvl_usd: x.tvl, activity_score: x.score,
+      // Present only when the TVL figure can't be independently verified, so an
+      // agent consuming this list doesn't treat it as equivalent to its peers.
+      ...(x.dataQuality ? { data_quality: x.dataQuality.flag, data_quality_note: x.dataQuality.summary } : {}),
+    })),
     top_signals: all.slice(0, 12),
     signal_counts: { critical: all.filter((s) => s.severity === 'critical').length, notable: all.filter((s) => s.severity === 'notable').length, total: all.length },
     provenance: { sources: ['defillama', 'coingecko', 'growthepie'], note: 'Every signal carries its own evidence + method + confidence (0–1). Full feed at /api/agent/signals.' },
@@ -2213,7 +2242,12 @@ async function llmsFullBody() {
     const top = (cache.data.chains || []).slice(0, 25);
     if (top.length) {
       chainsMd = ['| # | Chain | TVL | 24h volume | Token price | Activity rank |', '|---|---|---|---|---|---|']
-        .concat(top.map((ch) => `| ${ch.rank ?? ''} | ${ch.name} | $${fmtShort(ch.tvl)} | $${fmtShort(ch.volume24h)} | ${ch.tokenPrice != null ? '$' + ch.tokenPrice : '—'} | ${ch.rank ?? ''} |`)).join('\n');
+        .concat(top.map((ch) => `| ${ch.rank ?? ''} | ${ch.name}${ch.dataQuality ? ' ⚠️' : ''} | $${fmtShort(ch.tvl)}${ch.dataQuality ? ' (unverified)' : ''} | $${fmtShort(ch.volume24h)} | ${ch.tokenPrice != null ? '$' + ch.tokenPrice : '—'} | ${ch.rank ?? ''} |`)).join('\n');
+      // Spell the caveat out in prose — a citing model reads the footnote, not just the glyph.
+      const caveats = top.filter((ch) => ch.dataQuality);
+      if (caveats.length) {
+        chainsMd += '\n\n' + caveats.map((ch) => `> ⚠️ **${ch.name} — unverified TVL.** ${ch.dataQuality.summary}`).join('\n>\n');
+      }
     }
   } catch (e) { console.error('[llms-full] snapshot skipped:', e && e.message); }
   const label = (v) => (VIEW_OG[v][0] || '').replace(/ — Chaindump$/, '');

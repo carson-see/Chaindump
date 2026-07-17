@@ -142,6 +142,20 @@
   .fv { color:var(--muted2); }
   .tierbadge.zombie { color:var(--warn); background:var(--warn-bg); border-color:rgba(217,164,65,.45); }
   .tierbadge.dead { color:var(--dead); background:var(--dead-bg); border-color:rgba(92,100,112,.35); }
+  /* Data-quality caveat on a TVL figure that cannot be independently verified.
+     Deliberately neutral (muted/warn, not the red "down" tone) — it flags an
+     unverifiable number, it does not accuse the project of anything. */
+  .dqbadge { display:inline-block; font-size:9px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; padding:1px 5px; border-radius:var(--r-sm); margin-left:6px; vertical-align:middle; cursor:help; font-family:var(--font-ui); color:var(--warn); background:var(--warn-bg); border:1px solid rgba(217,164,65,.30); }
+  /* it's a <button> for touch + keyboard access, so undo the UA button styling.
+     nowrap because the TVL column is narrow — without it the label wraps to
+     three lines and reads as a broken blob rather than a badge. */
+  button.dqbadge { line-height:1.5; text-align:center; white-space:nowrap; }
+  .dqnote { margin-top:10px; padding:10px 12px; border-radius:var(--r-sm); background:var(--warn-bg); border:1px solid rgba(217,164,65,.25); }
+  .dqnote .dqh { font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--warn); margin-bottom:5px; }
+  .dqnote .dqs { font-size:12.5px; color:var(--text); line-height:1.5; }
+  .dqnote ul { margin:7px 0 0; padding-left:16px; }
+  .dqnote li { font-size:12px; color:var(--muted2); line-height:1.55; }
+  .dqnote .dqsrc { margin-top:7px; font-size:10.5px; color:var(--muted); }
   .csym { color:var(--muted); font-size:11.5px; margin-left:5px; font-weight:500; }
   .cprice { display:block; font-size:11px; color:var(--muted2); font-variant-numeric:tabular-nums; margin-top:1px; }
   .delta { display:inline-block; font-size:11px; font-weight:600; margin-left:6px; padding:1px 5px; border-radius:5px; font-variant-numeric:tabular-nums; }
@@ -725,6 +739,16 @@ function glossEntry(key){
     const m = state.scoreMeta;
     return { t: m.name || 'Activity index', d: [m.formula, m.caveat].filter(Boolean).join(' ') };
   }
+  // Unverified-TVL caveat. Content is per-chain, so it resolves off the live
+  // row (ranked board) or the fetched detail (chains outside it).
+  if (key.indexOf('dq:') === 0) {
+    const name = key.slice(3);
+    const row = (state.chains || []).find((c) => c.name === name);
+    const det = state.details && state.details[name];
+    const dq = (row && row.dataQuality) || (det && det.dataQuality);
+    if (!dq) return null;
+    return { t: dq.label, d: [dq.summary].concat((dq.reasons || []).map((r) => '• ' + r)).join(' ') };
+  }
   if (key.indexOf('tier:') === 0) {
     const parts = key.split(':'), tier = parts[1], curated = parts[2] === 'curated';
     const crit = (state.tiers && state.tiers.criteria) || {};
@@ -815,6 +839,29 @@ function tierBadge(name) {
     return `<a class="tierbadge ${esc(t)}" href="/${view}" data-goview="${view}" data-gloss="tier:${esc(t)}:curated">${word}</a>`;
   }
   return `<button type="button" class="tierbadge ${esc(t)}" data-gloss="tier:${esc(t)}:computed" aria-label="What does this badge mean?">${esc(TIER_COMPUTED_LABEL[t])}</button>`;
+}
+
+// Caveat badge shown next to an unverified TVL figure. Uses the shared gloss
+// popover rather than a title attribute: `title` never fires on touch, which
+// would leave the badge unexplainable on mobile — the reason it exists at all.
+// glossEntry('dq:<chain>') resolves the reasons; gpShow writes them via
+// textContent, so the remote protocol name can't inject markup.
+function dqBadge(dq, chainName) {
+  if (!dq || !dq.label) return '';
+  return `<button type="button" class="dqbadge" data-gloss="dq:${esc(chainName)}" aria-label="Why is this TVL marked unverified?">⚠ ${esc(dq.label)}</button>`;
+}
+
+// The expanded/detail explanation — the badge alone can't carry the reasoning,
+// and a caveat the user can't interrogate is just an unexplained scarlet letter.
+function dqNote(dq) {
+  if (!dq || !dq.label) return '';
+  const reasons = (dq.reasons || []).map((r) => `<li>${esc(r)}</li>`).join('');
+  return `<div class="dqnote">
+    <div class="dqh">⚠ ${esc(dq.label)} — treat this figure with caution</div>
+    <div class="dqs">${esc(dq.summary || '')}</div>
+    ${reasons ? `<ul>${reasons}</ul>` : ''}
+    <div class="dqsrc">Method: ${esc(dq.method || '')} Source: ${esc(dq.source || '')}.</div>
+  </div>`;
 }
 
 function sparkline(values, w = 78, h = 22, pad = 3) {
@@ -920,7 +967,7 @@ function render() {
       <td class="chain"><div class="chaincell"><span class="chev">${open?'▾':'▸'}</span>${logo(c)}<span><span class="cname">${esc(c.name)}</span>${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${tierBadge(c.name)}${c.tokenPrice!=null?`<span class="cprice">$${fmtTok(c.tokenPrice)}${c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''}</span>`:''}</span></div></td>
       <td class="num" data-label="Active">${fmtNum(c.activeAddresses)}</td>
       <td class="num" data-label="24h Volume">${fmtUsd(c.volume24h)}${delta(c.volChange1d)}</td>
-      <td class="num" data-label="TVL">${fmtUsd(c.tvl)}${c.tvlChange7d!=null?delta(c.tvlChange7d):''}</td>
+      <td class="num" data-label="TVL">${fmtUsd(c.tvl)}${c.tvlChange7d!=null?delta(c.tvlChange7d):''}${dqBadge(c.dataQuality, c.name)}</td>
       <td class="left hide-md" data-label="7d TVL">${sparkline(c.tvlSpark)}</td>
       <td class="left hide-sm" data-label="Markets">${marketChips(c)}</td>
       <td data-label="Activity" title="Activity index ${actIndex(c)} (relative composite — not a health score). Driven by: Volume #${volR.get(c.name)} · TVL #${tvlR.get(c.name)} · Fees #${feeR.get(c.name)} (of ${N})"><div class="scorecell"><span>${actIndex(c)}</span><span class="scorebar" style="width:${Math.max(5, actIndex(c)*0.5)}px"></span></div></td>
@@ -1214,7 +1261,10 @@ function detailHtml(c) {
   const ecosystem = markets + tokensSection + nftsSection + `<div class="dsec">Top apps on this chain</div>${projects}`;
   const related = relatedInner(c);
   const relatedAcc = related ? accordionHtml('Related chains — similar value prop & profile', related, false) : '';
-  return `<div class="detail">${head}${d&&d.risk?riskBanner(d.risk):''}${verdict}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${relatedAcc}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
+  // Prefer the row's flag (ranked snapshot); fall back to the detail payload,
+  // which recomputes it for chains outside the ranked set.
+  const dq = c.dataQuality || (d && d.dataQuality) || null;
+  return `<div class="detail">${head}${dqNote(dq)}${d&&d.risk?riskBanner(d.risk):''}${verdict}${accordionHtml('Snapshot — metrics, 30d trend & fundamentals', snapshot, true)}${relatedAcc}${accordionHtml('Analysis & outlook', analystHtml(d), true)}${accordionHtml('Ecosystem — markets · tokens · NFTs · apps', ecosystem, false)}</div>`;
 }
 
 function logoBig(c){ const slug=c.name.toLowerCase().trim().replace(/\s+/g,'-'); return `<span class="logo big" style="background:${hueFor(c.name)}">${esc(c.name[0].toUpperCase())}<img src="https://icons.llamao.fi/icons/chains/rsz_${encodeURIComponent(slug)}.jpg" alt="" onerror="this.remove()"></span>`; }
