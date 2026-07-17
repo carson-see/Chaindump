@@ -109,6 +109,10 @@
   .tierbadge.dying { color:var(--down); background:var(--down-bg); border-color:rgba(224,106,106,.25); }
   /* zombie: active AND collapsed. Deliberately not green and not red — the whole
      point of the tier is that it is neither, and the colour must not round it. */
+  .dqwarn { font-size:11.5px; line-height:1.55; color:#fde68a; background:rgba(217,164,65,.1); border:1px solid rgba(217,164,65,.35); border-radius:7px; padding:9px 11px; margin:0 0 12px; }
+  .dqwarn b { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:3px; }
+  .fcorr { font-size:11px; line-height:1.55; color:var(--muted); border-left:2px solid var(--border2); padding:4px 0 4px 9px; margin:7px 0 2px; }
+  .fcorr b { color:var(--muted2); display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
   .olinks { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px; }
   .olink { font-size:11px; padding:3px 9px; border-radius:14px; border:1px solid var(--border2); color:var(--muted2); text-decoration:none; white-space:nowrap; }
   .olink:hover { border-color:var(--accent); color:var(--accent); }
@@ -1021,10 +1025,17 @@ const FACT_SECTIONS = [
 function factBlockHtml(f, label){
   if (!f || !f.data || typeof f.data !== 'object') return '';
   const d = f.data;
+  // Research carries a date because a figure that WAS true is not the same claim
+  // as a figure that IS true. Undated research reads as current and often isn't.
+  const stamp = f.updatedAt ? `<span class="anwhen">as of ${esc(String(f.updatedAt).slice(0,10))}</span>` : '';
+
+  const corr = typeof d._corrections === 'string'
+    ? `<div class="fcorr"><b>Correction</b> ${esc(d._corrections)}</div>` : '';
   const parts = Object.keys(d).map((k) => {
     const v = d[k];
     if (v == null || v === '' || k === 'sources' || k === 'source_idx') return '';
     let txt;
+    if (k === '_corrections') return '';
     if (Array.isArray(v)) {
       txt = v.map((x) => (x && typeof x === 'object') ? (x.name || x.claim || x.title || JSON.stringify(x)) : String(x)).filter(Boolean).join(', ');
     } else if (typeof v === 'object') { return ''; }
@@ -1032,13 +1043,29 @@ function factBlockHtml(f, label){
     if (!txt) return '';
     return `<div class="frow"><span class="fk">${esc(k.replace(/_/g,' '))}</span><span class="fv">${esc(txt)}</span></div>`;
   }).filter(Boolean).join('');
-  return parts ? `<div class="dsec">${esc(label)}</div><div class="fgrid">${parts}</div>${srcHtml(f.sources)}` : '';
+  return parts ? `<div class="dsec">${esc(label)} ${stamp}</div><div class="fgrid">${parts}</div>${corr}${srcHtml(f.sources)}` : '';
+}
+
+// The desk marks entities it could not stand behind (Anubis: "UNVERIFIED —
+// headline TVL is not independently corroborated"). That caveat is about the
+// CHAIN, not one block, so it is hoisted to the top of the profile: a warning
+// buried three sections down, in whichever dimension happened to declare it, is
+// not a disclosure. Scanned across every dimension for exactly that reason.
+function dataQualityHtml(f){
+  for (const k of Object.keys(f)) {
+    const dq = f[k] && f[k].data && f[k].data.data_quality;
+    if (typeof dq === 'string' && /unverified|disputed|low confidence/i.test(dq)) {
+      return `<div class="dqwarn"><b>⚠ Unverified data</b>${esc(dq)}</div>`;
+    }
+  }
+  return '';
 }
 
 function factsHtml(d){
   const f = d && d.facts;
   if (!f) return '';
   const blocks = [
+    dataQualityHtml(f),
     synthesisHtml(f.synthesis),
     ...FACT_SECTIONS.map(([k,label]) => factBlockHtml(f[k], label)),
     linksHtml(f.links),
