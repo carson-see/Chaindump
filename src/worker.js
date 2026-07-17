@@ -4,6 +4,7 @@ import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './li
 import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
+import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 
 const ENV = {};
 const app = new Hono();
@@ -983,15 +984,10 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
   }
 }));
 
-// Graveyard: chains that launched recently and then collapsed (populated by the research agent)
-const TAG_LABELS = {
-  mercenary_tvl: 'Mercenary TVL', airdrop_farming: 'Airdrop farming', points_collapse: 'Points collapse',
-  token_unlock_dump: 'Token unlock dump', exploit_hack: 'Exploit / hack', team_abandonment: 'Team abandonment',
-  soft_rug: 'Soft rug', unsustainable_yield: 'Unsustainable yield', narrative_death: 'Narrative death',
-  no_real_users: 'No real users', wash_trading: 'Wash trading', vc_dump: 'VC dump',
-  competition: 'Out-competed', regulatory: 'Regulatory',
-};
-const FRAUDY = new Set(['soft_rug', 'exploit_hack', 'wash_trading', 'token_unlock_dump']);
+// Graveyard: chains that launched recently and then collapsed (populated by the research agent).
+// The cause-of-death vocabulary (canon map + labels + fraud set) lives in
+// src/lib/causes.js — the single source of truth, imported above and served to
+// the SPA via trends.causeVocab so nothing hand-mirrors a copy.
 
 app.get('/api/dead', wrap(async (req, res) => {
   try {
@@ -1002,8 +998,9 @@ app.get('/api/dead', wrap(async (req, res) => {
     const tagCounts = {}; let ddSum = 0, ddN = 0, fraud = 0; const verdictCounts = {};
     for (const c of chains) {
       const tags = (c.profile && c.profile.cause_tags) || [];
-      tags.forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
-      if (tags.some((t) => FRAUDY.has(t))) fraud++;
+      // canonicalize synonyms + dedupe per-chain so a merge can't double-count
+      canonTags(tags).forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
+      if (isFraudy(tags)) fraud++; // canonical: a future synonym can't silently undercount
       if (c.drawdown_pct != null) { ddSum += c.drawdown_pct; ddN++; }
       const v = (c.verdict || 'unknown').toLowerCase();
       verdictCounts[v] = (verdictCounts[v] || 0) + 1;
@@ -1021,7 +1018,7 @@ app.get('/api/dead', wrap(async (req, res) => {
     res.json({
       chains, count: chains.length,
       trends: {
-        topTags, verdictCounts,
+        topTags, verdictCounts, causeVocab: causeVocab(),
         avgDrawdown: ddN ? +(ddSum / ddN).toFixed(1) : null,
         fraudCount: fraud, totalPeakTvl: totalPeak, totalCurrentTvl: totalNow,
         wipedOut: totalPeak > 0 ? +(((totalPeak - totalNow) / totalPeak) * 100).toFixed(1) : null,
@@ -1042,13 +1039,16 @@ app.get('/api/mid', wrap(async (req, res) => {
     const tagCounts = {};
     for (const c of chains) {
       const v = (c.verdict || 'unknown').toLowerCase(); verdictCounts[v] = (verdictCounts[v] || 0) + 1;
+      // same vocabulary as the graveyard: canonicalize + dedupe, or one concept
+      // fragments into two bars (e.g. outcompeted vs competition).
       const tags = (c.profile && c.profile.success_factors_missing) || [];
-      tags.forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
+      canonTags(tags).forEach((t) => { tagCounts[t] = (tagCounts[t] || 0) + 1; });
     }
-    const topGaps = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ tag: k, label: k.replace(/_/g, ' '), count: n }));
+    const topGaps = Object.entries(tagCounts).sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => ({ tag: k, label: TAG_LABELS[k] || k.replace(/_/g, ' '), count: n }));
     let framework = null;
     try { const s = await dbQuery(`SELECT v, updated_at FROM graveyard_meta WHERE k = 'success_factors' LIMIT 1`); if (s[0]) framework = { text: s[0].v, updated_at: s[0].updated_at }; } catch (e) {}
-    res.json({ chains, count: chains.length, verdictCounts, topGaps, framework });
+    res.json({ chains, count: chains.length, verdictCounts, topGaps, causeVocab: causeVocab(), framework });
   } catch (e) {
     res.json({ chains: [], count: 0, error: e.message });
   }
@@ -1148,11 +1148,22 @@ async function getTiers() {
   return tiersCache.data;
 }
 
-function parseProfileRow(r) { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { verdict: r.verdict, why: r.why, outlook: r.outlook, sources: r.sources, profile: p }; }
+// updated_at is a COLUMN (not a key inside the profile JSON) — carry it through so
+// the dying-watch detail can render the same "Data verified …" stamp as a grave card.
+function parseProfileRow(r) {
+  let p = null;
+  // a malformed profile degrades to null (card renders without the expansion)
+  try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) { console.error('[profile] bad JSON for', r.chain, e.message); }
+  return { verdict: r.verdict, why: r.why, outlook: r.outlook, sources: r.sources, updated_at: r.updated_at, profile: p };
+}
 async function profileMap() {
   const out = {};
-  try { (await dbQuery(`SELECT chain, verdict, why, outlook, profile, sources FROM dead_chains`)).forEach((r) => { out[r.chain] = parseProfileRow(r); }); } catch (e) {}
-  try { (await dbQuery(`SELECT chain, verdict, why_stuck AS why, outlook, profile, sources FROM mid_chains`)).forEach((r) => { if (!out[r.chain]) out[r.chain] = parseProfileRow(r); }); } catch (e) {}
+  try {
+    (await dbQuery(`SELECT chain, verdict, why, outlook, profile, sources, updated_at FROM dead_chains`)).forEach((r) => { out[r.chain] = parseProfileRow(r); });
+  } catch (e) { console.error('[profileMap] dead_chains:', e.message); }
+  try {
+    (await dbQuery(`SELECT chain, verdict, why_stuck AS why, outlook, profile, sources, updated_at FROM mid_chains`)).forEach((r) => { if (!out[r.chain]) out[r.chain] = parseProfileRow(r); });
+  } catch (e) { console.error('[profileMap] mid_chains:', e.message); }
   return out;
 }
 
