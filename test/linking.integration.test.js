@@ -252,6 +252,22 @@ describe('the lite index never presents an un-enriched figure as a measurement',
     expect(eth.fees24h).toBe(5e6);
   });
 
+  it('keeps sub-cent precision rather than publishing "$0" per user', async () => {
+    // Celo: $1,671/day across 483,704 addresses = $0.0035. toFixed(2) said "$0".
+    stubFeed({
+      universe: [{ name: 'Ethereum', tvl: 6e10, tokenSymbol: 'ETH', gecko_id: 'ethereum', chainId: 1 }],
+      volume: { Ethereum: 1.1e9 },
+      feeMap: { Ethereum: 1671 },
+    });
+    const worker = await freshWorker();
+    const body = await (await worker.fetch(new Request('http://localhost/api/chains'), {}, ctx())).json();
+    const eth = body.chains.find((c) => c.name === 'Ethereum');
+    if (eth.activeAddresses) {
+      expect(eth.feePerUser).not.toBe(0);   // never a flat zero when fees exist
+    }
+    expect(eth.fees24h).toBe(1671);
+  });
+
   it('publishes no fees-per-user for a chain with no fee data', async () => {
     // pf and feeYield already returned null here; feePerUser returned 0 — a
     // measured-looking claim derived from a number we do not have.

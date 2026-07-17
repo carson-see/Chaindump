@@ -394,7 +394,17 @@ async function buildSnapshot(opts = {}) {
     // Guard fees the same way pf/feeYield do above. Without the annFees check a
     // chain with fees24h = 0 published "fees per user: $0" — a measured-looking
     // claim derived from a number we don't have.
-    r.feePerUser = (r.activeAddresses && annFees > 0) ? +(r.fees24h / r.activeAddresses).toFixed(2) : null;
+    //
+    // And keep precision below a cent: Celo earns $1,671/day across 483,704
+    // active addresses = $0.0035 per user, which toFixed(2) published as a flat
+    // "$0". Users pay a third of a cent; printing zero is not a rounding nicety,
+    // it is a different claim.
+    if (r.activeAddresses && annFees > 0) {
+      const per = r.fees24h / r.activeAddresses;
+      r.feePerUser = +per.toFixed(per < 0.01 ? 4 : 2);
+    } else {
+      r.feePerUser = null;
+    }
 
     const flags = [];
     const s = r.tvlSpark30;
