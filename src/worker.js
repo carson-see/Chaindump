@@ -5,6 +5,10 @@ import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
+// Aliased deliberately: causes.js above exports TAG_LABELS/canonTags into this
+// same scope. An unaliased import would shadow the cause vocabulary silently —
+// no error, just wrong labels on the graveyard chips.
+import { cohortFor, tagVocab, canonTags as canonChainTags, isTheme as isChainTheme, themesForCategory } from './lib/tags.js';
 import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
 import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from './lib/llama.js';
 
@@ -554,7 +558,7 @@ app.get('/api/chains', wrap(async (req, res) => {
     if (!cache.data || now - cache.ts > TTL) {
       cache = await loadSnapshot();
     }
-    res.json({ ...cache.data, scoreMeta: SCORE_META, cachedAgeMs: Date.now() - cache.ts });
+    res.json({ ...cache.data, scoreMeta: SCORE_META, tagVocab: tagVocab(), cachedAgeMs: Date.now() - cache.ts });
   } catch (e) {
     console.error('snapshot error:', e.message);
     if (cache.data) return res.json({ ...cache.data, scoreMeta: SCORE_META, stale: true, error: e.message });
@@ -977,6 +981,31 @@ async function chainFacts(chainName) {
   return Object.keys(out).length ? out : null;
 }
 
+// Resolve a chain's tags: themes are curated (stored), the cohort is COMPUTED.
+//
+// The cohort is never read from storage. The board tail churns every 5 minutes —
+// a stored "top-50" is a claim that expires — and "up and coming" is a published
+// claim about a chain's age, so it has to be derived from a real launch date at
+// the moment we serve it. Note cohortFor treats an absent date as UNKNOWN, not
+// as pre-launch: Ethereum carries no `launched` on the live board, and the naive
+// rule would have published that Ethereum hasn't launched yet.
+function resolveTags(row, facts, onBoard) {
+  const identity = (facts && facts.identity && facts.identity.data) || {};
+  const stored = canonChainTags(Array.isArray(identity.tags) ? identity.tags : []);
+  const themes = stored.filter(isChainTheme);
+  // Fall back to the chain's own category when the desk has not tagged it, so a
+  // chain we have not researched still carries what we can honestly derive.
+  const derived = themes.length ? themes : themesForCategory(row.category);
+  const cohort = cohortFor({
+    launched: identity.launched || null,
+    onBoard: !!onBoard,
+    tier: identity.tier || null,
+    isPreLaunch: identity.status === 'pre-launch' || identity.status === 'anticipated',
+    isPrivate: identity.permissioned === true,
+  }, Date.now());
+  return { cohort, themes: derived };
+}
+
 app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
@@ -1018,7 +1047,10 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
 
     const facts = await chainFacts(row.name);
 
-    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk, facts });
+    const onBoard = (cache.data.chains || []).some((c) => c.name === row.name);
+    const tags = resolveTags(row, facts, onBoard);
+
+    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk, facts, tags, tagVocab: tagVocab() });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }

@@ -113,6 +113,11 @@
   .dqwarn b { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:3px; }
   .fcorr { font-size:11px; line-height:1.55; color:var(--muted); border-left:2px solid var(--border2); padding:4px 0 4px 9px; margin:7px 0 2px; }
   .fcorr b { color:var(--muted2); display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .tchips { display:flex; flex-wrap:wrap; gap:5px; margin:0 0 12px; }
+  .tchip { font-size:10px; font-weight:600; letter-spacing:.03em; text-transform:uppercase; padding:2px 7px; border-radius:11px; border:1px solid var(--border2); color:var(--muted); white-space:nowrap; }
+  .tchip.cohort { color:var(--accent); border-color:rgba(122,162,247,.35); background:rgba(122,162,247,.07); }
+  /* "up and coming" is a fact about age, not a verdict — it must not read as praise. */
+  .tchip.cohort.anticipated, .tchip.cohort\.up-and-coming { color:var(--warn); border-color:rgba(217,164,65,.35); background:rgba(217,164,65,.07); }
   .olinks { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px; }
   .olink { font-size:11px; padding:3px 9px; border-radius:14px; border:1px solid var(--border2); color:var(--muted2); text-decoration:none; white-space:nowrap; }
   .olink:hover { border-color:var(--accent); color:var(--accent); }
@@ -953,6 +958,22 @@ function fundamentalsHtml(c){
   </div>`;
 }
 
+// Chain tags. Labels come from the server's tagVocab (src/lib/tags.js) — the SPA
+// never keeps its own copy, because a second copy of a vocabulary is how the
+// cause chips came to render a different word than the folder they sat in.
+function tagChipsHtml(d){
+  const t = d && d.tags;
+  if (!t) return '';
+  const vocab = (d.tagVocab && d.tagVocab.labels) || {};
+  const label = (k) => vocab[k] || String(k).replace(/-/g, ' ');
+  const chips = [];
+  // The cohort is computed per request, never stored: "top 50" expires as the
+  // board churns and "up and coming" is a claim about a chain's age today.
+  if (t.cohort) chips.push(`<span class="tchip cohort ${esc(t.cohort)}">${esc(label(t.cohort))}</span>`);
+  for (const th of (Array.isArray(t.themes) ? t.themes : [])) chips.push(`<span class="tchip">${esc(label(th))}</span>`);
+  return chips.length ? `<div class="tchips">${chips.join('')}</div>` : '';
+}
+
 // --- research desk facts (chain_facts via /api/chain/:name -> d.facts) ---
 // These 248 rows of cited analysis existed for weeks with no reader: the desk
 // wrote them, the product never asked. This is what makes "berachain is thriving
@@ -1063,8 +1084,11 @@ function dataQualityHtml(f){
 
 function factsHtml(d){
   const f = d && d.facts;
-  if (!f) return '';
+  // Tags stand alone: a chain we have not researched still has a cohort we can
+  // compute and themes we can derive, so they must not depend on facts existing.
+  if (!f) return tagChipsHtml(d);
   const blocks = [
+    tagChipsHtml(d),
     dataQualityHtml(f),
     synthesisHtml(f.synthesis),
     ...FACT_SECTIONS.map(([k,label]) => factBlockHtml(f[k], label)),
