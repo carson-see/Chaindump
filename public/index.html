@@ -1994,16 +1994,16 @@ function gstat(val, label){ return `<div class="gsx"><div class="gsv">${val}</di
 // Cause vocabulary comes from the server (src/lib/causes.js via trends.causeVocab)
 // so the client never hand-mirrors the canon map. Falls back safely if absent.
 function causeVocab(data){ return (data && data.trends && data.trends.causeVocab) || (data && data.causeVocab) || {}; }
-function canonCause(data, tg){ const c=causeVocab(data).canon||{}; return (tg && Object.prototype.hasOwnProperty.call(c,tg)) ? c[tg] : tg; }
+function canonCause(data, tg){ const c=causeVocab(data).canon||{}; return (tg && Object.hasOwn(c, tg)) ? c[tg] : tg; }
 // Canonicalize BEFORE the lookup: topTags only holds canonical tags, so a raw
 // synonym would otherwise fall through and render a different wording than the
 // folder it sits in (e.g. "mercenary liquidity" under "Mercenary / incentivized TVL exit").
 function tagLabel(data, tg){
   const k=canonCause(data,tg);
   const v=causeVocab(data).labels||{};
-  if (Object.prototype.hasOwnProperty.call(v,k)) return v[k];
+  if (Object.hasOwn(v, k)) return v[k];
   const f=((data.trends&&data.trends.topTags)||[]).find(x=>x.tag===k);
-  return f?f.label:String(k).replace(/_/g,' ');
+  return f?f.label:String(k).replaceAll('_',' ');
 }
 
 function renderGraveyard(data){
@@ -2054,30 +2054,62 @@ function renderGraveyard(data){
   // Shared expanded-profile markup, reused by the grave cards AND the dying-watch
   // click-to-open detail. Handles both the dead-chain profile shape (postmortem /
   // lessons / could_differ) and the mid-chain shape (whats_working / whats_not).
+  // Small builders keep graveDetailBody flat: each returns '' when it has nothing,
+  // so the renderer is a list of sections rather than a wall of inline ternaries.
+  const gField = (label, val) => (val ? `<div class="gfield"><span class="gfl">${label}</span> ${val}</div>` : '');
+  const gSec = (title, body) => (body ? `<div class="gsec">${title}</div>${body}` : '');
+  const gProse = (title, val) => gSec(title, val ? proseBox(val) : '');
+  const foundedLine = (p) => {
+    if (!p.founded && !p.founders) return '';
+    const who = p.founders ? ` · ${esc(p.founders)}` : '';
+    return `${esc(p.founded || '—')}${who}`;
+  };
+  const tokenLineOf = (p) => {
+    if (!p.token_symbol) return 'No live token';
+    if (p.token_ath == null) return esc(p.token_symbol);
+    const td = tokenDrop(p);
+    const when = p.token_ath_date ? ` (${esc(p.token_ath_date)})` : '';
+    const drop = td != null ? ` <span class="tdrop">-${td}%</span>` : '';
+    return `${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)}${when} → $${fmtTok(p.token_current)}${drop}`;
+  };
+  const tvlLineOf = (c) => {
+    const dd = c.drawdown_pct != null ? `-${Math.abs(c.drawdown_pct).toFixed(0)}%` : '—';
+    const when = c.peak_date ? ` (${esc(c.peak_date)})` : '';
+    return `peak ${fmtUsd(c.peak_tvl)}${when} → now ${fmtUsd(c.current_tvl)} <span class="tdrop">${dd}</span>`;
+  };
+  const peerSection = (c) => {
+    const pr = peersOf(c);
+    if (!pr.length) return '';
+    const chips = pr.map((x) => `<button type="button" class="gpeerchip" data-peer="${esc(x.chain)}">${esc(x.chain)}<span class="pcv">-${Math.abs(x.drawdown_pct||0).toFixed(0)}%</span></button>`).join('');
+    return gSec(`Died the same way — ${esc(causeLabel(primaryCause(c)))} (${pr.length})`, `<div class="gpeerwrap">${chips}</div>`);
+  };
+  const causeChips = (p) => {
+    const tags = (p.cause_tags || p.success_factors_missing || []).map((tg) => `<span class="ctag">${esc(tagLabel(data, tg))}</span>`).join('');
+    return tags ? `<div class="ctags">${tags}</div>` : '';
+  };
+  // Shared expanded-profile markup: dead-chain shape (postmortem/lessons/
+  // could_differ) and mid-chain shape (whats_working/whats_not).
   const graveDetailBody = (c) => {
     const p = c.profile || {};
-    const dd = c.drawdown_pct != null ? `-${Math.abs(c.drawdown_pct).toFixed(0)}%` : '—';
-    const td = tokenDrop(p);
-    const tags = (p.cause_tags||p.success_factors_missing||[]).map(tg=>`<span class="ctag">${esc(tagLabel(data,tg))}</span>`).join('');
-    const sources = srcHtml(c.sources);
-    const tokenLine = (p.token_symbol && p.token_ath!=null) ? `${esc(p.token_symbol)} — ATH $${fmtTok(p.token_ath)}${p.token_ath_date?` (${esc(p.token_ath_date)})`:''} → $${fmtTok(p.token_current)}${td!=null?` <span class="tdrop">-${td}%</span>`:''}` : (p.token_symbol?esc(p.token_symbol):'No live token');
+    // mid profiles carry no postmortem; fall back to `why` only for dead shapes
+    const postmortem = p.postmortem || (p.whats_working ? '' : c.why);
     return `<div class="gexp">
-      ${(p.founded||p.founders)?`<div class="gfield"><span class="gfl">Founded</span> ${esc(p.founded||'—')}${p.founders?` · ${esc(p.founders)}`:''}</div>`:''}
-      ${p.raised?`<div class="gfield"><span class="gfl">Raised</span> ${esc(p.raised)}</div>`:''}
-      <div class="gfield"><span class="gfl">Token</span> ${tokenLine}</div>
-      <div class="gfield"><span class="gfl">TVL</span> peak ${fmtUsd(c.peak_tvl)}${c.peak_date?` (${esc(c.peak_date)})`:''} → now ${fmtUsd(c.current_tvl)} <span class="tdrop">${dd}</span></div>
-      ${p.purpose?`<div class="gsec">Purpose</div><div class="gbody">${esc(p.purpose)}</div>`:''}
-      ${p.whats_working?`<div class="gsec">What's working</div>${proseBox(p.whats_working)}`:''}
-      ${p.whats_not?`<div class="gsec">What's not</div>${proseBox(p.whats_not)}`:''}
-      ${p.situation?`<div class="gsec">What happened</div>${proseBox(p.situation)}`:''}
-      ${(p.postmortem||(!p.whats_working&&c.why))?`<div class="gsec">Postmortem</div>${proseBox(p.postmortem||c.why)}`:''}
-      ${p.non_economic?`<div class="gsec">Social · media · community signals</div>${proseBox(p.non_economic)}`:''}
-      ${p.lessons_learned?`<div class="gsec">Lessons learned</div>${proseBox(p.lessons_learned)}`:''}
-      ${p.could_differ?`<div class="gsec">What they could've done differently — and why</div>${proseBox(p.could_differ)}`:''}
-      ${(p.outlook||c.outlook)?`<div class="gsec">Outlook</div>${proseBox(p.outlook||c.outlook)}`:''}
-      ${tags?`<div class="ctags">${tags}</div>`:''}
-      ${(()=>{ const pr=peersOf(c); if(!pr.length) return ''; return `<div class="gsec">Died the same way — ${esc(causeLabel(primaryCause(c)))} (${pr.length})</div><div class="gpeerwrap">${pr.map(x=>`<button type="button" class="gpeerchip" data-peer="${esc(x.chain)}">${esc(x.chain)}<span class="pcv">-${Math.abs(x.drawdown_pct||0).toFixed(0)}%</span></button>`).join('')}</div>`; })()}
-      ${sources}${stamp(c.updated_at)}
+      ${gField('Founded', foundedLine(p))}
+      ${gField('Raised', p.raised ? esc(p.raised) : '')}
+      ${gField('Token', tokenLineOf(p))}
+      ${gField('TVL', tvlLineOf(c))}
+      ${gSec('Purpose', p.purpose ? `<div class="gbody">${esc(p.purpose)}</div>` : '')}
+      ${gProse("What's working", p.whats_working)}
+      ${gProse("What's not", p.whats_not)}
+      ${gProse('What happened', p.situation)}
+      ${gProse('Postmortem', postmortem)}
+      ${gProse('Social · media · community signals', p.non_economic)}
+      ${gProse('Lessons learned', p.lessons_learned)}
+      ${gProse("What they could've done differently — and why", p.could_differ)}
+      ${gProse('Outlook', p.outlook || c.outlook)}
+      ${causeChips(p)}
+      ${peerSection(c)}
+      ${srcHtml(c.sources)}${stamp(c.updated_at)}
     </div>`;
   };
   const graveCard = (c) => {
@@ -2099,7 +2131,7 @@ function renderGraveyard(data){
   };
   // group into collapsible folders by primary (canonical) death cause — the
   // "why chains die" thesis. Folder labels come from the server vocabulary.
-  const causeLabel = (k) => { const fl=causeVocab(data).folderLabels||{}; return Object.prototype.hasOwnProperty.call(fl,k) ? fl[k] : String(k).replace(/_/g,' ').replace(/\b\w/g, m=>m.toUpperCase()); };
+  const causeLabel = (k) => { const fl=causeVocab(data).folderLabels||{}; return Object.hasOwn(fl, k) ? fl[k] : String(k).replaceAll('_',' ').replace(/\b\w/g, m=>m.toUpperCase()); };
   const groups = {};
   filtered.forEach(c => { const k=primaryCause(c); (groups[k]=groups[k]||[]).push(c); });
   const groupKeys = Object.keys(groups).sort((a,b)=>groups[b].length-groups[a].length);
@@ -2132,41 +2164,56 @@ async function loadGraveyard(){
     document.getElementById('graveview').innerHTML = `<div class="skel">Couldn't load: ${esc(e.message)}</div>`;
   }
 }
+// Re-render keeps the scroll position: the view rebuilds via innerHTML, so
+// without this the page jumps to the top on every expand/collapse.
+function graveRerender(keepScroll) {
+  const y = window.scrollY;
+  renderGraveyard(state.graveData);
+  if (keepScroll) window.scrollTo(0, y);
+}
+function graveToggleFolder(k) {
+  const g = state.graveOpenGroups = state.graveOpenGroups || {};
+  if (g[k]) delete g[k]; else g[k] = true;
+}
+// Open a peer's card: reveal its cause folder, clear the filter (peers come from
+// the unfiltered set, so a hidden peer would make the click a silent no-op),
+// then expand and scroll to it.
+function graveOpenPeer(name) {
+  const d = state.graveData;
+  const pc = (d.chains || []).find((x) => x.chain === name);
+  if (pc) {
+    const p = pc.profile || {};
+    const raw = (p.cause_tags || p.success_factors_missing || [])[0] || 'other';
+    const canon = (d.trends && d.trends.causeVocab && d.trends.causeVocab.canon) || {};
+    const k = Object.hasOwn(canon, raw) ? canon[raw] : raw;
+    state.graveOpenGroups = state.graveOpenGroups || {};
+    state.graveOpenGroups[k] = true;
+  }
+  state.graveFilter = 'all';
+  state.graveExpanded = name;
+  state.watchExpanded = null;
+  renderGraveyard(d);
+  const sel = window.CSS && CSS.escape ? CSS.escape(name) : name;
+  const tc = document.querySelector(`.gcard[data-chain="${sel}"]`);
+  if (tc) tc.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+// [selector, handler] — first match wins. Order matters: the more specific
+// targets (peer chips, watch rows) must precede the .gcard catch-all.
+const GRAVE_ACTIONS = [
+  ['.gvf', (el) => { state.graveFilter = el.dataset.gf; graveRerender(false); }],
+  ['.folderhead', (el) => { graveToggleFolder(el.dataset.gravegroup); graveRerender(false); }],
+  ['[data-watchclose]', () => { state.watchExpanded = null; graveRerender(true); }],
+  ['.watchrow[data-watch]', (el) => { const n = el.dataset.watch; state.watchExpanded = state.watchExpanded === n ? null : n; graveRerender(true); }],
+  ['.gpeerchip[data-peer]', (el) => graveOpenPeer(el.dataset.peer)],
+  ['.gcard', (el) => { const n = el.dataset.chain; state.graveExpanded = state.graveExpanded === n ? null : n; graveRerender(true); }],
+];
 document.getElementById('graveview').addEventListener('click', (e) => {
   if (e.target.closest('a') || e.target.closest('.prosetoggle') || e.target.closest('.acchead')) return;
-  const f = e.target.closest('.gvf');
-  if (f && state.graveData) { state.graveFilter = f.dataset.gf; renderGraveyard(state.graveData); return; }
-  const fh = e.target.closest('.folderhead');
-  if (fh && state.graveData) { const k=fh.dataset.gravegroup; state.graveOpenGroups = state.graveOpenGroups||{}; if (state.graveOpenGroups[k]) delete state.graveOpenGroups[k]; else state.graveOpenGroups[k]=true; renderGraveyard(state.graveData); return; }
-  const wclose = e.target.closest('[data-watchclose]');
-  if (wclose && state.graveData) { const y=window.scrollY; state.watchExpanded=null; renderGraveyard(state.graveData); window.scrollTo(0,y); return; }
-  const wr = e.target.closest('.watchrow[data-watch]');
-  if (wr && state.graveData) { const y=window.scrollY; const n=wr.dataset.watch; state.watchExpanded = state.watchExpanded===n?null:n; renderGraveyard(state.graveData); window.scrollTo(0,y); return; }
-  const peer = e.target.closest('.gpeerchip[data-peer]');
-  if (peer && state.graveData) {
-    const d=state.graveData; const n=peer.dataset.peer;
-    const pc=(d.chains||[]).find(x=>x.chain===n);
-    if (pc) {
-      const p=pc.profile||{};
-      const raw=(p.cause_tags||p.success_factors_missing||[])[0]||'other';
-      const cv=(d.trends&&d.trends.causeVocab&&d.trends.causeVocab.canon)||{};
-      const k=Object.prototype.hasOwnProperty.call(cv,raw)?cv[raw]:raw;
-      state.graveOpenGroups=state.graveOpenGroups||{}; state.graveOpenGroups[k]=true;
-    }
-    // peers are drawn from the unfiltered set, so a peer can be hidden by the
-    // current filter — clear it or the click is a silent no-op.
-    state.graveFilter='all';
-    state.graveExpanded=n; state.watchExpanded=null; renderGraveyard(d);
-    const tc=document.querySelector('.gcard[data-chain="'+(window.CSS&&CSS.escape?CSS.escape(n):n)+'"]'); if (tc) tc.scrollIntoView({behavior:'smooth',block:'center'});
-    return;
+  if (!state.graveData) return;
+  for (const [sel, run] of GRAVE_ACTIONS) {
+    const el = e.target.closest(sel);
+    if (el) { run(el); return; }
   }
-  const card = e.target.closest('.gcard');
-  if (!card || !state.graveData) return;
-  const name = card.dataset.chain;
-  const y = window.scrollY;
-  state.graveExpanded = state.graveExpanded === name ? null : name;
-  renderGraveyard(state.graveData);
-  window.scrollTo(0, y);
 });
 
 document.addEventListener('click', (e) => {

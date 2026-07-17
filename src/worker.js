@@ -1150,11 +1150,20 @@ async function getTiers() {
 
 // updated_at is a COLUMN (not a key inside the profile JSON) — carry it through so
 // the dying-watch detail can render the same "Data verified …" stamp as a grave card.
-function parseProfileRow(r) { let p = null; try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) {} return { verdict: r.verdict, why: r.why, outlook: r.outlook, sources: r.sources, updated_at: r.updated_at, profile: p }; }
+function parseProfileRow(r) {
+  let p = null;
+  // a malformed profile degrades to null (card renders without the expansion)
+  try { p = r.profile ? JSON.parse(r.profile) : null; } catch (e) { console.error('[profile] bad JSON for', r.chain, e.message); }
+  return { verdict: r.verdict, why: r.why, outlook: r.outlook, sources: r.sources, updated_at: r.updated_at, profile: p };
+}
 async function profileMap() {
   const out = {};
-  try { (await dbQuery(`SELECT chain, verdict, why, outlook, profile, sources, updated_at FROM dead_chains`)).forEach((r) => { out[r.chain] = parseProfileRow(r); }); } catch (e) {}
-  try { (await dbQuery(`SELECT chain, verdict, why_stuck AS why, outlook, profile, sources, updated_at FROM mid_chains`)).forEach((r) => { if (!out[r.chain]) out[r.chain] = parseProfileRow(r); }); } catch (e) {}
+  try {
+    (await dbQuery(`SELECT chain, verdict, why, outlook, profile, sources, updated_at FROM dead_chains`)).forEach((r) => { out[r.chain] = parseProfileRow(r); });
+  } catch (e) { console.error('[profileMap] dead_chains:', e.message); }
+  try {
+    (await dbQuery(`SELECT chain, verdict, why_stuck AS why, outlook, profile, sources, updated_at FROM mid_chains`)).forEach((r) => { if (!out[r.chain]) out[r.chain] = parseProfileRow(r); });
+  } catch (e) { console.error('[profileMap] mid_chains:', e.message); }
   return out;
 }
 

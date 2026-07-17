@@ -26,8 +26,8 @@ describe('canonTag', () => {
     expect(canonTag('__proto__')).toBe('__proto__');
   });
   it('tolerates non-string input', () => {
-    expect(canonTag(null)).toBe(null);
-    expect(canonTag(undefined)).toBe(undefined);
+    expect(canonTag(null)).toBeNull();
+    expect(canonTag(undefined)).toBeUndefined();
   });
 });
 

@@ -77,14 +77,16 @@ export const FOLDER_LABELS = {
 // CANONICAL tag so adding a synonym to TAG_CANON can never silently undercount.
 export const FRAUDY = new Set(['soft_rug', 'exploit_hack', 'wash_trading', 'token_unlock_dump']);
 
-const titleize = (t) => String(t).replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
+const titleize = (t) => String(t).replaceAll('_', ' ').replace(/\b\w/g, (m) => m.toUpperCase());
 
 // Human label for a tag (canonicalizes first). `folder` picks the verbose set.
 export function tagLabel(tag, { folder = false } = {}) {
   if (!tag) return '';
   const k = canonTag(tag);
   const map = folder ? FOLDER_LABELS : TAG_LABELS;
-  return Object.hasOwn(map, k) ? map[k] : (folder ? titleize(k) : String(k).replace(/_/g, ' '));
+  if (Object.hasOwn(map, k)) return map[k];
+  // unknown tag: folders read as headings, chips read inline
+  return folder ? titleize(k) : String(k).replaceAll('_', ' ');
 }
 
 // Canonicalize + de-duplicate one chain's tag list, so a chain carrying both a
