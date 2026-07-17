@@ -1345,16 +1345,29 @@ document.getElementById('tailprofile').addEventListener('click', (e) => {
 });
 
 
+// Peer navigation is delegated at the DOCUMENT, not at #rows.
+//
+// It used to live on the #rows listener only, so the 29 tail chains that have a
+// category rendered six peer chips that did nothing at all — the tail profile is
+// outside #rows. Binding per-surface means every new surface silently ships dead
+// buttons; the chips are the same component wherever they are, so the handler is
+// too. Capture + stopPropagation so a chip never also toggles the row behind it,
+// the same pattern the glossary popover uses.
+document.addEventListener('click', (e) => {
+  const peer = e.target.closest && e.target.closest('.peerchip');
+  if (!peer) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const pname = peer.dataset.peer;
+  if (!pname) return;
+  state.expanded = pname; loadDetail(pname); pushEntity('chain', pname);
+  const prow = document.querySelector(`tr.crow[data-name="${CSS.escape(pname)}"]`);
+  if (prow) prow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else { render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }   // tail chain: no row to scroll to
+}, true);
+
 document.getElementById('rows').addEventListener('click', (e) => {
   if (e.target.closest('a')) return; // let market links open normally
-  const peer = e.target.closest('.peerchip');
-  if (peer) { // navigate to a related chain instead of toggling the current row
-    const pname = peer.dataset.peer;
-    state.expanded = pname; loadDetail(pname); pushEntity('chain', pname);
-    const prow = document.querySelector(`tr.crow[data-name="${CSS.escape(pname)}"]`);
-    if (prow) prow.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    return;
-  }
   const tr = e.target.closest('tr.crow');
   if (!tr) return;
   const name = tr.dataset.name;

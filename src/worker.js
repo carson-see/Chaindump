@@ -390,7 +390,15 @@ async function buildSnapshot(opts = {}) {
   for (const r of top) {
     const annFees = r.fees24h ? r.fees24h * 365 : 0;
     r.pf = (r.tokenMcap && annFees > 0) ? +(r.tokenMcap / annFees).toFixed(1) : null;   // market cap / annualized fees
-    r.feeYield = (r.tvl > 0 && annFees > 0) ? +((annFees / r.tvl) * 100).toFixed(1) : null; // % annual fee yield on TVL
+    // Keep precision below 0.1%: Provenance earns $96/day on $1.5B of TVL — a
+    // yield of ~0.0023% — and toFixed(1) published that as a flat 0. Same
+    // false-zero as feePerUser: printing 0 is a different claim from "tiny".
+    if (r.tvl > 0 && annFees > 0) {
+      const y = (annFees / r.tvl) * 100;
+      r.feeYield = +y.toFixed(y < 0.1 ? 4 : 1);
+    } else {
+      r.feeYield = null;
+    }
     r.turnover = (r.tvl > 0) ? +(r.volume24h / r.tvl).toFixed(2) : null;                 // daily volume / TVL
     // Guard fees the same way pf/feeYield do above. Without the annFees check a
     // chain with fees24h = 0 published "fees per user: $0" — a measured-looking
@@ -2190,21 +2198,53 @@ app.get('/chain/:name', wrap(async (req, res) => {
   // nonsense string — /chain/Anubis and /chain/NotARealChain shared a title and
   // description, even though we hold a researched profile for one of them.
   if (!row) { try { row = await resolveTailChain(key.toLowerCase()); } catch (e) { /* fall back to the generic card */ } }
+  // A caveat that only exists inside the page cannot ride on a social card or into
+  // a crawler's structured data. Anubis's own desk row says the headline number
+  // "should not be presented to users without a caveat" — and this route was
+  // publishing exactly that number, uncaveated, to every unfurl and every
+  // crawler. Recompute the rule here rather than trust the row: a tail chain is
+  // never annotated by the snapshot.
+  let dq = row && row.dataQuality ? row.dataQuality : null;
+  if (row && !dq && row.tvl != null) {
+    try {
+      const d = assessChainDataQuality(row.name, await getProtocols(), { displayedTvl: row.tvl });
+      if (d && d.autoPublish !== false) dq = d;
+    } catch (e) { /* best-effort: a missing caveat is bad, a 500 on the card is worse */ }
+  }
+  const caveat = dq ? ' Chaindump cannot independently verify this TVL figure.' : '';
+  // Quote only the figures we actually have. fmtShort coerces null to 0, so
+  // building this string unconditionally published "$0 24h volume" for every
+  // chain we simply have no volume for — the same false zero the board and the
+  // tiles were fixed for, leaking out through the social card instead.
+  const parts = [];
+  if (row && row.tvl != null) parts.push(`$${fmtShort(row.tvl)} TVL`);
+  if (row && row.volume24h != null) parts.push(`$${fmtShort(row.volume24h)} 24h volume`);
+  const figures = !row ? ''
+    : parts.length ? `${parts.join(', ')}.`
+    : 'No market data is available for this chain; Chaindump carries researched analysis only.';
+
   const title = row ? `${row.name} — Chaindump` : 'Chain — Chaindump';
   const desc = row
     ? (row.rank != null
-        ? `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume, rank #${row.rank} by activity. Live metrics, fundamentals and analyst take on Chaindump.`
+        ? `${row.name}: ${figures} Rank #${row.rank} by activity.${caveat} Live metrics, fundamentals and analyst take on Chaindump.`
         // A tail chain has no board rank — do not imply one it does not have.
-        : `${row.name}: $${fmtShort(row.tvl)} TVL, $${fmtShort(row.volume24h)} 24h volume. Outside the top-50 activity board. Metrics and research on Chaindump.`)
+        : `${row.name}: ${figures} Outside the top-50 activity board.${caveat} Metrics and research on Chaindump.`)
     : OG_DESC_FALLBACK;
   const url = `${ORIGIN}/chain/${encodeURIComponent(key)}`;
   let ld;
   if (row) {
     const dm = (cache.data && cache.data.updatedAt) ? new Date(cache.data.updatedAt).toISOString() : undefined;
-    const measured = [
-      { '@type': 'PropertyValue', name: 'Total value locked (USD)', value: row.tvl },
-      { '@type': 'PropertyValue', name: '24h DEX volume (USD)', value: row.volume24h },
-    ];
+    const measured = [];
+    // Omit a figure we don't have; never publish 0 as a stand-in for unknown.
+    if (row.tvl != null) {
+      measured.push({
+        '@type': 'PropertyValue',
+        name: dq ? 'Total value locked (USD) — unverified' : 'Total value locked (USD)',
+        value: row.tvl,
+        ...(dq ? { description: dq.summary } : {}),
+      });
+    }
+    if (row.volume24h != null) measured.push({ '@type': 'PropertyValue', name: '24h DEX volume (USD)', value: row.volume24h });
     // Only claim a rank when the chain actually has one.
     if (row.rank != null) measured.push({ '@type': 'PropertyValue', name: 'Composite activity rank', value: row.rank });
     if (row.tokenPrice != null) measured.push({ '@type': 'PropertyValue', name: 'Token price (USD)', value: row.tokenPrice });
