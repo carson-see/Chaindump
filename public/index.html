@@ -264,7 +264,16 @@
   .asrc { margin-top:10px; padding-top:9px; border-top:1px solid var(--border); font-size:11.5px; color:var(--muted); }
   .asrc a { color:var(--accent2); text-decoration:none; }
   .asrc a:hover { text-decoration:underline; }
-  .qm { display:inline-block; width:12px; height:12px; line-height:12px; text-align:center; border-radius:50%; background:var(--surface3); color:var(--muted2); font-size:8px; font-weight:700; cursor:help; }
+  .qm { display:inline-block; width:12px; height:12px; line-height:12px; text-align:center; border-radius:50%; background:var(--surface3); color:var(--muted2); font-size:8px; font-weight:700; cursor:pointer; border:0; padding:0; font-family:inherit; vertical-align:middle; }
+  .qm:hover, .qm:focus-visible, .qm[aria-expanded="true"] { background:var(--accent); color:var(--accent-ink); }
+  .glosspop { position:fixed; z-index:200; max-width:320px; background:var(--surface3); border:1px solid var(--border-lit); border-radius:10px; padding:10px 12px; box-shadow:0 8px 24px rgba(0,0,0,.45); font-size:12px; line-height:1.55; text-align:left; text-transform:none; letter-spacing:0; white-space:normal; }
+  .glosspop .gpt { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--accent); margin-bottom:4px; }
+  .glosspop .gpb { color:var(--muted2); font-weight:400; }
+  a.tierbadge { text-decoration:none; cursor:pointer; }
+  a.tierbadge:hover { border-color:var(--border-lit); }
+  button.tierbadge { appearance:none; cursor:pointer; }
+  .vscoreblock { text-align:center; }
+  .vslabel { font-size:9.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); font-weight:600; margin-top:3px; white-space:nowrap; }
   .reflink { margin-top:6px; font-size:11.5px; }
   .reflink a { color:var(--accent2); text-decoration:none; }
   .reflink a:hover { text-decoration:underline; }
@@ -279,14 +288,6 @@
   .peername { font-weight:600; font-size:13.5px; white-space:nowrap; }
   .peername::after { content:' ↗'; color:var(--muted); font-weight:400; }
   .peerreason { font-size:11.5px; color:var(--muted); text-align:right; }
-  .notable { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin:0 0 14px; }
-  .notable:empty { display:none; }
-  .nlabel { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; color:var(--yellow); margin-right:2px; }
-  .nchip { font-size:11px; padding:2px 8px; border-radius:14px; border:1px solid var(--border2); cursor:pointer; white-space:nowrap; transition:border-color .15s; }
-  .nchip b { font-weight:600; }
-  .nchip.up { color:var(--green); background:rgba(78,201,163,.07); border-color:rgba(78,201,163,.25); }
-  .nchip.down { color:var(--red); background:rgba(224,106,106,.07); border-color:rgba(224,106,106,.25); }
-  .nchip:hover { border-color:var(--accent); }
   .tabs { position:fixed; left:0; top:0; bottom:0; width:212px; display:flex; flex-direction:column; align-items:stretch; gap:1px; padding:16px 12px; border-right:1px solid var(--border); background:var(--surface); overflow-y:auto; z-index:30; scrollbar-width:thin; }
   .navbrand { font-size:15px; font-weight:800; letter-spacing:-.02em; padding:4px 8px 2px; color:var(--text); }
   .navtag { font-size:10px; color:var(--muted); padding:0 8px 12px; letter-spacing:.02em; }
@@ -539,7 +540,6 @@
     <div class="card"><div class="label">Stablecoin Mcap</div><div class="val f" id="c-stbl">—</div></div>
   </div>
 
-  <div id="notable" class="notable liveonly"></div>
 
   <div class="toolbar liveonly">
     <input class="search" id="search" placeholder="Search chains…" />
@@ -550,14 +550,14 @@
     <table>
       <thead>
         <tr>
-          <th class="left" data-k="rank" data-label="#" data-hint="Composite activity rank (1 = most active). Blends 24h DEX volume, TVL and 24h fees.">#</th>
+          <th class="left" data-k="rank" data-label="#">#</th>
           <th class="left" data-k="name" data-label="Chain">Chain</th>
-          <th data-k="activeAddresses" data-label="Active Addr 24h" data-hint="Daily active addresses (growthepie). A proxy for real users. Only available for EVM chains — others show —.">Active Addr 24h</th>
-          <th data-k="volume24h" data-label="24h Volume" data-hint="24h decentralized exchange (DEX) trading volume on the chain, from DefiLlama. Excludes centralized exchanges.">24h Volume</th>
-          <th data-k="tvl" data-label="TVL" data-hint="Total Value Locked — total assets deposited in the chain's DeFi protocols. A measure of on-chain capital.">TVL</th>
-          <th class="left hide-md" data-k="_spark" data-label="7d TVL" data-hint="TVL trend over the last 7 days. Green = rising, red = falling.">7d TVL</th>
-          <th class="left hide-sm" data-k="_links" data-label="Markets" data-hint="Links to the chain's leading DEX and NFT marketplace.">Markets</th>
-          <th data-k="score" data-label="Activity" data-hint="Activity index scaled 1–100 across the top 25 (100 = most active). Composite of 24h volume (50%), TVL (30%) and fees (20%).">Activity</th>
+          <th data-k="activeAddresses" data-label="Active Addr 24h">Active Addr 24h</th>
+          <th data-k="volume24h" data-label="24h Volume">24h Volume</th>
+          <th data-k="tvl" data-label="TVL">TVL</th>
+          <th class="left hide-md" data-k="_spark" data-label="7d TVL">7d TVL</th>
+          <th class="left hide-sm" data-k="_links" data-label="Markets">Markets</th>
+          <th data-k="score" data-label="Activity">Activity</th>
         </tr>
       </thead>
       <tbody id="rows"><tr><td colspan="8" class="skel">Fetching live chain data…</td></tr></tbody>
@@ -605,12 +605,134 @@ function delta(v) {
   const up = v >= 0;
   return `<span class="delta ${up?'up':'dn'}">${up?'▲':'▼'} ${Math.abs(v).toFixed(1)}%</span>`;
 }
+// ---------------------------------------------------------------------------
+// Metric glossary — single source of truth for every "?" marker on the site.
+// Plain-English, formula included where one exists. Rendered via the shared
+// popover (hover + click/tap + keyboard), never a bare title attribute.
+// ---------------------------------------------------------------------------
+// Board-header column key -> glossary key. The header row is rebuilt from
+// data-label on every render(), so the "?" is emitted there, not in static HTML.
+const TH_GLOSS = { rank:'rank', activeAddresses:'activeAddresses', volume24h:'volume24h', tvl:'tvl', _spark:'tvlTrend7d', _links:'markets', score:'activityIndex' };
+const METRIC_GLOSSARY = {
+  rank:           { t:'Rank', d:'Position on the live board, ordered by the activity index (1 = most active). A relative ordering of the chains tracked here — not a grade.' },
+  activeAddresses:{ t:'Active addresses 24h', d:'Unique wallet addresses that transacted on the chain in the last 24 hours (growthepie). A proxy for real users — data covers EVM chains only; others show —.' },
+  volume24h:      { t:'24h DEX volume', d:'Total trading volume on the chain’s decentralized exchanges over the last 24 hours (DefiLlama). Excludes centralized exchanges.' },
+  tvl:            { t:'TVL — total value locked', d:'The dollar value of all assets deposited in the chain’s DeFi protocols (DefiLlama). Measures how much capital lives on the chain.' },
+  fees24h:        { t:'24h fees', d:'Total fees paid by users to transact on the chain in the last 24 hours (DefiLlama). A direct read on real economic demand for blockspace.' },
+  stables:        { t:'Stablecoin mcap', d:'Combined market cap of stablecoins circulating on this chain (DefiLlama). A strong proxy for payment and liquidity activity — and one of the few metrics that covers non-EVM chains.' },
+  tokenPrice:     { t:'Token price', d:'Current price and 24h change of the chain’s native/gas token (CoinGecko).' },
+  tokenMcap:      { t:'Token mcap', d:'Market capitalization of the chain’s native token: price × circulating supply (CoinGecko).' },
+  // Definition of record is served as scoreMeta on /api/chains (src/lib/scoring.js).
+  // This fallback is intentionally formula-free — see TIER_CRITERIA_FALLBACK.
+  activityIndex:  { t:'Activity index', d:'A relative measure of on-chain activity across the live board, blending DEX volume, TVL and fees. Not a health or quality score — a low index on a smaller chain is expected. Full formula loads with the board data.' },
+  pf:             { t:'P / F ratio', d:'Price-to-fees: token market cap ÷ annualized fees (24h fees × 365). How expensively the market values each dollar of fee revenue — 60× means the market cap equals 60 years of current fees. Lower is cheaper.' },
+  feeYield:       { t:'Fee yield', d:'Annualized fees ÷ TVL, as a percentage. How much fee revenue each dollar of locked capital generates per year — higher means capital on the chain is working harder.' },
+  turnover:       { t:'Turnover', d:'24h DEX volume ÷ TVL. How actively the chain’s liquidity is being traded (velocity) — higher means the same capital changes hands more often.' },
+  feePerUser:     { t:'Fees / user', d:'24h fees ÷ 24h active addresses. Average fee revenue per active user — higher suggests each user is economically real (less likely wash trading or airdrop farming).' },
+  tvlTrend7d:     { t:'7d TVL trend', d:'Percent change in TVL over the last 7 days. The short-term direction of capital on the chain — green rising, red falling.' },
+  volTrend7d:     { t:'7d volume trend', d:'Percent change in 24h DEX volume versus 7 days ago. The short-term direction of trading activity.' },
+  tvlTrend30d:    { t:'30d TVL trend', d:'Percent change in TVL over the last 30 days. The medium-term trend of capital on the chain.' },
+  volTrend30d:    { t:'30d volume trend', d:'Percent change in 24h DEX volume versus 30 days ago. The medium-term trend of trading activity.' },
+  markets:        { t:'Markets', d:'Direct links to the chain’s leading DEX and NFT marketplace.' },
+};
+
+// Tier-badge explanations come from `state.tiers.criteria` (/api/tiers), which is
+// generated from src/lib/scoring.js — the same module the classifier uses. These
+// fallbacks deliberately do NOT restate the rules: a second copy of the prose is
+// how the served note came to claim "index = score x 100" while the UI rescaled.
+// If the API hasn't answered, say nothing rather than something wrong.
+const TIER_CRITERIA_FALLBACK = {};
+const TIER_COMPUTED_NOTE = 'Computed automatically from live TVL / volume / fee data — a classification, not a researched verdict.';
+const TIER_CURATED_NOTE = 'A researched verdict from the Chaindump desk — it overrides the computed classifier. Click to open the section this chain was researched in.';
+// Honest display words for COMPUTED tiers. Never "thriving" — the classifier
+// measures activity, not health; verdicts are a separate, curated system.
+const TIER_COMPUTED_LABEL = { thriving:'top 50 · active', mid:'cooling', dying:'declining (computed)', dead:'collapsed (computed)' };
+
+// Resolve a glossary key to {t,d}. Dynamic keys pull live API metadata
+// (scoreMeta from /api/chains, criteria from /api/tiers) with static fallback.
+function glossEntry(key){
+  if (key === 'activityIndex' && state.scoreMeta && (state.scoreMeta.formula || state.scoreMeta.caveat)) {
+    const m = state.scoreMeta;
+    return { t: m.name || 'Activity index', d: [m.formula, m.caveat].filter(Boolean).join(' ') };
+  }
+  if (key.indexOf('tier:') === 0) {
+    const parts = key.split(':'), tier = parts[1], curated = parts[2] === 'curated';
+    const crit = (state.tiers && state.tiers.criteria) || {};
+    const tc = crit[tier] || {};
+    const rule = tc.rule || TIER_CRITERIA_FALLBACK[tier] || '';
+    if (curated) return { t: 'Curated verdict', d: tc.curatedNote || crit.curatedNote || TIER_CURATED_NOTE };
+    const note = tc.computedNote || crit.computedNote || TIER_COMPUTED_NOTE;
+    // No rule text means /api/tiers hasn't answered — show the note alone rather
+    // than an empty "Rule:" label promising a definition we don't have yet.
+    return { t: (TIER_COMPUTED_LABEL[tier] || tier), d: rule ? `Rule: ${rule} ${note}` : note };
+  }
+  return METRIC_GLOSSARY[key] || null;
+}
+
+// ---- shared glossary popover: hover + click/tap toggle + Esc, viewport-clamped ----
+let gpEl = null, gpAnchor = null, gpPinned = false;
+function gpEnsure(){
+  if (!gpEl) { gpEl = document.createElement('div'); gpEl.className = 'glosspop'; gpEl.id = 'glosspop'; gpEl.setAttribute('role', 'tooltip'); gpEl.hidden = true; document.body.appendChild(gpEl); }
+  return gpEl;
+}
+function gpShow(anchor){
+  const entry = glossEntry(anchor.getAttribute('data-gloss') || '');
+  if (!entry) return;
+  const el = gpEnsure();
+  el.textContent = '';
+  const t = document.createElement('div'); t.className = 'gpt'; t.textContent = entry.t;
+  const d = document.createElement('div'); d.className = 'gpb'; d.textContent = entry.d;
+  el.appendChild(t); el.appendChild(d);
+  el.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  el.style.left = '0px'; el.style.top = '0px';
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const x = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, document.documentElement.clientWidth - w - 8));
+  let y = r.bottom + 7;
+  if (y + h > window.innerHeight - 8) y = Math.max(8, r.top - h - 7);
+  el.style.left = x + 'px'; el.style.top = y + 'px';
+  if (gpAnchor && gpAnchor !== anchor) gpAnchor.removeAttribute('aria-expanded');
+  gpAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
+}
+function gpHide(){
+  if (gpEl) gpEl.hidden = true;
+  if (gpAnchor) gpAnchor.removeAttribute('aria-expanded');
+  gpAnchor = null; gpPinned = false;
+}
+// Capture phase so a "?" click never also sorts a column or toggles a row.
+document.addEventListener('click', (ev) => {
+  const el = ev.target && ev.target.closest ? ev.target.closest('[data-gloss]') : null;
+  if (el) {
+    ev.stopPropagation();
+    if (el.dataset.goview) { ev.preventDefault(); gpHide(); switchView(el.dataset.goview); return; } // curated badge -> its entry
+    ev.preventDefault();
+    if (gpPinned && gpAnchor === el) gpHide();
+    else { gpShow(el); gpPinned = true; }
+    return;
+  }
+  if (gpPinned && !(ev.target && ev.target.closest && ev.target.closest('.glosspop'))) gpHide();
+}, true);
+document.addEventListener('mouseover', (ev) => { const el = ev.target && ev.target.closest ? ev.target.closest('[data-gloss]') : null; if (el && !gpPinned) gpShow(el); });
+document.addEventListener('mouseout', (ev) => { if (gpPinned) return; const el = ev.target && ev.target.closest ? ev.target.closest('[data-gloss]') : null; if (el) gpHide(); });
+document.addEventListener('focusin', (ev) => { const el = ev.target && ev.target.closest ? ev.target.closest('[data-gloss]') : null; if (el && !gpPinned) gpShow(el); });
+document.addEventListener('focusout', (ev) => { if (!gpPinned && ev.target === gpAnchor) gpHide(); });
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && gpAnchor) { const a = gpAnchor; gpHide(); if (a.focus) a.focus(); } });
+document.addEventListener('scroll', () => { if (gpAnchor) gpHide(); }, true);
+
 // Chaindump's own tier for a live chain — unifies the live board with the
-// forensic sections (thriving / stuck-mid / dying / dead). Server-annotated.
-const TIER_LABEL = { thriving:'thriving', mid:'mid', dying:'dying', dead:'dead' };
-function tierBadge(t) {
-  const l = TIER_LABEL[t];
-  return l ? `<span class="tierbadge ${esc(t)}" title="Chaindump tier: ${esc(l)}">${esc(l)}</span>` : '';
+// forensic sections. Curated verdicts (dead_chains / mid_chains research) keep
+// their curated word and link to the entry; computed tiers say so honestly.
+function tierBadge(name) {
+  const t = tierMap[name];
+  if (!TIER_COMPUTED_LABEL[t]) return '';
+  // Curated: this chain's tier comes from a researched case study (dead_chains /
+  // mid_chains), not the classifier — say so, and link to its entry.
+  if (state.curatedSet && state.curatedSet.has(name) && (t === 'dead' || t === 'mid')) {
+    const view = t === 'dead' ? 'grave' : 'mid';
+    const word = t === 'dead' ? 'graveyard · researched' : 'stuck · researched';
+    return `<a class="tierbadge ${esc(t)}" href="/${view}" data-goview="${view}" data-gloss="tier:${esc(t)}:curated">${word}</a>`;
+  }
+  return `<button type="button" class="tierbadge ${esc(t)}" data-gloss="tier:${esc(t)}:computed" aria-label="What does this badge mean?">${esc(TIER_COMPUTED_LABEL[t])}</button>`;
 }
 
 function sparkline(values, w = 78, h = 22, pad = 3) {
@@ -659,6 +781,9 @@ function marketChips(c){
 }
 
 function render() {
+  // load() repaints on a 30s timer, replacing every `?` anchor node. A popover
+  // left open would hover over rebuilt content, describing the wrong row.
+  gpHide();
   let rows = state.chains.filter(c => !state.q || c.name.toLowerCase().includes(state.q));
   rows.sort((a,b) => {
     if (state.sortKey === 'name') return state.dir * a.name.localeCompare(b.name);
@@ -681,13 +806,13 @@ function render() {
     const row = `
     <tr class="crow${open?' open':''}" data-name="${esc(c.name)}">
       <td class="rank">${c.rank}</td>
-      <td class="chain"><div class="chaincell"><span class="chev">${open?'▾':'▸'}</span>${logo(c)}<span><span class="cname">${esc(c.name)}</span>${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${tierBadge(tierMap[c.name])}${c.tokenPrice!=null?`<span class="cprice">$${fmtTok(c.tokenPrice)}${c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''}</span>`:''}</span></div></td>
+      <td class="chain"><div class="chaincell"><span class="chev">${open?'▾':'▸'}</span>${logo(c)}<span><span class="cname">${esc(c.name)}</span>${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${tierBadge(c.name)}${c.tokenPrice!=null?`<span class="cprice">$${fmtTok(c.tokenPrice)}${c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''}</span>`:''}</span></div></td>
       <td class="num" data-label="Active">${fmtNum(c.activeAddresses)}</td>
       <td class="num" data-label="24h Volume">${fmtUsd(c.volume24h)}${delta(c.volChange1d)}</td>
       <td class="num" data-label="TVL">${fmtUsd(c.tvl)}${c.tvlChange7d!=null?delta(c.tvlChange7d):''}</td>
       <td class="left hide-md" data-label="7d TVL">${sparkline(c.tvlSpark)}</td>
       <td class="left hide-sm" data-label="Markets">${marketChips(c)}</td>
-      <td data-label="Activity" title="Activity index ${actIndex(c)}/100 — driven by: Volume #${volR.get(c.name)} · TVL #${tvlR.get(c.name)} · Fees #${feeR.get(c.name)} (of ${N})"><div class="scorecell"><span>${actIndex(c)}</span><span class="scorebar" style="width:${Math.max(5, actIndex(c)*0.5)}px"></span></div></td>
+      <td data-label="Activity" title="Activity index ${actIndex(c)} (relative composite — not a health score). Driven by: Volume #${volR.get(c.name)} · TVL #${tvlR.get(c.name)} · Fees #${feeR.get(c.name)} (of ${N})"><div class="scorecell"><span>${actIndex(c)}</span><span class="scorebar" style="width:${Math.max(5, actIndex(c)*0.5)}px"></span></div></td>
     </tr>`;
     const detail = open ? `<tr class="detailrow"><td colspan="8">${detailHtml(c)}</td></tr>` : '';
     return row + detail;
@@ -697,27 +822,25 @@ function render() {
     const k = th.dataset.k, sorted = k === state.sortKey;
     th.classList.toggle('sorted', sorted);
     const label = th.dataset.label || th.textContent.replace(/[▼▲?]/g,'').trim();
-    const hint = th.dataset.hint;
-    if (hint) th.title = hint;
-    const q = hint ? ' <span class="qm">?</span>' : '';
+    // This rebuilds the header on every paint, so the "?" must be re-emitted here —
+    // a button placed in the static HTML gets wiped on the first render.
+    const gk = TH_GLOSS[k];
+    const q = (gk && METRIC_GLOSSARY[gk]) ? ` <button type="button" class="qm" data-gloss="${esc(gk)}" aria-label="What is ${esc(label)}?">?</button>` : '';
     const arrow = sorted ? ` <span class="arrow">${state.dir===-1?'▼':'▲'}</span>` : '';
     th.innerHTML = label + q + arrow;
   });
 }
 
 function stat(label, val){ return `<div class="stat"><div class="sl">${label}</div><div class="sv">${val}</div></div>`; }
-function statH(label, val, hint){ return `<div class="stat" title="${esc(hint)}"><div class="sl">${label} <span class="qm">?</span></div><div class="sv">${val}</div></div>`; }
-
-function renderNotable(){
-  const el = document.getElementById('notable');
-  if (!el) return;
-  const items = [];
-  state.chains.forEach(c => (c.flags||[]).forEach(f => items.push({ name:c.name, label:f.label, sev:f.sev })));
-  if (!items.length) { el.innerHTML = ''; return; }
-  items.sort((a,b)=> (a.sev==='down'?-1:1) - (b.sev==='down'?-1:1));
-  el.innerHTML = `<span class="nlabel">⚡ Notable moves</span>` +
-    items.map(it => `<span class="nchip ${it.sev}" data-name="${esc(it.name)}"><b>${esc(it.name)}</b> ${esc(it.label)}</span>`).join('');
+// Stat tile. `gloss` is a METRIC_GLOSSARY key (renders the shared popover); a
+// non-key string degrades to a plain title tooltip so no tile ships unexplained.
+function statH(label, val, gloss){
+  const q = (gloss && METRIC_GLOSSARY[gloss])
+    ? `<button type="button" class="qm" data-gloss="${esc(gloss)}" aria-label="What is ${esc(label)}?">?</button>`
+    : `<span class="qm" title="${esc(gloss || '')}">?</span>`;
+  return `<div class="stat"><div class="sl">${label} ${q}</div><div class="sv">${val}</div></div>`;
 }
+
 
 function momentumText(c){
   const v = c.volChange30d, t = c.tvlChange30d;
@@ -740,8 +863,8 @@ function momentumText(c){
 
 function momentumHtml(c){
   const spark = c.tvlSpark30 && c.tvlSpark30.length > 2 ? sparkline(c.tvlSpark30, 240, 50, 5) : '<span class="muted">No history</span>';
-  const chips = [['30d Volume', c.volChange30d], ['30d TVL', c.tvlChange30d], ['7d Volume', c.volChange7d], ['7d TVL', c.tvlChange7d]]
-    .map(([l, v]) => `<div class="stat"><div class="sl">${l}</div><div class="sv">${v != null ? delta(v) : '—'}</div></div>`).join('');
+  const chips = [['30d Volume', c.volChange30d, 'volTrend30d'], ['30d TVL', c.tvlChange30d, 'tvlTrend30d'], ['7d Volume', c.volChange7d, 'volTrend7d'], ['7d TVL', c.tvlChange7d, 'tvlTrend7d']]
+    .map(([l, v, k]) => `<div class="stat"><div class="sl">${l} <button type="button" class="qm" data-gloss="${k}" aria-label="What is ${l}?">?</button></div><div class="sv">${v != null ? delta(v) : '—'}</div></div>`).join('');
   const txt = momentumText(c);
   return `<div class="dsec">30-day trend</div>
     <div class="trendwrap">
@@ -753,17 +876,17 @@ function momentumHtml(c){
 
 function fundamentalsHtml(c){
   return `<div class="dsec">Fundamentals</div><div class="statgrid">
-    ${statH('P / F ratio', c.pf!=null?c.pf+'×':'—', 'Market cap of the chain\'s token ÷ annualized fees. Lower = cheaper relative to the revenue it generates.')}
-    ${statH('Fee yield', c.feeYield!=null?c.feeYield+'%':'—', 'Annualized fees as a % of TVL. Higher = capital on the chain is generating more revenue.')}
-    ${statH('Turnover', c.turnover!=null?c.turnover+'×':'—', '24h DEX volume ÷ TVL. Higher = liquidity is being traded more actively (velocity).')}
-    ${statH('Fees / user', c.feePerUser!=null?'$'+c.feePerUser:'—', '24h fees ÷ active addresses. Higher = each user is more economically valuable (less likely wash/farming).')}
+    ${statH('P / F ratio', c.pf!=null?c.pf+'×':'—', 'pf')}
+    ${statH('Fee yield', c.feeYield!=null?c.feeYield+'%':'—', 'feeYield')}
+    ${statH('Turnover', c.turnover!=null?c.turnover+'×':'—', 'turnover')}
+    ${statH('Fees / user', c.feePerUser!=null?'$'+c.feePerUser:'—', 'feePerUser')}
   </div>`;
 }
 
 function analystHtml(d){
   if (!d) return `<div class="dsec">Analysis</div><div class="anbox muted">Loading analysis…</div>`;
   const a = d.analysis;
-  if (!a || !a.take) return `<div class="dsec">Analyst take</div><div class="anbox muted">No analyst take yet — a research agent refreshes these every 12h. Check back soon.</div>`;
+  if (!a || !a.take) return `<div class="dsec">Analyst take</div><div class="anbox muted">Not yet covered by the research desk.</div>`;
   const p = a.profile || {};
   const sent = (a.sentiment || '').toLowerCase().replace(/[^a-z]/g, '');
   const badge = a.sentiment ? `<span class="sent ${sent}">${esc(a.sentiment)}</span>` : '';
@@ -801,14 +924,14 @@ function detailHtml(c) {
   const priceBadge = c.tokenPrice!=null ? `<span class="hprice">$${fmtTok(c.tokenPrice)}${c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''}</span>` : '';
   const head = `<div class="dtitle">${logoBig(c)}<div><div class="dname">${esc(c.name)}${c.symbol?`<span class="csym">${esc(c.symbol)}</span>`:''}${priceBadge}${c.categoryLabel?`<span class="catchip" title="Value-prop category — how Chaindump groups this chain">${esc(c.categoryLabel)}</span>`:''}</div><div class="ddesc" id="desc-${cssId(c.name)}">${d&&d.description?esc(d.description):'<span class="muted">Loading overview…</span>'}</div>${reflink}</div></div>`;
   const stats = `<div class="statgrid">
-    ${statH('Active Addresses 24h', fmtNum(c.activeAddresses), 'Daily active addresses (growthepie) — a proxy for real users. EVM chains only; others show —.')}
-    ${statH('24h DEX Volume', fmtUsd(c.volume24h)+(c.volChange1d!=null?' '+delta(c.volChange1d):''), 'Decentralized-exchange trading volume in the last 24h (DefiLlama). Excludes centralized exchanges.')}
-    ${statH('TVL', fmtUsd(c.tvl)+(c.tvlChange7d!=null?' '+delta(c.tvlChange7d):''), 'Total Value Locked — assets deposited across the chain\'s DeFi protocols. Measures on-chain capital.')}
-    ${statH('24h Fees', fmtUsd(c.fees24h), 'Total fees paid by users on the chain in 24h (DefiLlama). Reflects real economic demand / revenue.')}
-    ${statH('Stablecoin Mcap', c.stables?fmtUsd(c.stables):'—', 'Total stablecoins circulating on this chain (DefiLlama). A strong proxy for real liquidity and payment/economic activity — and one of the few metrics that covers non-EVM chains.')}
-    ${statH('Token Price', c.tokenPrice!=null?'$'+Intl.NumberFormat('en',{maximumFractionDigits:c.tokenPrice<1?4:2}).format(c.tokenPrice)+(c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''):'—', 'Price and 24h change of the chain\'s native/gas token (CoinGecko).')}
-    ${statH('Token Mcap', c.tokenMcap?fmtUsd(c.tokenMcap):'—', 'Market capitalization of the chain\'s native token (CoinGecko).')}
-    ${statH('Activity Index', actScore(c)+'/100', 'Composite activity index scaled 1–100 across the top 25 (100 = most active). 50% 24h volume, 30% TVL, 20% fees.')}
+    ${statH('Active Addresses 24h', fmtNum(c.activeAddresses), 'activeAddresses')}
+    ${statH('24h DEX Volume', fmtUsd(c.volume24h)+(c.volChange1d!=null?' '+delta(c.volChange1d):''), 'volume24h')}
+    ${statH('TVL', fmtUsd(c.tvl)+(c.tvlChange7d!=null?' '+delta(c.tvlChange7d):''), 'tvl')}
+    ${statH('24h Fees', fmtUsd(c.fees24h), 'fees24h')}
+    ${statH('Stablecoin Mcap', c.stables?fmtUsd(c.stables):'—', 'stables')}
+    ${statH('Token Price', c.tokenPrice!=null?'$'+Intl.NumberFormat('en',{maximumFractionDigits:c.tokenPrice<1?4:2}).format(c.tokenPrice)+(c.tokenChange24h!=null?' '+delta(c.tokenChange24h):''):'—', 'tokenPrice')}
+    ${statH('Token Mcap', c.tokenMcap?fmtUsd(c.tokenMcap):'—', 'tokenMcap')}
+    ${statH('Activity Index', actScore(c), 'activityIndex')}
   </div>`;
   let projects;
   if (!d) projects = '<div class="muted" style="padding:6px 2px">Loading top projects…</div>';
@@ -827,7 +950,9 @@ function detailHtml(c) {
   const idx = actScore(c);
   const sent = (d && d.analysis && d.analysis.sentiment) || '';
   const vline = (d && d.analysis && d.analysis.trend) || (`Rank #${c.rank} by composite activity`);
-  const verdict = `<div class="verdictstrip"><div class="vscore">${idx}<span>/100</span></div><div class="vmeta">${sent?`<span class="sent ${sent.toLowerCase().replace(/[^a-z]/g,'')}">${esc(sent)}</span>`:''}<div class="vline">${esc(vline)}</div></div></div>`;
+  // Never "X/100" — the index is a relative composite, not a grade. Value + its
+  // name + the rank line, with the glossary popover one tap away.
+  const verdict = `<div class="verdictstrip"><div class="vscoreblock"><div class="vscore">${idx}</div><div class="vslabel">Activity index <button type="button" class="qm" data-gloss="activityIndex" aria-label="What is the activity index?">?</button></div></div><div class="vmeta">${sent?`<span class="sent ${sent.toLowerCase().replace(/[^a-z]/g,'')}">${esc(sent)}</span>`:''}<div class="vline">${esc(vline)} · relative composite of volume, TVL &amp; fees — not a health score</div></div></div>`;
   const snapshot = stats + momentumHtml(c) + fundamentalsHtml(c);
   const ecosystem = markets + tokensSection + nftsSection + `<div class="dsec">Top apps on this chain</div>${projects}`;
   const related = relatedInner(c);
@@ -864,7 +989,12 @@ async function loadTiers() {
   if (tiersFetched) return; tiersFetched = true;
   try {
     const d = await fetch('api/tiers').then(r => r.json());
-    if (d && d.tierMap) { tierMap = d.tierMap; if (state.activeView === 'live') render(); }
+    if (d && d.tierMap) {
+      tierMap = d.tierMap;
+      state.tiers = { criteria: d.criteria || null };            // exact classifier rules → badge popovers
+      state.curatedSet = new Set(d.curated || []);               // chains whose tier is a researched verdict
+      if (state.activeView === 'live') render();
+    }
   } catch (e) { tiersFetched = false; } // allow a later retry
 }
 async function load() {
@@ -873,9 +1003,9 @@ async function load() {
     const d = await r.json();
     if (d.error && !d.chains) throw new Error(d.error);
     state.chains = d.chains || [];
+    state.scoreMeta = d.scoreMeta || null; // what the activity index IS — feeds the glossary popover
     setTotals(d.totals || {}, d.usersCoverage || 0);
     render();
-    renderNotable();
     loadTiers(); // non-blocking: badges appear when tiers resolve
     document.getElementById('err').innerHTML = d.stale ? `<div class="err">Showing cached data — live refresh failed: ${esc(d.error||'')}</div>` : '';
     document.getElementById('status').textContent = 'updated ' + new Date(d.updatedAt).toLocaleTimeString();
@@ -885,7 +1015,8 @@ async function load() {
   }
 }
 
-document.querySelectorAll('thead th').forEach(th => th.addEventListener('click', () => {
+document.querySelectorAll('thead th').forEach(th => th.addEventListener('click', (ev) => {
+  if (ev.target && ev.target.closest && ev.target.closest('[data-gloss]')) return; // "?" opens the glossary, never sorts
   const k = th.dataset.k;
   if (state.sortKey === k) state.dir *= -1;
   else { state.sortKey = k; state.dir = (k==='name'||k==='rank') ? 1 : -1; }
@@ -893,14 +1024,6 @@ document.querySelectorAll('thead th').forEach(th => th.addEventListener('click',
 }));
 document.getElementById('search').addEventListener('input', (e) => { state.q = e.target.value.toLowerCase().trim(); render(); });
 
-document.getElementById('notable').addEventListener('click', (e) => {
-  const chip = e.target.closest('.nchip');
-  if (!chip) return;
-  const name = chip.dataset.name;
-  state.expanded = name; loadDetail(name);
-  const row = document.querySelector(`tr.crow[data-name="${CSS.escape(name)}"]`);
-  if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-});
 
 document.getElementById('rows').addEventListener('click', (e) => {
   if (e.target.closest('a')) return; // let market links open normally
