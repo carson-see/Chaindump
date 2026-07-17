@@ -5,7 +5,8 @@ import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
-import { SCORE_META, TIER_CRITERIA, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
+import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk } from './lib/scoring.js';
+import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from './lib/llama.js';
 
 const ENV = {};
 const app = new Hono();
@@ -97,22 +98,6 @@ async function pool(items, worker, limit = 8) {
   return out;
 }
 
-// Sum a DefiLlama "overview" breakdown24h into { normKey: totalUSD }
-function aggregateBreakdown(overview) {
-  const out = {};
-  for (const proto of (overview && overview.protocols) || []) {
-    const b = proto.breakdown24h;
-    if (!b) continue;
-    for (const chain in b) {
-      if (chain === 'off_chain') continue;
-      let sum = 0;
-      for (const k in b[chain]) sum += Number(b[chain][k]) || 0;
-      const key = norm(chain);
-      out[key] = (out[key] || 0) + sum;
-    }
-  }
-  return out;
-}
 
 // growthepie master: chainId -> { origin, bucket, stack, da_layer } — origin for
 // the DAA lookup, the rest to derive a value-prop category when curated misses.
@@ -256,8 +241,18 @@ async function buildSnapshot(opts = {}) {
   const chains = val(chainsR, []);
   if (!Array.isArray(chains) || !chains.length) throw new Error('chains feed unavailable');
 
-  const volAgg = aggregateBreakdown(val(dexsR, {}));
-  const feeAgg = aggregateBreakdown(val(feesR, {}));
+  // Volume is filtered to real DEX categories: /overview/dexs also carries
+  // Derivatives, Prediction Markets, NFT marketplaces and Telegram bots, and
+  // counting those as "DEX volume" overstated Injective by 16x.
+  const volAgg = aggregateBreakdown(val(dexsR, {}), norm, { categories: DEX_CATEGORIES });
+  // Fees are chain-wide revenue, not one product — no category filter.
+  const feeAgg = aggregateBreakdown(val(feesR, {}), norm);
+  // A dead volume feed contributes zero to EVERY chain, which silently re-ranks
+  // the board on TVL+fees alone while we keep publishing "50% 24h DEX volume".
+  // Refuse to build rather than persist a plausible-looking wrong board; the
+  // /api/chains catch then serves the last good snapshot with stale: true.
+  if (feedIsDegenerate(volAgg, chains.length)) throw new Error('dex volume feed unavailable (empty breakdown)');
+  if (feedIsDegenerate(feeAgg, chains.length)) throw new Error('fees feed unavailable (empty breakdown)');
   const masterMap = gpMaster.status === 'fulfilled' ? gpMaster.value : {};
   const daaMap = val(daaByOrigin, {});
 
@@ -271,8 +266,10 @@ async function buildSnapshot(opts = {}) {
   }
 
   // --- assemble base rows from TVL feed (canonical names + chainId + gecko) ---
-  const rows = chains
-    .filter((c) => c && c.name)
+  // dedupeChains first: DefiLlama double-lists BSC/Binance and OP Mainnet/Optimism
+  // under one chainId, and the per-chain endpoint resolves the $0 alias to the real
+  // chain's volume — so the board would carry the same chain twice.
+  const rows = dedupeChains(chains.filter((c) => c && c.name))
     .map((c) => {
       const key = norm(c.name);
       const mrec = c.chainId != null ? masterRec(masterMap[Number(c.chainId)]) : null;
@@ -293,13 +290,18 @@ async function buildSnapshot(opts = {}) {
       };
     });
 
-  // --- log-value composite score over the FULL universe, volume-weighted ---
+  // --- PASS 1: provisional score, only to decide who is worth enriching ---
+  // These volumes come from the aggregated breakdown, which misses any chain the
+  // DEX feed names differently from the TVL feed (302 of 458: "Hyperliquid L1" vs
+  // "hyperliquid", "OP Mainnet" vs "optimism"). Those chains read 0 on a
+  // 50%-weight axis, so this ranking is NOT trustworthy on its own.
   scoreRows(rows);
-  rows.sort((a, b) => b.score - a.score);
-  const top = rows.slice(0, BOARD_SIZE);
+  // Hence candidates are picked on several axes, not just the provisional score:
+  // a chain zeroed on volume still enters on TVL or fees and gets corrected.
+  const candidates = selectCandidates(rows, { boardSize: BOARD_SIZE });
 
-  // --- enrich ONLY the top 50 (bounded concurrency) ---
-  await pool(top, async (r) => {
+  // --- enrich candidates (bounded concurrency) ---
+  await pool(candidates, async (r) => {
     const enc = encodeURIComponent(r.name);
     const [dex, hist] = await Promise.allSettled([
       fetchJson(`https://api.llama.fi/overview/dexs/${enc}?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true`, 12000),
@@ -324,6 +326,18 @@ async function buildSnapshot(opts = {}) {
       r.tvlChange30d = mo > 0 ? +(((now - mo) / mo) * 100).toFixed(2) : null;
     }
   }, 8);
+
+  // --- PASS 2: rescore on the authoritative volumes just fetched ---
+  // r.volume24h now holds DefiLlama's own per-chain total24h for every candidate
+  // (it resolves chain names correctly and applies DefiLlama's parent-protocol
+  // dedup). Rescoring here is what makes the published formula actually
+  // reproduce the published score — previously volume24h was overwritten AFTER
+  // scoring and never rescored, so the board ranked Injective on $3.2M while
+  // serving $200K. The board is drawn from candidates only, so every ranked
+  // chain is one we enriched.
+  scoreRows(rows);
+  candidates.sort((a, b) => b.score - a.score);
+  const top = candidates.slice(0, BOARD_SIZE);
 
   // --- CoinGecko native-token price/mcap/24h (single batched call) ---
   const ids = [...new Set(top.map((r) => r.gecko).filter(Boolean))];
@@ -935,6 +949,34 @@ app.get('/api/desk/pending', wrap(async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 }));
 
+// Read the research desk's per-dimension rows for one chain (identity, capital,
+// team, narrative, risk, token, onchain, synthesis, links...).
+//
+// This table held 248 rows of researched, cited analysis and NOTHING in src/ read
+// it — every dossier the desk wrote was invisible to users. That is the whole of
+// "berachain is thriving but we can't justify it, no citations or analysis".
+//
+// Match on the desk's name OR a case-insensitive match: chain_facts is keyed by
+// the researcher's spelling, which does not always match the TVL feed's ("NEAR"
+// in the desk, "Near" on the board).
+async function chainFacts(chainName) {
+  const out = {};
+  try {
+    const rows = await dbQuery(
+      `SELECT dimension, data, sources, updated_at FROM chain_facts WHERE chain = ?1 OR lower(chain) = lower(?1)`,
+      [chainName]
+    );
+    for (const r of rows) {
+      if (!r.dimension || r.dimension === '_meta') continue;
+      let data = null, sources = null;
+      try { data = r.data ? JSON.parse(r.data) : null; } catch (e) { continue; }   // skip malformed, never serve half-parsed research
+      try { sources = r.sources ? JSON.parse(r.sources) : null; } catch (e) { sources = null; }
+      out[r.dimension] = { data, sources, updatedAt: r.updated_at || null };
+    }
+  } catch (e) { /* facts are best-effort — the table may not exist yet */ }
+  return Object.keys(out).length ? out : null;
+}
+
 app.get('/api/chain/:name', wrap(async (req, res) => {
   try {
     if (!cache.data) cache = await loadSnapshot();
@@ -974,7 +1016,9 @@ app.get('/api/chain/:name', wrap(async (req, res) => {
     let risk = null;
     try { const rr = await dbQuery(`SELECT level, summary, evidence, sources FROM risk_flags WHERE entity_type='chain' AND entity_name = ? LIMIT 1`, [row.name]); if (rr[0]) risk = rr[0]; } catch (e) {}
 
-    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk });
+    const facts = await chainFacts(row.name);
+
+    res.json({ chain: row, scoreMeta: SCORE_META, description: DESCRIPTIONS[nkey] || null, topProjects, topNfts, topTokens, analysis, risk, facts });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
@@ -1099,7 +1143,7 @@ async function classifyChains() {
     };
   }, 6);
 
-  const b = { thriving: [], mid: [], dying: [], dead: [] };
+  const b = Object.fromEntries(TIERS.map((t) => [t, []]));
   const onBoard = (name) => thrivingNames.has(name);
   for (const m of metrics) b[classifyTier(m, onBoard, norm)].push(m);
   b.mid.sort((x, y) => y.tvl - x.tvl);
@@ -1112,7 +1156,7 @@ async function classifyChains() {
 // badge each row with our own classification (progressive-enhancement fetch).
 function tierMapFrom(b) {
   const map = {};
-  for (const tier of ['thriving', 'mid', 'dying', 'dead']) for (const m of (b[tier] || [])) map[m.chain] = tier;
+  for (const tier of TIERS) for (const m of (b[tier] || [])) map[m.chain] = tier;
   return map;
 }
 
@@ -1178,7 +1222,7 @@ app.get('/api/tiers', wrap(async (req, res) => {
       updatedAt: new Date(tiersCache.ts).toISOString(),
       criteria: TIER_CRITERIA,
       computedNote: TIER_CRITERIA.computedNote,
-      counts: { thriving: b.thriving.length, mid: b.mid.length, dying: b.dying.length, dead: b.dead.length },
+      counts: Object.fromEntries(TIERS.map((t) => [t, (b[t] || []).length])),
       tierMap: { ...tierMapFrom(b), ...curated },
       curated: Object.keys(curated),
       mid: attach(b.mid, 25), dying: attach(b.dying, 25), dead: attach(b.dead, 25), declining,

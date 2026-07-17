@@ -63,14 +63,16 @@
   .pulse { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(78,201,163,.5)} 70%{box-shadow:0 0 0 7px rgba(78,201,163,0)} 100%{box-shadow:0 0 0 0 rgba(78,201,163,0)} }
 
-  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:20px 0 16px; }
-  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
-  .card .label { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; }
-  .card .val { font-size:21px; font-weight:600; margin-top:5px; font-family:var(--font-mono); font-variant-numeric:tabular-nums; letter-spacing:-0.01em; }
-  .card .val.v{color:var(--accent)} .card .val.t{color:var(--accent2)} .card .val.f{color:var(--purple)} .card .val.u{color:var(--green)}
+  /* ── Canonical page header — every view opens with the same title + subtitle.
+     The subtitle keeps the .gvintro class it already had, so only the title and
+     the wrapper are new. ── */
+  .pagehead { margin:20px 0 14px; }
+  .pagetitle { font-size:19px; font-weight:700; letter-spacing:-.02em; color:var(--text-hi); }
+  .pagehead .gvintro { margin:5px 0 0; }
 
   .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
   .search { flex:1; min-width:180px; max-width:280px; background:var(--surface); border:1px solid var(--border2); border-radius:9px; padding:8px 12px; color:var(--text); font-size:13px; outline:none; }
+  .search.wide { max-width:none; }
   .search:focus { border-color:var(--accent); }
   .legend { color:var(--muted); font-size:12px; margin-left:auto; }
   .legend b { color:var(--muted2); font-weight:600; }
@@ -105,6 +107,31 @@
   .tierbadge.thriving { color:var(--up); background:var(--up-bg); border-color:rgba(78,201,163,.25); }
   .tierbadge.mid { color:var(--warn); background:var(--warn-bg); border-color:rgba(217,164,65,.25); }
   .tierbadge.dying { color:var(--down); background:var(--down-bg); border-color:rgba(224,106,106,.25); }
+  /* zombie: active AND collapsed. Deliberately not green and not red — the whole
+     point of the tier is that it is neither, and the colour must not round it. */
+  .dqwarn { font-size:11.5px; line-height:1.55; color:#fde68a; background:rgba(217,164,65,.1); border:1px solid rgba(217,164,65,.35); border-radius:7px; padding:9px 11px; margin:0 0 12px; }
+  .dqwarn b { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:3px; }
+  .fcorr { font-size:11px; line-height:1.55; color:var(--muted); border-left:2px solid var(--border2); padding:4px 0 4px 9px; margin:7px 0 2px; }
+  .fcorr b { color:var(--muted2); display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .olinks { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 4px; }
+  .olink { font-size:11px; padding:3px 9px; border-radius:14px; border:1px solid var(--border2); color:var(--muted2); text-decoration:none; white-space:nowrap; }
+  .olink:hover { border-color:var(--accent); color:var(--accent); }
+  .dsub { font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin:12px 0 5px; }
+  .evlist { margin:0; padding-left:18px; font-size:12.5px; line-height:1.65; color:var(--muted2); }
+  .evlist li { margin-bottom:4px; }
+  .ecite { font-size:11px; color:var(--accent); text-decoration:none; margin-left:4px; }
+  .ecite:hover { text-decoration:underline; }
+  .bbgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:8px; }
+  .bbcell { font-size:12.5px; line-height:1.6; padding:9px 11px; border-radius:8px; border:1px solid var(--border2); color:var(--muted2); }
+  .bbcell b { display:block; font-size:10px; text-transform:uppercase; letter-spacing:.05em; margin-bottom:3px; }
+  .bbcell.bear { border-color:rgba(224,106,106,.3); } .bbcell.bear b { color:var(--down); }
+  .bbcell.bull { border-color:rgba(78,201,163,.3); } .bbcell.bull b { color:var(--up); }
+  .bbnote { font-size:10.5px; color:var(--muted); margin-top:6px; font-style:italic; }
+  .fgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:2px 18px; margin:4px 0; }
+  .frow { display:flex; gap:8px; font-size:12.5px; padding:3px 0; border-bottom:1px solid var(--border2); }
+  .fk { color:var(--muted); text-transform:capitalize; min-width:110px; flex-shrink:0; }
+  .fv { color:var(--muted2); }
+  .tierbadge.zombie { color:var(--warn); background:var(--warn-bg); border-color:rgba(217,164,65,.45); }
   .tierbadge.dead { color:var(--dead); background:var(--dead-bg); border-color:rgba(92,100,112,.35); }
   .csym { color:var(--muted); font-size:11.5px; margin-left:5px; font-weight:500; }
   .cprice { display:block; font-size:11px; color:var(--muted2); font-variant-numeric:tabular-nums; margin-top:1px; }
@@ -405,12 +432,8 @@
     tr.detailrow td::before{ content:none; }
     .statgrid, .projgrid, .trendstats{ grid-template-columns:1fr 1fr; }
   }
-  @media(max-width:640px){ .cards{grid-template-columns:1fr 1fr} h1{font-size:20px} .legend{display:none} }
+  @media(max-width:640px){ h1{font-size:20px} .legend{display:none} }
   /* NFT catalog */
-  .catbar { display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
-  .catsearch { flex:1; min-width:200px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 14px; color:var(--fg); font-size:14px; }
-  .catsearch:focus { outline:none; border-color:var(--accent2); }
-  .catchain { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 14px; color:var(--fg); font-size:14px; cursor:pointer; }
   .catcard .gname { font-size:14px; }
   .catexp { display:block; }
   .catthumb { width:100%; max-width:200px; border-radius:10px; margin-bottom:10px; display:block; }
@@ -459,6 +482,14 @@
   .ofachit-h { color:#e06a6a; font-weight:800; font-size:14px; letter-spacing:.03em; }
   .ofachit-b { color:var(--fg); font-size:13px; margin-top:5px; line-height:1.5; }
   .ofachit-a { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; color:var(--fg); background:var(--bg); border:1px solid var(--border); border-radius:7px; padding:6px 9px; margin-top:8px; word-break:break-all; }
+  /* Agent API — the one thing on the site that is genuinely code, so it gets the
+     one block the design system lacked. Everything else on that view reuses
+     .gpanel / .dsec / .gbody / .rlrow. */
+  .codebox { background:var(--bg-subtle); border:1px solid var(--border); border-radius:var(--r-lg); padding:12px 14px; overflow-x:auto; font-family:var(--font-mono); font-size:12px; line-height:1.55; color:var(--text); white-space:pre; margin:8px 0; }
+  code { font-family:var(--font-mono); color:var(--accent-dim); }
+  .rlrow .rlpath { flex:1; min-width:0; font-family:var(--font-mono); font-size:12px; color:var(--accent-dim); overflow:hidden; text-overflow:ellipsis; }
+  .rlrow .rldesc { flex:2; min-width:0; color:var(--muted); font-size:12px; }
+  @media(max-width:680px){ .rlrow .rldesc{display:none} }
   /* ── ⌘K command palette ── */
   .cmdk-trigger { display:inline-flex; align-items:center; gap:8px; background:var(--surface-1); border:1px solid var(--border); color:var(--text-lo); font-family:var(--font-ui); font-size:12.5px; padding:7px 10px; border-radius:var(--r-md); cursor:pointer; box-shadow:var(--lit-edge); transition:border-color var(--dur) var(--ease), color var(--dur) var(--ease); white-space:nowrap; }
   .cmdk-trigger:hover { border-color:var(--border-strong); color:var(--text); }
@@ -484,7 +515,10 @@
   <header>
     <div>
       <h1>Chaindump<span class="dot">.</span></h1>
-      <div class="sub">Onchain intelligence across chains, assets, markets, policy &amp; forensics — every claim sourced. <span class="muted">chaindump.xyz</span></div>
+      <!-- Names only what the nav can actually reach. "Policy & forensics" stayed
+           in this line after those sections were switched off in DISABLED_VIEWS,
+           promising two products that aren't there. -->
+      <div class="sub">Onchain intelligence across chains, assets &amp; markets — every claim sourced. <span class="muted">chaindump.xyz</span></div>
     </div>
     <div style="display:flex; align-items:center; gap:14px">
       <button id="cmdkTrigger" class="cmdk-trigger" aria-label="Search — jump to a view or chain"><span class="cmdk-tico">⌕</span> Search <kbd class="cmdk-kbd">⌘K</kbd></button>
@@ -496,7 +530,8 @@
 
   <aside class="tabs" id="sidebar">
     <div class="navbrand">Chaindump<span class="dot">.</span></div>
-    <div class="navtag">Live chain intelligence + onchain forensics</div>
+    <!-- "+ onchain forensics" named the Scam Tracker, which is off in DISABLED_VIEWS. -->
+    <div class="navtag">Live chain intelligence</div>
     <div class="navgroup-h">Chains</div>
     <button class="tab active" data-view="live">Live · Top 50</button>
     <div class="navgroup-h">🔬 Forensics</div>
@@ -533,17 +568,25 @@
   <div id="newsview" style="display:none"></div>
   <div id="tracesview" style="display:none"></div>
 
-  <div class="cards liveonly">
-    <div class="card"><div class="label">Active Addresses 24h</div><div class="val u" id="c-usr">—</div></div>
-    <div class="card"><div class="label">24h DEX Volume</div><div class="val v" id="c-vol">—</div></div>
-    <div class="card"><div class="label">Total TVL</div><div class="val t" id="c-tvl">—</div></div>
-    <div class="card"><div class="label">Stablecoin Mcap</div><div class="val f" id="c-stbl">—</div></div>
+  <div class="pagehead liveonly">
+    <div class="pagetitle">Live · Top 50</div>
+    <div class="gvintro">The 50 most active chains right now, ranked by a composite of DEX volume, TVL and fees. Expand any chain for its metrics, 30-day trend, fundamentals and the research desk's read.</div>
   </div>
 
+  <div class="gstats liveonly">
+    <div class="gsx"><div class="gsv" id="c-usr">—</div><div class="gsl">Active Addresses 24h</div></div>
+    <div class="gsx"><div class="gsv" id="c-vol">—</div><div class="gsl">24h DEX Volume</div></div>
+    <div class="gsx"><div class="gsv" id="c-tvl">—</div><div class="gsl">Total TVL</div></div>
+    <div class="gsx"><div class="gsv" id="c-stbl">—</div><div class="gsl">Stablecoin Mcap</div></div>
+  </div>
 
   <div class="toolbar liveonly">
     <input class="search" id="search" placeholder="Search chains…" />
-    <div class="legend"><b>Ranked by</b> composite activity (50% volume · 30% TVL · 20% fees). Click any column to re-sort.</div>
+    <!-- Ranking weights are deliberately NOT restated here. The formula of record
+         is scoreMeta on /api/chains (src/lib/scoring.js) and it already reaches
+         the user through the "?" popover on the Activity column. A hardcoded
+         "50% volume · 30% TVL · 20% fees" is a second copy that drifts. -->
+    <div class="legend"><b>Ranked by</b> composite activity — see the “?” on the Activity column. Click any column to re-sort.</div>
   </div>
 
   <div class="tablewrap liveonly">
@@ -581,6 +624,19 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;
 // a `javascript:`/`data:` href can't execute on click. Allows only http(s)/mailto/relative.
 const safeUrl = (u) => { const s = String(u == null ? '' : u).trim(); return /^(https?:\/\/|mailto:|\/|#)/i.test(s) ? s : '#'; };
 
+// ---------------------------------------------------------------------------
+// Canonical page layout. Every view in the left nav renders, in this order:
+//   pageHead(title, subtitle)   — what this page is, in one line
+//   .gstats  > .gsx             — the stat row (gstat())
+//   .toolbar > .search/.gvf     — search + filters, when the view has them
+//   .gpanel                     — the aggregate analysis accordion
+//   .dsec                       — section header
+//   .gwrap > .gcard  |  .chainfolders > .chainfolder  |  .rllist > .rlrow
+// `sub` is trusted authored copy (it may carry &amp; / <b>); `title` is escaped.
+// ---------------------------------------------------------------------------
+function pageHead(title, sub){
+  return `<div class="pagehead"><div class="pagetitle">${esc(title)}</div><div class="gvintro">${sub}</div></div>`;
+}
 // Robust source renderer — handles both plain URL strings ["https://…"] and
 // {title,url} objects, dedups, and derives a clean domain label when no title.
 function srcHtml(sources, label) {
@@ -646,7 +702,7 @@ const TIER_COMPUTED_NOTE = 'Computed automatically from live TVL / volume / fee 
 const TIER_CURATED_NOTE = 'A researched verdict from the Chaindump desk — it overrides the computed classifier. Click to open the section this chain was researched in.';
 // Honest display words for COMPUTED tiers. Never "thriving" — the classifier
 // measures activity, not health; verdicts are a separate, curated system.
-const TIER_COMPUTED_LABEL = { thriving:'top 50 · active', mid:'cooling', dying:'declining (computed)', dead:'collapsed (computed)' };
+const TIER_COMPUTED_LABEL = { thriving:'top 50 · active', zombie:'top 50 · collapsed from peak', mid:'cooling', dying:'declining (computed)', dead:'collapsed (computed)' };
 
 // Resolve a glossary key to {t,d}. Dynamic keys pull live API metadata
 // (scoreMeta from /api/chains, criteria from /api/tiers) with static fallback.
@@ -726,12 +782,17 @@ function tierBadge(name) {
   let t = tierMap[name];
   if (!TIER_COMPUTED_LABEL[t]) return '';
   // /api/tiers is cached for 45min and fetched once per page-load; the board
-  // repaints every 30s. A chain that dips off the board, gets classified, then
-  // returns would wear a stale "collapsed" badge while ranked on the live board
-  // — Linea sits at rank ~50 with a 98% drawdown, so this is one bad afternoon
-  // away from libeling Consensys. Board membership is the classifier's own
-  // first rule (TIER_CRITERIA.thriving), so trust the fresher of the two.
-  if (t !== 'thriving' && state.chains.some(c => c.name === name)) t = 'thriving';
+  // repaints every 30s. A chain that dips off the board, gets classified while
+  // off it, then returns would wear a stale off-board verdict — Linea sits at
+  // rank ~50 with a 98% drawdown, so a stale "collapsed" is one bad afternoon
+  // away from libeling Consensys.
+  //
+  // Do NOT paper over it by asserting "thriving": that is how Berachain (-98.5%
+  // from peak) came to be labelled thriving in the first place. For an on-board
+  // chain the fresh classifier only ever returns thriving or zombie, so a
+  // dead/dying value here means the tier data is stale. Say nothing rather than
+  // pick a side we cannot currently justify.
+  if ((t === 'dead' || t === 'dying') && state.chains.some(c => c.name === name)) return '';
   // Curated: this chain's tier comes from a researched case study (dead_chains /
   // mid_chains), not the classifier — say so, and link to its entry.
   if (state.curatedSet && state.curatedSet.has(name) && (t === 'dead' || t === 'mid')) {
@@ -771,7 +832,9 @@ function riskBanner(risk){
   if (!risk || !risk.level || risk.level==='clean') return '';
   const cls = risk.level==='high' ? 'rk-high' : 'rk-caution';
   let src = '';
-  if (risk.sources) { try { const arr = typeof risk.sources==='string'?JSON.parse(risk.sources):risk.sources; if (Array.isArray(arr)&&arr.length) src = ' · ' + arr.map(x=>{const u=typeof x==='string'?x:(x&&x.url);return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">source ↗</a>`:'';}).filter(Boolean).join(' · '); } catch(e){} }
+  // safeUrl() before esc(): these URLs are research-agent authored, and esc()
+  // stops attribute breakout but happily passes a `javascript:` scheme through.
+  if (risk.sources) { try { const arr = typeof risk.sources==='string'?JSON.parse(risk.sources):risk.sources; if (Array.isArray(arr)&&arr.length) src = ' · ' + arr.map(x=>{const u=typeof x==='string'?x:(x&&x.url);return u?`<a href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">source ↗</a>`:'';}).filter(Boolean).join(' · '); } catch(e){} }
   return `<div class="riskbanner ${cls}"><b>⚠ ${risk.level==='high'?'High risk / bad-actor concerns':'Caution'}</b> — ${esc(risk.summary||'')}${risk.evidence?` <span class="rkev">${esc(risk.evidence)}</span>`:''}${src}</div>`;
 }
 function actScore(c){
@@ -890,10 +953,130 @@ function fundamentalsHtml(c){
   </div>`;
 }
 
+// --- research desk facts (chain_facts via /api/chain/:name -> d.facts) ---
+// These 248 rows of cited analysis existed for weeks with no reader: the desk
+// wrote them, the product never asked. This is what makes "berachain is thriving
+// but we can't justify it" answerable — the justification, with its sources.
+
+// Official links. Deterministically sourced (CoinGecko listing keyed off
+// DefiLlama's gecko_id), never agent-typed: a hallucinated Discord invite is a
+// drainer link. safeUrl() before esc() — a stored `javascript:` must not survive.
+const LINK_ORDER = [
+  ['website','Website'], ['docs','Docs'], ['twitter','X'], ['discord','Discord'],
+  ['telegram','Telegram'], ['github','GitHub'], ['explorer','Explorer'],
+  ['forum','Forum'], ['reddit','Reddit'], ['other_chat','Chat'],
+];
+function linksHtml(f){
+  if (!f || !f.data) return '';
+  const items = LINK_ORDER
+    .filter(([k]) => typeof f.data[k] === 'string' && /^https?:\/\//i.test(f.data[k]))
+    .map(([k,label]) => `<a class="olink" href="${esc(safeUrl(f.data[k]))}" target="_blank" rel="noopener noreferrer nofollow">${esc(label)} ↗</a>`);
+  if (!items.length) return '';
+  return `<div class="dsec">Official links</div><div class="olinks">${items.join('')}</div>${srcHtml(f.sources)}`;
+}
+
+// Render the desk's evidence list. Each claim carries a source_idx into the
+// dimension's own sources array — an uncited claim is shown WITHOUT a fake link
+// rather than silently attributed to whatever source happens to be first.
+function evidenceHtml(ev, sources){
+  if (!Array.isArray(ev) || !ev.length) return '';
+  const arr = Array.isArray(sources) ? sources : [];
+  const li = ev.map((e) => {
+    const claim = typeof e === 'string' ? e : (e && e.claim);
+    if (!claim) return '';
+    const src = (e && typeof e.source_idx === 'number') ? arr[e.source_idx] : null;
+    const cite = (src && src.url)
+      ? ` <a class="ecite" href="${esc(safeUrl(src.url))}" target="_blank" rel="noopener noreferrer">${esc(src.title || 'source')} ↗</a>`
+      : '';
+    return `<li>${esc(claim)}${cite}</li>`;
+  }).filter(Boolean).join('');
+  return li ? `<ul class="evlist">${li}</ul>` : '';
+}
+
+function synthesisHtml(f){
+  if (!f || !f.data) return '';
+  const d = f.data, when = f.updatedAt || d.as_of;
+  const rows = [];
+  if (d.thesis) rows.push(`<div class="gbody">${esc(d.thesis)}</div>`);
+  const ev = evidenceHtml(d.evidence, f.sources);
+  if (ev) rows.push(`<div class="dsub">Evidence</div>${ev}`);
+  // Bear/bull is the ONLY directional framing this product publishes, and it
+  // carries a disclaimer every time. Never a recommendation.
+  if (d.bear || d.bull) {
+    rows.push(`<div class="dsub">Bear / bull</div><div class="bbgrid">
+      ${d.bear?`<div class="bbcell bear"><b>Bear</b>${esc(d.bear)}</div>`:''}
+      ${d.bull?`<div class="bbcell bull"><b>Bull</b>${esc(d.bull)}</div>`:''}
+    </div><div class="bbnote">Bear/bull frames the argument on each side. It is analysis, not investment advice, and not a recommendation to buy or sell anything.</div>`);
+  }
+  if (Array.isArray(d.watch) && d.watch.length) {
+    rows.push(`<div class="dsub">What would change our mind</div><ul class="evlist">${d.watch.map(w=>`<li>${esc(typeof w==='string'?w:(w&&w.claim)||'')}</li>`).filter(x=>x!=='<li></li>').join('')}</ul>`);
+  }
+  if (!rows.length) return '';
+  const stamp = when ? `<span class="anwhen">as of ${esc(String(when))}</span>` : '';
+  return `<div class="dsec">Desk view ${stamp}</div><div class="anbox">${rows.join('')}${srcHtml(f.sources)}</div>`;
+}
+
+// The remaining research dimensions, rendered generically: the desk keeps adding
+// dimensions and a hardcoded list would silently hide the new ones.
+const FACT_SECTIONS = [
+  ['identity','Identity'], ['capital','Capital & backers'], ['team','Team'],
+  ['narrative','Narrative'], ['onchain','Onchain'], ['token','Token'], ['risk','Risk'],
+];
+function factBlockHtml(f, label){
+  if (!f || !f.data || typeof f.data !== 'object') return '';
+  const d = f.data;
+  // Research carries a date because a figure that WAS true is not the same claim
+  // as a figure that IS true. Undated research reads as current and often isn't.
+  const stamp = f.updatedAt ? `<span class="anwhen">as of ${esc(String(f.updatedAt).slice(0,10))}</span>` : '';
+
+  const corr = typeof d._corrections === 'string'
+    ? `<div class="fcorr"><b>Correction</b> ${esc(d._corrections)}</div>` : '';
+  const parts = Object.keys(d).map((k) => {
+    const v = d[k];
+    if (v == null || v === '' || k === 'sources' || k === 'source_idx') return '';
+    let txt;
+    if (k === '_corrections') return '';
+    if (Array.isArray(v)) {
+      txt = v.map((x) => (x && typeof x === 'object') ? (x.name || x.claim || x.title || JSON.stringify(x)) : String(x)).filter(Boolean).join(', ');
+    } else if (typeof v === 'object') { return ''; }
+    else txt = String(v);
+    if (!txt) return '';
+    return `<div class="frow"><span class="fk">${esc(k.replace(/_/g,' '))}</span><span class="fv">${esc(txt)}</span></div>`;
+  }).filter(Boolean).join('');
+  return parts ? `<div class="dsec">${esc(label)} ${stamp}</div><div class="fgrid">${parts}</div>${corr}${srcHtml(f.sources)}` : '';
+}
+
+// The desk marks entities it could not stand behind (Anubis: "UNVERIFIED —
+// headline TVL is not independently corroborated"). That caveat is about the
+// CHAIN, not one block, so it is hoisted to the top of the profile: a warning
+// buried three sections down, in whichever dimension happened to declare it, is
+// not a disclosure. Scanned across every dimension for exactly that reason.
+function dataQualityHtml(f){
+  for (const k of Object.keys(f)) {
+    const dq = f[k] && f[k].data && f[k].data.data_quality;
+    if (typeof dq === 'string' && /unverified|disputed|low confidence/i.test(dq)) {
+      return `<div class="dqwarn"><b>⚠ Unverified data</b>${esc(dq)}</div>`;
+    }
+  }
+  return '';
+}
+
+function factsHtml(d){
+  const f = d && d.facts;
+  if (!f) return '';
+  const blocks = [
+    dataQualityHtml(f),
+    synthesisHtml(f.synthesis),
+    ...FACT_SECTIONS.map(([k,label]) => factBlockHtml(f[k], label)),
+    linksHtml(f.links),
+  ].filter(Boolean);
+  return blocks.join('');
+}
+
 function analystHtml(d){
   if (!d) return `<div class="dsec">Analysis</div><div class="anbox muted">Loading analysis…</div>`;
   const a = d.analysis;
-  if (!a || !a.take) return `<div class="dsec">Analyst take</div><div class="anbox muted">Not yet covered by the research desk.</div>`;
+  if (!a || !a.take) return factsHtml(d) || `<div class="dsec">Analyst take</div><div class="anbox muted">Not yet covered by the research desk.</div>`;
   const p = a.profile || {};
   const sent = (a.sentiment || '').toLowerCase().replace(/[^a-z]/g, '');
   const badge = a.sentiment ? `<span class="sent ${sent}">${esc(a.sentiment)}</span>` : '';
@@ -907,6 +1090,7 @@ function analystHtml(d){
     } catch (e) {}
   }
   return `
+    ${factsHtml(d)}
     ${p.what_it_does?`<div class="dsec">What it does</div><div class="gbody">${esc(p.what_it_does)}</div>`:''}
     ${p.purpose?`<div class="dsec">Original purpose</div><div class="gbody">${esc(p.purpose)}</div>`:''}
     <div class="dsec">Major events & analyst take ${badge}${when}</div><div class="anbox">${proseBox(a.take)}${sources}</div>
@@ -985,7 +1169,10 @@ function setTotals(t, cov) {
   document.getElementById('c-vol').textContent = fmtUsd(t.volume24h);
   document.getElementById('c-tvl').textContent = fmtUsd(t.tvl);
   document.getElementById('c-stbl').textContent = fmtUsd(t.stables);
-  document.getElementById('cov').textContent = `Active-address data available for ${cov} of 25 chains.`;
+  // Denominator is the board actually on screen. It was hardcoded to 25 while the
+  // board renders the top 50 — the ratio was wrong by construction.
+  const n = state.chains.length;
+  document.getElementById('cov').textContent = n ? `Active-address data available for ${cov} of ${n} chains.` : '';
 }
 
 // Chaindump tier map (chainName -> thriving|mid|dying|dead), fetched once and
@@ -1160,11 +1347,12 @@ document.addEventListener('click', (e) => {
 });
 
 const MID_VERDICT = { stalling:'dead', drifting:'declining', pivoting:'spec', quietly_building:'recover' };
+const MID_HEAD = pageHead('Stuck / Mid', 'Alive but adrift — chains with real tech or history that lack a killer app, a live narrative, or a token that captures value.');
 function renderMid(data){
   const el = document.getElementById('midview');
   state.midData = data;
-  if (data.error && !data.chains.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
-  if (!data.chains.length) { el.innerHTML = `<div class="gvintro">Chains that are alive and doing okay but seem to lack direction, momentum, or a clear reason to win.</div><div class="skel">🟡 The mid-chains research agent is compiling profiles — check back shortly.</div>`; return; }
+  if (data.error && !data.chains.length) { el.innerHTML = `${MID_HEAD}<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.chains.length) { el.innerHTML = `${MID_HEAD}<div class="skel">No mid-chain profiles are published yet.</div>`; return; }
   const fw = data.framework;
   const gaps = (data.topGaps||[]).slice(0,6);
   const maxG = Math.max(...gaps.map(x=>x.count),1);
@@ -1216,7 +1404,17 @@ function renderMid(data){
     const inner = open ? `<div class="folderbody"><div class="gwrap">${chs.map(midCard).join('')}</div></div>` : '';
     return `<div class="chainfolder ${open?'open':''}"><div class="folderhead" data-midgroup="${esc(k)}"><span class="foldercaret">${open?'▾':'▸'}</span><span class="foldername">${esc(MID_LABEL[k]||k.replace(/_/g,' '))}</span><span class="foldercount">${chs.length}</span></div>${inner}</div>`;
   }).join('') + `</div>`;
-  el.innerHTML = `<div class="gvintro">Alive but adrift — chains with real tech or history that lack a killer app, a live narrative, or a token that captures value. ${data.chains.length} profiled.</div>${panel}<div class="dsec" style="margin:20px 0 10px">Grouped by where they stand — ${data.chains.length} chains</div>${cards}`;
+  // Stat row — the same .gstats/.gsx tiles the board and the graveyard use.
+  // Every figure is derived from the payload on screen; nothing is asserted.
+  const midTvl = data.chains.reduce((a, c) => a + (c.tvl || 0), 0);
+  const topGroup = mkeys.length ? mkeys[0] : null;
+  const stats = `<div class="gstats">
+    ${gstat(data.chains.length, 'chains profiled')}
+    ${gstat(fmtUsd(midTvl), 'combined TVL')}
+    ${gstat(gaps.length || '—', 'recurring gaps identified')}
+    ${gstat(topGroup ? mgroups[topGroup].length : '—', topGroup ? esc(String(MID_LABEL[topGroup] || topGroup).split(' — ')[0].toLowerCase()) : 'largest cohort')}
+  </div>`;
+  el.innerHTML = `${MID_HEAD}${stats}${panel}<div class="dsec" style="margin:20px 0 10px">Grouped by where they stand — ${data.chains.length} chains</div>${cards}`;
 }
 async function loadMid(){
   midLoaded = true;
@@ -1249,16 +1447,18 @@ function mktUrl(c){
 const CHAIN_ICON = { ethereum:'⟠', solana:'◎', 'bitcoin-ordinals':'₿', ordinals:'₿', polygon:'⬡', 'polygon-pos':'⬡', avalanche:'🔺', berachain:'🐻', abstract:'✦', 'binance-smart-chain':'◈', apechain:'🦍', base:'🔵', ronin:'⚔', hyperevm:'💧', blast:'💥', stargaze:'✧', 'optimistic-ethereum':'🔴', arbitrum:'🔷' };
 const CHAIN_LABEL = { 'polygon-pos':'Polygon', 'binance-smart-chain':'BNB Chain', 'optimistic-ethereum':'Optimism', ordinals:'Bitcoin Ordinals', hyperevm:'HyperEVM', apechain:'ApeChain' };
 function chainLabel(c){ c=(c||'').toString(); return CHAIN_LABEL[c] || c.replace(/-/g,' ').replace(/\b\w/g, m=>m.toUpperCase()); }
+const NFT_HEAD = pageHead('NFTs & Ordinals', 'A lifecycle library for NFT &amp; Ordinals collections — mint raise vs secondary, holder and founder engagement, royalty capture, and how long projects actually last.');
 function renderNft(data){
   const el = document.getElementById('nftview');
   state.nftData = data;
-  if (data.error && !data.collections.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
-  if (!data.collections.length) { el.innerHTML = `<div class="gvintro">A lifecycle library for NFT &amp; Ordinals collections — mint raise vs secondary, holder/founder engagement, royalty capture, and average project lifespan.</div><div class="skel">🖼️ The NFT/Ordinals research agent is compiling the library (scoping data + researching collections). Check back in a few minutes.</div>`; return; }
+  if (data.error && !data.collections.length) { el.innerHTML = `${NFT_HEAD}<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.collections.length) { el.innerHTML = `${NFT_HEAD}<div class="skel">No case studies are published yet.</div>`; return; }
   const a = data.agg || {};
   const n = (data.market && data.market.count) || 0;
   const m = data.market || {};
-  const panel = `<div class="gpanel">
-    ${n>50 ? `<div class="gstats">
+  // Stat row hoisted out of the panel to sit under the page header, as on every
+  // other view. The caveat line stays with the tiles it qualifies.
+  const stats = n>50 ? `<div class="gstats">
       ${gstat(n, 'collections tracked (live data)')}
       ${gstat(m.medianFloorUsd!=null?fmtUsd(m.medianFloorUsd):'—', 'median floor')}
       ${gstat(m.medianMcapUsd!=null?fmtUsd(m.medianMcapUsd):'—', 'median market cap')}
@@ -1268,7 +1468,8 @@ function renderNft(data){
       ${gstat(a.avgHolderRetentionPct!=null?a.avgHolderRetentionPct+'%':'—', 'holder retention · case studies')}
       ${gstat(a.avgLifespanDays!=null?Math.round(a.avgLifespanDays/30)+' mo':'—', 'avg age · case studies')}
       ${gstat(n||'…', 'live-data collections loading')}
-    </div><div class="gnar muted" style="margin-bottom:10px">Note: the stats above are across the ${data.collections.length} in-depth case studies (blue-chips + notable failures), not a market average — a broader live dataset of hundreds of collections is loading.</div>`}
+    </div><div class="gnar muted" style="margin:0 0 14px">Note: the stats above are across the ${data.collections.length} in-depth case studies (blue-chips + notable failures), not a market average — a broader live dataset of hundreds of collections is loading.</div>`;
+  const panel = `<div class="gpanel">
     ${data.analysis?accordion('Lifecycle analysis — what the data says', data.analysis.text, true):'<div class="gnar muted">Aggregate analysis compiling…</div>'}
   </div>`;
   const caseQ = state.nftCaseQuery || '';
@@ -1308,8 +1509,8 @@ function renderNft(data){
       <div class="gexpand">${open?'Hide details ▲':'Full lifecycle ▾'}</div>
     </div>`;
   }).join('');
-  el.innerHTML = `<div class="gvintro">NFT &amp; Ordinals lifecycle library — ${data.collections.length} in-depth case studies across mint economics, holder/founder engagement, royalties, and lifespan.</div>${panel}<div class="dsec" style="margin:20px 0 10px">Deep-dive case studies</div>
-  <div class="catbar"><input id="casesearch" class="catsearch" placeholder="Search case studies by name, chain or status…" value="${esc(caseQ)}" /></div>
+  el.innerHTML = `${NFT_HEAD}${stats}${panel}<div class="dsec" style="margin:20px 0 10px">Deep-dive case studies — ${data.collections.length}</div>
+  <div class="toolbar"><input id="casesearch" class="search wide" placeholder="Search case studies by name, chain or status…" value="${esc(caseQ)}" /></div>
   <div class="gwrap">${cards || '<div class="skel">No case studies match.</div>'}</div>
   <div class="dsec" style="margin:28px 0 4px">Browse the full catalog by chain</div>
   <div class="gnar muted" style="margin-bottom:12px">Every NFT &amp; Ordinals collection tracked, grouped by chain — open a chain to browse its collections, or search across all chains. Each card opens live floor, market cap, 24h volume and holders.</div>
@@ -1352,8 +1553,8 @@ function renderCatalog(){
   const el = document.getElementById('nftcatalog');
   if (!el) return;
   const cat = state.catalog;
-  const controls = `<div class="catbar">
-    <input id="catsearch" class="catsearch" placeholder="Search ${cat.total?cat.total.toLocaleString():''} collections across all chains…" value="${esc(cat.q)}" />
+  const controls = `<div class="toolbar">
+    <input id="catsearch" class="search wide" placeholder="Search ${cat.total?cat.total.toLocaleString():''} collections across all chains…" value="${esc(cat.q)}" />
   </div>`;
   let body;
   if (cat.q) {
@@ -1577,15 +1778,22 @@ function marketCard(e){
     <div class="gexpand">${open?'Hide ▲':'Full profile ▾'}</div>
   </div>`;
 }
+const MARKETS_HEAD = pageHead('Treasuries · Miners · ETFs', 'The TradFi bridge — public-market vehicles tied to crypto: treasury companies holding coins on the balance sheet, miners, and spot ETFs.');
 function renderMarkets(data){
   const el = document.getElementById('marketsview');
   state.marketsData = data;
-  if (data.error && !data.entities.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
-  if (!data.entities.length) { el.innerHTML = `<div class="gvintro">The TradFi bridge — crypto treasury companies, miners, and ETFs.</div><div class="skel">🏦 The markets research agent is compiling — check back shortly.</div>`; return; }
+  if (data.error && !data.entities.length) { el.innerHTML = `${MARKETS_HEAD}<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.entities.length) { el.innerHTML = `${MARKETS_HEAD}<div class="skel">No market profiles are published yet.</div>`; return; }
   const bt = data.byType || {};
   const section = (title, arr) => arr && arr.length ? `<div class="dsec" style="margin:18px 0 10px">${title} (${arr.length})</div><div class="gwrap">${arr.map(marketCard).join('')}</div>` : '';
   const panel = data.analysis ? `<div class="gpanel">${accordion('State of the crypto-equity complex', data.analysis.text, true)}</div>` : '';
-  el.innerHTML = `<div class="gvintro">The TradFi bridge — ${data.count} public-market vehicles tied to crypto: treasury companies, miners &amp; ETFs.</div>${panel}
+  const stats = `<div class="gstats">
+    ${gstat(data.count, 'vehicles profiled')}
+    ${gstat((bt.treasury || []).length, 'treasury companies')}
+    ${gstat((bt.miner || []).length, 'miners')}
+    ${gstat((bt.etf || []).length, 'ETFs')}
+  </div>`;
+  el.innerHTML = `${MARKETS_HEAD}${stats}${panel}
     ${section('₿ Treasury companies', bt.treasury)}
     ${section('⛏️ Miners', bt.miner)}
     ${section('📊 ETFs', bt.etf)}`;
@@ -1609,11 +1817,12 @@ document.getElementById('marketsview').addEventListener('click', (e) => {
 
 function fldS(l, v){ return v!=null&&v!=='' ? `<div class="gfield"><span class="gfl">${l}</span> ${esc(S(v))}</div>` : ''; }
 function secS(l, v){ return v!=null&&v!=='' ? `<div class="gsec">${l}</div>${proseBox(S(v))}` : ''; }
+const STABLES_HEAD = pageHead('Stablecoins', 'Stablecoin rankings by circulating supply — issuer, type, backing, audits &amp; regulatory status for each.');
 function renderStables(data){
   const el = document.getElementById('stablesview');
   state.stablesData = data;
-  if (data.error && !data.stablecoins.length) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
-  if (!data.stablecoins.length) { el.innerHTML = `<div class="skel">Loading stablecoins…</div>`; return; }
+  if (data.error && !data.stablecoins.length) { el.innerHTML = `${STABLES_HEAD}<div class="skel">Couldn't load: ${esc(data.error)}</div>`; return; }
+  if (!data.stablecoins.length) { el.innerHTML = `${STABLES_HEAD}<div class="skel">Loading stablecoins…</div>`; return; }
   const panel = data.analysis ? `<div class="gpanel">${accordion('State of stablecoins', data.analysis.text, true)}</div>` : '';
   const cards = data.stablecoins.map(s => {
     const m = (s.meta && s.meta.profile) || {};
@@ -1644,7 +1853,20 @@ function renderStables(data){
       <div class="gexpand">${open?'Hide ▲':'Full profile ▾'}</div>
     </div>`;
   }).join('');
-  el.innerHTML = `<div class="gvintro">Stablecoin rankings — ${data.count} by circulating supply (${fmtUsd(data.totalMcap)} total). Issuer, type, backing, audits &amp; regulatory status.</div>${panel}<div class="gwrap">${cards}</div>`;
+  // Stat row from the payload already on screen — count, total, the largest
+  // issuer, and how concentrated the top two are. No figure is asserted that
+  // isn't in `data`.
+  const sorted = [...data.stablecoins].sort((a, b) => (b.circulating || 0) - (a.circulating || 0));
+  const top = sorted[0];
+  const top2 = sorted.slice(0, 2).reduce((a, s) => a + (s.circulating || 0), 0);
+  const top2Pct = data.totalMcap ? Math.round((top2 / data.totalMcap) * 100) : null;
+  const stats = `<div class="gstats">
+    ${gstat(data.count, 'stablecoins tracked')}
+    ${gstat(fmtUsd(data.totalMcap), 'total circulating')}
+    ${gstat(top ? esc(top.symbol) : '—', top ? 'largest — ' + fmtUsd(top.circulating) : 'largest')}
+    ${gstat(top2Pct != null ? top2Pct + '%' : '—', 'top 2 share of supply')}
+  </div>`;
+  el.innerHTML = `${STABLES_HEAD}${stats}${panel}<div class="dsec" style="margin:18px 0 10px">Ranked by circulating supply — ${data.count} stablecoins</div><div class="gwrap">${cards}</div>`;
 }
 async function loadStables(){
   stablesLoaded = true;
@@ -1664,13 +1886,15 @@ document.getElementById('stablesview').addEventListener('click', (e) => {
 });
 
 function genLibrary(cfg){
-  // cfg: {el, data, groups:[{title,items}], intro, analysisTitle, expandedKey, renderCard}
+  // cfg: {el, data, groups:[{title,items}], title, intro, stats, analysisTitle, expandedKey, renderCard}
+  // Emits the canonical layout: page header → stat row → analysis panel → sections.
   const el = document.getElementById(cfg.el);
-  if (cfg.data.error && !cfg.groups.some(g=>g.items.length)) { el.innerHTML = `<div class="skel">Couldn't load: ${esc(cfg.data.error)}</div>`; return; }
-  if (!cfg.groups.some(g=>g.items.length)) { el.innerHTML = `<div class="gvintro">${cfg.intro}</div><div class="skel">🔬 The research agent is compiling this library — check back in a few minutes.</div>`; return; }
+  const head = pageHead(cfg.title, cfg.intro);
+  if (cfg.data.error && !cfg.groups.some(g=>g.items.length)) { el.innerHTML = `${head}<div class="skel">Couldn't load: ${esc(cfg.data.error)}</div>`; return; }
+  if (!cfg.groups.some(g=>g.items.length)) { el.innerHTML = `${head}<div class="skel">No profiles are published yet.</div>`; return; }
   const panel = cfg.data.analysis ? `<div class="gpanel">${accordion(cfg.analysisTitle, cfg.data.analysis.text, true)}</div>` : '';
   const sections = cfg.groups.filter(g=>g.items.length).map(g=>`<div class="dsec" style="margin:18px 0 10px">${g.title} (${g.items.length})</div><div class="gwrap">${g.items.map(cfg.renderCard).join('')}</div>`).join('');
-  el.innerHTML = `<div class="gvintro">${cfg.intro}</div>${panel}${sections}`;
+  el.innerHTML = `${head}${cfg.stats||''}${panel}${sections}`;
 }
 function libCard(item, key, headerRight, fields, sections, sources){
   const open = state[key] === item.slug;
@@ -1691,11 +1915,18 @@ function renderRwa(data){
     [['Backing', p.backing_partners],['Raised', p.raised],['Token', p.token_symbol],['Traction', p.market_metric]],
     [['How it works', p.how_it_works],['Traction', p.traction],['Business model', p.business_model],['Outlook', p.outlook]], it.sources); };
   const bc = data.byCat || {};
+  const rwaLive = data.rwaLive || [], depinLive = data.depinLive || [];
+  const stats = `<div class="gstats">
+    ${gstat(data.count || 0, 'in-depth case studies')}
+    ${gstat(data.rwaTvlTotal != null ? fmtUsd(data.rwaTvlTotal) : '—', 'real-world assets tokenized')}
+    ${gstat(rwaLive.length || '—', 'RWA protocols tracked live')}
+    ${gstat(data.depinMcapTotal != null ? fmtUsd(data.depinMcapTotal) : '—', 'DePIN market cap')}
+  </div>`;
   genLibrary({ el:'rwaview', data, expandedKey:'rwaExpanded', analysisTitle:'State of RWAs & DePIN',
-    intro:`RWA &amp; DePIN library — real-world assets on-chain and decentralized physical infrastructure. ${data.count||0} in-depth case studies, plus live rankings below.`,
+    title:'RWA · DePIN', stats,
+    intro:'Real-world assets on-chain and decentralized physical infrastructure — researched case studies, plus live rankings by TVL and market cap.',
     groups: Object.keys(bc).map(k=>({title:k.replace(/-/g,' '), items:bc[k]})), renderCard:cardFn });
   // ---- live breadth: RWA by TVL + DePIN by market cap ----
-  const rwaLive = data.rwaLive || [], depinLive = data.depinLive || [];
   if (rwaLive.length || depinLive.length) {
     const chip = (t) => `<span class="rlchain">${esc(t)}</span>`;
     const rwaRows = rwaLive.map((r,i) => `<div class="rlrow">
@@ -1735,8 +1966,12 @@ function renderGeo(data){
     [['Adoption', p.adoption],['Regulation', p.regulation],['Upcoming regulation', p.upcoming_regulation],['Dominant use', p.use_cases],['Notable history', p.notable]], it.sources); };
   const byRegion = {};
   (data.regions||[]).forEach(r=>{ const k=r.region||'Other'; (byRegion[k]=byRegion[k]||[]).push(r); });
+  // Disabled in DISABLED_VIEWS, but kept conforming — a section that comes back
+  // on should not come back on broken.
   genLibrary({ el:'geoview', data, expandedKey:'geoExpanded', analysisTitle:'Global adoption patterns',
-    intro:`Global adoption &amp; regulation — how countries and continents are adopting, regulating, and holding crypto. ${data.count||0} profiles.`,
+    title:'Global Adoption',
+    stats:`<div class="gstats">${gstat(data.count||0, 'country &amp; region profiles')}${gstat(Object.keys(byRegion).length||'—', 'regions covered')}</div>`,
+    intro:'How countries and continents are adopting, regulating, and holding crypto.',
     groups: Object.keys(byRegion).map(k=>({title:k, items:byRegion[k]})), renderCard:cardFn });
 }
 async function loadGeo(){ geoLoaded=true; document.getElementById('geoview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderGeo(await fetch('api/geo').then(r=>r.json())); }catch(e){ geoLoaded=false; document.getElementById('geoview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
@@ -1800,36 +2035,41 @@ function renderPower(data){
 async function loadPower(){ powerLoaded=true; document.getElementById('powerview').innerHTML=`<div class="skel">Loading…</div>`; try{ renderPower(await fetch('api/power').then(r=>r.json())); }catch(e){ powerLoaded=false; document.getElementById('powerview').innerHTML=`<div class="skel">Couldn't load: ${esc(e.message)}</div>`; } }
 
 let apiLoaded=false;
+const API_HEAD = pageHead('Agent API · x402', 'Chaindump is built for autonomous agents as much as humans. Every dataset here is reachable as a machine-readable JSON API — <b>discovery is free, deep &amp; compliance calls are pay-per-use over x402</b>. No account, no API key, no signup: your agent pays per call in USDC on Base and gets the data in the same round-trip.');
 function renderApiDocs(m){
   const el = document.getElementById('apiview');
   const DOMAIN = 'https://chaindump.xyz';
   const pay = (m&&m.payment)||{};
-  const mode = pay.mode==='live' ? '<span style="color:#4ade80">● LIVE</span>' : '<span style="color:#fbbf24">● demo (settlement stubbed until CDP keys set)</span>';
+  // Reuses the .gverdict pills rather than a private green/amber. The demo state
+  // stays spelled out in the tile label — "demo" alone would let a reader assume
+  // payments settle.
+  const isLive = pay.mode === 'live';
+  const mode = isLive ? '<span class="gverdict recover">● live</span>' : '<span class="gverdict declining">● demo</span>';
+  const modeLabel = isLive ? 'settlement · Coinbase CDP' : 'settlement stubbed until CDP keys set';
   const free = (m&&m.freeCallsPerMonth!=null)?m.freeCallsPerMonth:1;
   const eps = (m&&m.entrypoints)||[];
-  const box = 'background:#0b0d12;border:1px solid #1c2230;border-radius:8px;padding:12px 14px;overflow-x:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;color:#c8d3e6;white-space:pre;margin:8px 0';
-  const h = (t)=>`<div style="font-size:13px;font-weight:600;letter-spacing:.02em;color:#e6edf7;margin:22px 0 6px">${t}</div>`;
-  const p = (t)=>`<div style="color:#9aa7bd;font-size:13px;line-height:1.6;margin:4px 0">${t}</div>`;
-  const epRows = eps.map(e=>`<tr><td style="padding:7px 10px;border-bottom:1px solid #161c28;font-family:ui-monospace,monospace;color:var(--accent-dim);white-space:nowrap">${esc(e.path)}</td><td style="padding:7px 10px;border-bottom:1px solid #161c28;color:var(--accent);white-space:nowrap;text-align:right">$${e.priceUsd}</td><td style="padding:7px 10px;border-bottom:1px solid #161c28;color:#9aa7bd">${esc(e.description)}</td></tr>`).join('');
+  // .dsec / .gbody / .codebox / .rlrow are the same components the rest of the
+  // site uses. This view used to carry its own private palette of hardcoded hex.
+  const h = (t)=>`<div class="dsec" style="margin:22px 0 6px">${t}</div>`;
+  const p = (t)=>`<div class="gbody" style="margin:4px 0">${t}</div>`;
+  const epRows = eps.map(e=>`<div class="rlrow"><span class="rlpath">${esc(e.path)}</span><span class="rldesc">${esc(e.description)}</span><span class="rltvl">$${esc(String(e.priceUsd))}</span></div>`).join('');
   el.innerHTML = `
-  <div class="gvintro">Chaindump is built for autonomous agents as much as humans. Every dataset here is reachable as a machine-readable JSON API — <b>discovery is free, deep &amp; compliance calls are pay-per-use over x402</b>. No account, no API key, no signup: your agent pays per call in USDC on Base and gets the data in the same round-trip.</div>
+  ${API_HEAD}
+  <div class="gstats">
+    ${gstat('x402 v'+((m&&m.x402Version)||1), 'protocol')}
+    ${gstat('Base', 'network · USDC')}
+    ${gstat(free+'/mo', 'free preview calls')}
+    ${gstat(mode, modeLabel)}
+  </div>
 
   <div style="max-width:820px">
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 4px;font-size:12.5px;color:#9aa7bd">
-      <span>Protocol: <b style="color:#e6edf7">x402 v${(m&&m.x402Version)||1}</b></span>
-      <span>Network: <b style="color:#e6edf7">Base</b></span>
-      <span>Asset: <b style="color:#e6edf7">USDC</b></span>
-      <span>Free preview: <b style="color:#e6edf7">${free} call/mo</b></span>
-      <span>Status: <b>${mode}</b></span>
-    </div>
-
     ${h('1 · Discover what\'s available (free)')}
     ${p('Hit the manifest — no payment, no key. It lists every payable endpoint and its live price.')}
-    <div style="${box}">curl ${DOMAIN}/api/agent/manifest</div>
+    <div class="codebox">curl ${DOMAIN}/api/agent/manifest</div>
 
     ${h('2 · Call an endpoint')}
-    ${p(`Your first call each month is free (watch the <code style="color:var(--accent-dim)">X-Free-Calls-Remaining</code> response header). After that, the endpoint answers with <b>HTTP 402 Payment Required</b> and the exact payment terms.`)}
-    <div style="${box}">curl -i ${DOMAIN}/api/agent/risk/lazarus
+    ${p(`Your first call each month is free (watch the <code>X-Free-Calls-Remaining</code> response header). After that, the endpoint answers with <b>HTTP 402 Payment Required</b> and the exact payment terms.`)}
+    <div class="codebox">curl -i ${DOMAIN}/api/agent/risk/lazarus
 
 HTTP/1.1 402 Payment Required
 {
@@ -1847,8 +2087,8 @@ HTTP/1.1 402 Payment Required
 }</div>
 
     ${h('3 · Pay + retry (automatic with any x402 client)')}
-    ${p('An x402-aware HTTP client reads the 402, signs a USDC transfer authorization (EIP-3009, gasless), attaches it as an <code style="color:var(--accent-dim)">X-PAYMENT</code> header, and retries — you just get the JSON back.')}
-    <div style="${box}">// JavaScript — x402-fetch
+    ${p('An x402-aware HTTP client reads the 402, signs a USDC transfer authorization (EIP-3009, gasless), attaches it as an <code>X-PAYMENT</code> header, and retries — you just get the JSON back.')}
+    <div class="codebox">// JavaScript — x402-fetch
 import { wrapFetchWithPayment } from "x402-fetch";
 import { createWalletClient, http } from "viem";
 import { base } from "viem/chains";
@@ -1858,7 +2098,7 @@ const fetchWithPay = wrapFetchWithPayment(fetch, wallet);
 
 const res = await fetchWithPay("${DOMAIN}/api/agent/risk/lazarus");
 const data = await res.json();   // 402 handled + paid automatically</div>
-    <div style="${box}"># Python — x402 + httpx
+    <div class="codebox"># Python — x402 + httpx
 from x402.clients.httpx import x402HttpxClient
 from eth_account import Account
 
@@ -1867,19 +2107,12 @@ r = client.get("${DOMAIN}/api/agent/chain/base")
 print(r.json())</div>
 
     ${h('Payable endpoints')}
-    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px">
-      <thead><tr>
-        <th style="text-align:left;padding:6px 10px;color:#6b7688;font-weight:500;border-bottom:1px solid #232b3a">Endpoint</th>
-        <th style="text-align:right;padding:6px 10px;color:#6b7688;font-weight:500;border-bottom:1px solid #232b3a">Price</th>
-        <th style="text-align:left;padding:6px 10px;color:#6b7688;font-weight:500;border-bottom:1px solid #232b3a">Returns</th>
-      </tr></thead>
-      <tbody>${epRows||'<tr><td colspan="3" style="padding:10px;color:#6b7688">Loading endpoints…</td></tr>'}</tbody>
-    </table>
-    ${p('Every paid response is JSON with <code style="color:var(--accent-dim)">schema_version</code>, <code style="color:var(--accent-dim)">data_as_of</code>, and inline <b>provenance/sources</b> — built to survive an agent\'s (or an auditor\'s) verification step.')}
+    <div class="rllist">${epRows||'<div class="rlrow"><span class="muted">Loading endpoints…</span></div>'}</div>
+    ${p('Every paid response is JSON with <code>schema_version</code>, <code>data_as_of</code>, and inline <b>provenance/sources</b> — built to survive an agent\'s (or an auditor\'s) verification step.')}
 
     ${h('Payment rail')}
-    ${p(`Settled on <b>Base mainnet</b> in <b>USDC</b> via the <b>Coinbase CDP</b> facilitator (gasless EIP-3009, built-in OFAC/KYT screening). Payments go to <code style="color:var(--accent-dim);word-break:break-all">${esc(pay.payTo||'—')}</code>. USDC contract <code style="color:var(--accent-dim);word-break:break-all">${esc(pay.asset||'—')}</code>.`)}
-    <div style="color:#6b7688;font-size:12px;margin-top:18px">x402 is an open standard — any compliant client works (x402-fetch, x402-axios, the Python SDK, or a raw <code>X-PAYMENT</code> header). Start free with the manifest above.</div>
+    ${p(`Settled on <b>Base mainnet</b> in <b>USDC</b> via the <b>Coinbase CDP</b> facilitator (gasless EIP-3009, built-in OFAC/KYT screening). Payments go to <code class="ent-addr">${esc(pay.payTo||'—')}</code>. USDC contract <code class="ent-addr">${esc(pay.asset||'—')}</code>.`)}
+    <div class="stampline">x402 is an open standard — any compliant client works (x402-fetch, x402-axios, the Python SDK, or a raw <code>X-PAYMENT</code> header). Start free with the manifest above.</div>
   </div>`;
 }
 async function loadApi(){
@@ -1979,7 +2212,7 @@ async function renderScamWeb(){
   const mapped = g.casesMapped || 0, hidden = g.hiddenIsolated || 0;
   if (info) info.innerHTML = `<b>${nCount}</b> traced wallet${nCount===1?'':'s'} · <b>${eCount}</b> transaction${eCount===1?'':'s'} mapped across <b>${mapped}</b> case${mapped===1?'':'s'}${hidden>0?` · <span class="muted">${hidden} untraced address${hidden===1?'':'es'} hidden until flows are mapped</span>`:''} — tap a node or edge for detail.`;
   cy.on('tap', 'node', (ev) => { const d = ev.target.data(); const k = d.kind==='actor'?' <span class="dn">· culpable actor</span>':d.kind==='infra'?' <span style="color:#a78bfa">· neutral infrastructure (tool, not blamed)</span>':d.kind==='shared'?' <span style="color:var(--yellow)">· shared across cases</span>':''; if (info) info.innerHTML = `<b>${esc(d.label)}</b>${k}<br><span class="muted">Appears in: ${esc(d.cases)}</span>`; });
-  cy.on('tap', 'edge', (ev) => { const d = ev.target.data(); let esrc=''; if(d.sources){try{const a=typeof d.sources==='string'?JSON.parse(d.sources):d.sources; if(Array.isArray(a)&&a.length) esrc=`<br><span class="muted">Sources: ${a.map(x=>{const u=typeof x==='string'?x:(x&&x.url); const t=(x&&x.title)||(u?u.replace(/^https?:\/\//,'').split('/')[0]:'source'); return u?`<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(t)} ↗</a>`:'';}).filter(Boolean).join(' · ')}</span>`;}catch(e){}} if (info) info.innerHTML = `<b>${esc(d.caseName||'')}</b> · ${esc(d.label||'transfer')}${d.note?` — ${esc(d.note)}`:''}${d.txurl?` · <a href="${esc(safeUrl(d.txurl))}" target="_blank" rel="noopener noreferrer">open tx ↗</a>`:''}${esrc}`; });
+  cy.on('tap', 'edge', (ev) => { const d = ev.target.data(); let esrc=''; if(d.sources){try{const a=typeof d.sources==='string'?JSON.parse(d.sources):d.sources; if(Array.isArray(a)&&a.length) esrc=`<br><span class="muted">Sources: ${a.map(x=>{const u=typeof x==='string'?x:(x&&x.url); const t=(x&&x.title)||(u?u.replace(/^https?:\/\//,'').split('/')[0]:'source'); return u?`<a href="${esc(safeUrl(u))}" target="_blank" rel="noopener noreferrer">${esc(t)} ↗</a>`:'';}).filter(Boolean).join(' · ')}</span>`;}catch(e){}} if (info) info.innerHTML = `<b>${esc(d.caseName||'')}</b> · ${esc(d.label||'transfer')}${d.note?` — ${esc(d.note)}`:''}${d.txurl?` · <a href="${esc(safeUrl(d.txurl))}" target="_blank" rel="noopener noreferrer">open tx ↗</a>`:''}${esrc}`; });
 }
 function renderTraceResults(data){
   const el = document.getElementById('tracelookup'); if (!el) return;
@@ -2159,25 +2392,28 @@ function tagLabel(data, tg){
   return f?f.label:String(k).replaceAll('_',' ');
 }
 
+// NB: `title` goes through esc() — pass it raw ("&", not "&amp;"). `sub` does not.
+const GRAVE_HEAD = pageHead('Dead & Dying', 'Dead &amp; dying chains — a live decliner watch plus researched postmortems (founding, funding, token, what went wrong) and an aggregator that extracts the patterns.');
 function renderGraveyard(data){
   const el = document.getElementById('graveview');
   state.graveData = data;
-  if (data.error && !data.chains.length) { el.innerHTML = `<div class="skel">Couldn't load graveyard: ${esc(data.error)}</div>`; return; }
+  if (data.error && !data.chains.length) { el.innerHTML = `${GRAVE_HEAD}<div class="skel">Couldn't load graveyard: ${esc(data.error)}</div>`; return; }
   if (!data.chains.length) {
-    el.innerHTML = `<div class="gvintro">A library of chains that launched in roughly the last 18 months and collapsed — each with a full postmortem, and an aggregator that extracts why they died.</div>
-      <div class="skel">🪦 The research agent is compiling the graveyard (scraping news &amp; social for each fallen chain). This takes a few minutes on first run — check back shortly.</div>`;
+    el.innerHTML = `${GRAVE_HEAD}<div class="skel">No postmortems are published yet.</div>`;
     return;
   }
   const t = data.trends || {};
   const maxTag = Math.max(...(t.topTags||[]).map(x=>x.count), 1);
   const tagBars = (t.topTags||[]).map(x=>`<div class="tagrow"><span class="tagn">${esc(x.label)}</span><span class="tagbarwrap"><span class="tagbar" style="width:${(x.count/maxTag)*100}%"></span></span><span class="tagc">${x.count}</span></div>`).join('');
+  // The stat row is hoisted OUT of the analysis panel to sit directly under the
+  // page header, where every other view puts it.
+  const graveStats = `<div class="gstats">
+    ${gstat(data.chains.length, 'chains in the graveyard')}
+    ${gstat(t.avgDrawdown!=null?('-'+Math.abs(t.avgDrawdown).toFixed(0)+'%'):'—', 'avg drawdown from peak')}
+    ${gstat(fmtUsd(t.totalPeakTvl)+' → '+fmtUsd(t.totalCurrentTvl), 'peak TVL'+(t.wipedOut!=null?' — '+t.wipedOut+'% wiped out':''))}
+    ${gstat(t.fraudCount!=null?t.fraudCount:'—', 'suspected rug / extraction')}
+  </div>`;
   const trendsPanel = `<div class="gpanel">
-    <div class="gstats">
-      ${gstat(data.chains.length, 'chains in the graveyard')}
-      ${gstat(t.avgDrawdown!=null?('-'+Math.abs(t.avgDrawdown).toFixed(0)+'%'):'—', 'avg drawdown from peak')}
-      ${gstat(fmtUsd(t.totalPeakTvl)+' → '+fmtUsd(t.totalCurrentTvl), 'peak TVL'+(t.wipedOut!=null?' — '+t.wipedOut+'% wiped out':''))}
-      ${gstat(t.fraudCount!=null?t.fraudCount:'—', 'suspected rug / extraction')}
-    </div>
     <div class="gcols">
       <div><div class="dsec">Why they died — dominant causes</div><div class="taglist">${tagBars||'<span class="muted">—</span>'}</div></div>
       <div>
@@ -2299,7 +2535,7 @@ function renderGraveyard(data){
   const we = dq.find(x=>x.chain===state.watchExpanded && x.research);
   const watchDetail = we ? (()=>{ const c={chain:we.chain, verdict:we.research.verdict, why:we.research.why, outlook:we.research.outlook, sources:we.research.sources, profile:we.research.profile, peak_tvl:we.peak_tvl, current_tvl:we.current_tvl, drawdown_pct:we.drawdown_pct, peak_date:we.peak_date, updated_at:(we.research.profile&&we.research.profile.updated_at)||null}; return `<div class="watchdetail"><div class="ghead"><div class="gname">${esc(we.chain)} <span class="gverdict ${verdictClass(c.verdict)}">${esc(c.verdict||'')}</span></div><div class="gdd">-${Math.abs(we.drawdown_pct||0).toFixed(0)}%<span class="gddl">from peak</span></div></div>${graveDetailBody(c)}<div class="gexpand" data-watchclose="1">Hide details ▲</div></div>`; })() : '';
   const watch = dq.length ? `<div class="gpanel"><div class="dsec">🩸 Live dying watch — steepest 90-day decliners, auto-updating from live TVL (${dq.length})</div><div class="watchgrid">${dq.map(w=>`<div class="watchrow${w.research?' wclick':''}${w.research&&state.watchExpanded===w.chain?' on':''}"${w.research?` data-watch="${esc(w.chain)}"`:''}><span class="wn">${esc(w.chain)}</span><span class="w90">${w.change_90d}%<span class="wl">90d</span></span><span class="wdd">-${Math.abs(w.drawdown_pct||0).toFixed(0)}%<span class="wl">peak</span></span>${w.research?'<span class="wtag">profiled ↓</span>':''}</div>`).join('')}</div>${watchDetail}<div class="gnar muted" style="margin-top:8px">Live from the classifier — chains bleeding out now, before they hit the graveyard. ${dq.some(x=>x.research)?'Click a “profiled ↓” chain to open its postmortem. ':''}Refreshes automatically.</div></div>` : '';
-  el.innerHTML = `<div class="gvintro">Dead &amp; dying chains — a live decliner watch plus full researched postmortems (founding, funding, token, what went wrong) and an aggregator that extracts the patterns.</div>${watch}${trendsPanel}${chips}<div class="dsec" style="margin:14px 0 10px">${gf==='all'?'Researched postmortems':gf==='dying'?'Dying / declining':'Dead'} — ${filtered.length} chains, grouped by cause of death</div>${filtered.length?cards:'<div class="skel">None in this filter.</div>'}`;
+  el.innerHTML = `${GRAVE_HEAD}${graveStats}${chips}${watch}${trendsPanel}<div class="dsec" style="margin:14px 0 10px">${gf==='all'?'Researched postmortems':gf==='dying'?'Dying / declining':'Dead'} — ${filtered.length} chains, grouped by cause of death</div>${filtered.length?cards:'<div class="skel">None in this filter.</div>'}`;
 }
 
 async function loadGraveyard(){

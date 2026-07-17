@@ -4,7 +4,7 @@ import {
   WEIGHTS, BOARD_SIZE, INDEX_MIN, INDEX_MAX, MIGRATED,
   DEAD_DRAWDOWN_PCT, DEAD_MIN_SPAN_DAYS, DYING_CHANGE_90D_PCT,
   BASELINE_ABS_FLOOR, BASELINE_PEAK_FRACTION,
-  scoreRows, activityIndex, baselineOk, classifyTier,
+  scoreRows, activityIndex, baselineOk, classifyTier, TIERS,
   SCORE_META, TIER_CRITERIA,
 } from '../src/lib/scoring.js';
 
@@ -95,9 +95,33 @@ describe('baselineOk', () => {
 describe('classifyTier', () => {
   const board = onBoard(['Ethereum']);
 
-  it('puts a live-board chain in thriving before decline is considered', () => {
-    const m = { chain: 'Ethereum', spanDays: 400, drawdown_pct: 95, change_90d: -80 };
-    expect(classifyTier(m, board, nrm)).toBe('thriving');
+  it('calls an active, healthy board chain thriving', () => {
+    expect(classifyTier({ chain: 'Ethereum', spanDays: 400, drawdown_pct: 12, change_90d: 5 }, board, nrm)).toBe('thriving');
+  });
+
+  // The regression that shipped: "berachain is thriving but we can't justify it".
+  // These are Berachain's real measured numbers on 2026-07-17 — TVL $49.0M against
+  // a $3.31B peak (2025-03-27) = -98.5%, while sitting at board rank ~41 on live
+  // activity. The old classifier returned 'thriving' for it.
+  it('refuses to call a board chain thriving when it is down 98.5% from peak', () => {
+    const berachain = { chain: 'Berachain', spanDays: 500, drawdown_pct: 98.5, change_90d: -70 };
+    const onBoard = (n) => n === 'Berachain';
+    expect(classifyTier(berachain, onBoard, nrm)).not.toBe('thriving');
+    expect(classifyTier(berachain, onBoard, nrm)).toBe('zombie');
+  });
+
+  it('does not call that same chain dead either — it is genuinely being used today', () => {
+    const berachain = { chain: 'Berachain', spanDays: 500, drawdown_pct: 98.5, change_90d: -70 };
+    expect(classifyTier(berachain, (n) => n === 'Berachain', nrm)).not.toBe('dead');
+    // Off the board, the identical metrics ARE dead — board presence is the difference.
+    expect(classifyTier(berachain, () => false, nrm)).toBe('dead');
+  });
+
+  it('zombie needs the same evidence as dead: enough history, and not a rebrand', () => {
+    // Too young to judge → thriving (active, no collapse provable).
+    expect(classifyTier({ chain: 'New', spanDays: 44, drawdown_pct: 99, change_90d: null }, (n) => n === 'New', nrm)).toBe('thriving');
+    // Migrated chains never read as collapsed, on-board or off.
+    expect(classifyTier({ chain: 'Fantom', spanDays: 400, drawdown_pct: 99, change_90d: null }, (n) => n === 'Fantom', nrm)).toBe('thriving');
   });
 
   it('classes a 90%+ drawdown with enough history as dead', () => {
@@ -183,12 +207,30 @@ describe('prose matches the code it describes', () => {
     expect(prose).not.toMatch(/(?<!NOT )(is|equals) score x 100/i);
   });
 
+  it('SCORE_META claims the board score is reproducible, and says why the tail is not', () => {
+    // Pass 2 rescores board chains on the authoritative per-chain volume, which
+    // IS the served volume24h — so this claim must hold. The tail is not
+    // enriched, hence the explicit carve-out.
+    expect(SCORE_META.inputCaveat).toMatch(/reproducible from this payload/i);
+    expect(SCORE_META.inputCaveat).toMatch(/spot DEX categories only/i);
+    expect(SCORE_META.inputCaveat).toMatch(/outside the board/i);
+  });
+
   it('SCORE_META refuses to present the index as a health grade', () => {
     expect(SCORE_META.caveat).toMatch(/not a health or quality score/i);
   });
 
-  it('TIER_CRITERIA.thriving admits the ordering — board wins over decline', () => {
-    expect(TIER_CRITERIA.thriving.rule).toMatch(/never classed dead or dying/i);
+  it('TIER_CRITERIA.thriving no longer claims board presence overrides collapse', () => {
+    // It used to say a board chain is "never classed dead or dying even if it is
+    // in measured decline" — accurate about the code, and the code was wrong.
+    expect(TIER_CRITERIA.thriving.rule).not.toMatch(/never classed dead or dying/i);
+    expect(TIER_CRITERIA.thriving.rule).toMatch(/not collapsed from its all-time peak/i);
+  });
+
+  it('TIER_CRITERIA.zombie states both readings instead of rounding to one', () => {
+    expect(TIER_CRITERIA.zombie).toBeTruthy();
+    expect(TIER_CRITERIA.zombie.rule).toMatch(/neither "thriving" nor "dead"/i);
+    expect(TIER_CRITERIA.zombie.rule).toContain('90%');
   });
 
   it('TIER_CRITERIA.dying states AND for the two baseline floors, never OR', () => {
@@ -210,7 +252,7 @@ describe('prose matches the code it describes', () => {
   });
 
   it('every tier the classifier can return has published criteria', () => {
-    for (const t of ['thriving', 'mid', 'dying', 'dead']) {
+    for (const t of TIERS) {
       expect(TIER_CRITERIA[t]).toBeTruthy();
       expect(TIER_CRITERIA[t].rule.length).toBeGreaterThan(20);
     }
