@@ -7,6 +7,9 @@ import {
   assessChainDataQuality,
   annotateDataQuality,
   buildChainIndex,
+  CONCENTRATION_MIN,
+  AUTO_PUBLISH_TVL_MAX,
+  RECONCILE_TOLERANCE_PCT,
 } from '../src/lib/data-quality.js';
 
 // A chain's headline TVL is only comparable to its neighbours if the figure is
@@ -189,6 +192,86 @@ describe('annotateDataQuality', () => {
   it('is a no-op when protocols are unavailable (never invents a flag)', () => {
     const rows = [{ name: 'Anubis', tvl: 1 }];
     annotateDataQuality(rows, null);
+    expect(rows[0].dataQuality).toBeUndefined();
+  });
+});
+
+// The threshold is the single control protecting a real project from being
+// branded, and NOTHING pinned it: a review mutated CONCENTRATION_MIN from 99 to
+// 50 and all 18 tests stayed green. The reason is subtle and worth stating — the
+// existing "does not flag a diversified chain" fixture fails ALL THREE conditions
+// at once (it has a bridge AND an audited top protocol), so concentration is
+// never the deciding factor and the test passes for the wrong reason. These
+// isolate each condition so exactly one thing is being tested at a time.
+describe('each condition is load-bearing on its own', () => {
+  // Concentration is the ONLY thing separating these two fixtures: no bridge,
+  // unaudited top protocol in both.
+  const chainAt = (topShare) => ([
+    { name: 'Top', category: 'Dexs', audits: '0', chainTvls: { Solo: topShare } },
+    { name: 'Second', category: 'Dexs', audits: '0', chainTvls: { Solo: 100 - topShare } },
+  ]);
+
+  it('flags at the threshold and not one step below it', () => {
+    expect(assessChainDataQuality('Solo', chainAt(99.5))).toBeTruthy();
+    expect(assessChainDataQuality('Solo', chainAt(98))).toBeNull();
+  });
+
+  it('pins CONCENTRATION_MIN itself — lowering it would brand more chains', () => {
+    expect(CONCENTRATION_MIN).toBe(99);
+    // A chain just under the line must be clean at the real threshold and only
+    // flagged if someone lowers it. Provenance sits here in production: 96.93%,
+    // $1.5B, a real financial institution, 2.07 points from being branded.
+    const provenanceLike = chainAt(96.93);
+    expect(assessChainDataQuality('Solo', provenanceLike)).toBeNull();
+    expect(assessChainDataQuality('Solo', provenanceLike, { concentrationMin: 95 })).toBeTruthy();
+  });
+
+  it('an audit clears a chain that is otherwise identical', () => {
+    const audited = [{ name: 'Top', category: 'Dexs', audits: '2', chainTvls: { Solo: 100 } }];
+    expect(assessChainDataQuality('Solo', audited)).toBeNull();
+  });
+
+  it('a bridge clears a chain that is otherwise identical', () => {
+    const bridged = [
+      { name: 'Top', category: 'Dexs', audits: '0', chainTvls: { Solo: 100 } },
+      { name: 'A Bridge', category: 'Bridge', audits: '0', chainTvls: { Solo: 0.0001 } },
+    ];
+    expect(assessChainDataQuality('Solo', bridged)).toBeNull();
+  });
+});
+
+// Two guards added after a review found the rule could publish a false
+// percentage, and could auto-brand a $1.5B regulated institution.
+describe('the rule refuses verdicts it cannot justify', () => {
+  const soleUnaudited = [{ name: 'OnlyDex', category: 'Dexs', audits: '0', chainTvls: { Ghost: 25_414_316 } }];
+
+  it('will not publish a percentage of a total the page does not show', () => {
+    // XION, live: protocols report $25.4M; the page displays $3,990. The reason
+    // string would have claimed "99.98% of this chain's TVL" about neither figure.
+    expect(assessChainDataQuality('Ghost', soleUnaudited, { displayedTvl: 3990 })).toBeNull();
+    // Reconcilable -> a verdict is allowed.
+    expect(assessChainDataQuality('Ghost', soleUnaudited, { displayedTvl: 25_000_000 })).toBeTruthy();
+  });
+
+  it('holds a large chain for human review rather than auto-branding it', () => {
+    const big = [{ name: 'OnlyDex', category: 'Dexs', audits: '0', chainTvls: { Whale: 1.5e9 } }];
+    const dq = assessChainDataQuality('Whale', big, { displayedTvl: 1.5e9 });
+    expect(dq).toBeTruthy();              // the rule still has an opinion
+    expect(dq.autoPublish).toBe(false);   // it just isn't published on its own
+    expect(AUTO_PUBLISH_TVL_MAX).toBe(5e8);
+  });
+
+  it('still auto-publishes the case it was built for (Anubis, $200M)', () => {
+    const anubis = [{ name: 'RocketSwap Anubis', category: 'Dexs', audits: '0', chainTvls: { Anubis: 200_127_337 } }];
+    const dq = assessChainDataQuality('Anubis', anubis, { displayedTvl: 200_127_337 });
+    expect(dq.autoPublish).not.toBe(false);
+    expect(dq.reasons.join(' ')).toContain('RocketSwap Anubis');
+  });
+
+  it('annotate does not attach a caveat that is held for review', () => {
+    const rows = [{ name: 'Whale', tvl: 1.5e9 }];
+    const big = [{ name: 'OnlyDex', category: 'Dexs', audits: '0', chainTvls: { Whale: 1.5e9 } }];
+    annotateDataQuality(rows, big);
     expect(rows[0].dataQuality).toBeUndefined();
   });
 });
