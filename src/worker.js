@@ -1422,7 +1422,17 @@ let tiersBuilding = false;
 const TIERS_TTL = 45 * 60 * 1000;
 const toISO = (unix) => new Date(unix * 1000).toISOString().slice(0, 10);
 
-async function classifyChains() {
+// Flatten a previous classifyChains() result into a { chainName: metric } map,
+// so a later cycle can recover a chain's known peak/drawdown when this
+// cycle's own historicalChainTvl fetch fails for it.
+export function priorMetricsByChain(tierData) {
+  const map = {};
+  if (!tierData) return map;
+  for (const t of TIERS) for (const m of (tierData[t] || [])) map[m.chain] = m;
+  return map;
+}
+
+export async function classifyChains(priorMetrics = priorMetricsByChain(tiersCache.data)) {
   const all = await fetchJson(CHAINS_URL);
   if (!Array.isArray(all)) throw new Error('chains feed unavailable');
   if (!cache.data) cache = await loadSnapshot();
@@ -1433,9 +1443,27 @@ async function classifyChains() {
 
   const metrics = await pool(universe, async (c) => {
     let hist = null;
-    try { hist = await fetchJson(`https://api.llama.fi/v2/historicalChainTvl/${encodeURIComponent(c.name)}`, 12000); } catch (e) {}
+    try { hist = await fetchJson(`https://api.llama.fi/v2/historicalChainTvl/${encodeURIComponent(c.name)}`, 12000); }
+    catch (e) { console.error('[classifyChains] historicalChainTvl fetch failed for', c.name, ':', e.message); }
     const series = Array.isArray(hist) ? hist.filter((p) => p && p.date).map((p) => ({ d: Number(p.date), v: Number(p.tvl) || 0 })) : [];
     const cur = Number(c.tvl) || 0;
+    // An empty series (fetch failed, timed out, or came back malformed) would
+    // otherwise fall through to `peak = cur` below — silently reporting "at its
+    // all-time peak, 0% drawdown" for a chain we may have PREVIOUSLY measured
+    // as collapsed. A transient DefiLlama hiccup must never overwrite a known
+    // peak with "no decline"; if we have prior data for this chain, keep its
+    // peak/history and only refresh drawdown against today's (independently
+    // fetched, always-live) TVL.
+    const prior = priorMetrics[c.name];
+    if (!series.length && prior && prior.peak_tvl > 0) {
+      const drawdown = ((prior.peak_tvl - cur) / prior.peak_tvl) * 100;
+      return {
+        chain: c.name, symbol: c.tokenSymbol || prior.symbol || null, tvl: cur, spanDays: prior.spanDays,
+        peak_tvl: prior.peak_tvl, peak_date: prior.peak_date, current_tvl: cur,
+        drawdown_pct: +drawdown.toFixed(1), change_90d: prior.change_90d, launched: prior.launched,
+        stale: true,
+      };
+    }
     let peak = cur, peakDate = null, launched = null, ago90 = null, spanDays = 0;
     if (series.length) {
       launched = series[0].d;
