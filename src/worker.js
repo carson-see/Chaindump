@@ -321,6 +321,13 @@ async function buildSnapshot(opts = {}) {
     // ratio, fee yield and fees-per-user we publish with definitions attached.
     if (fee.status === 'fulfilled' && fee.value && fee.value.total24h != null) {
       r.fees24h = Number(fee.value.total24h) || r.fees24h;
+      r.feeSource = 'perChain';   // authoritative: DefiLlama's own per-chain total
+    } else {
+      // Diagnose rather than guess: a silently-kept aggregate is indistinguishable
+      // from an enriched value in the payload, which is how the 145x Provenance
+      // figure survived a deploy that "fixed" it.
+      r.feeSource = 'aggregate';  // over-counts: 86 categories, double-counted breakdowns
+      console.error(`[fees] ${r.name}: per-chain fetch failed -> keeping aggregate. reason=${fee.status === 'rejected' ? String(fee.reason && fee.reason.message).slice(0, 90) : 'total24h null'}`);
     }
     if (dex.status === 'fulfilled' && dex.value && dex.value.total24h != null) {
       r.volume24h = Number(dex.value.total24h) || r.volume24h;
