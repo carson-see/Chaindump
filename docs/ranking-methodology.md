@@ -36,7 +36,7 @@ Three deliberate choices, each with a cost:
 
 All three inputs come from **DefiLlama**, free and public. Every failure mode below was measured on **2026-07-17** and is fixed in the shipped code (`src/lib/llama.js`).
 
-**Failure 1 — the aggregate over-counts.** DefiLlama's `/overview/dexs` feed spans **33 categories** (derivatives, prediction markets, NFT marketplaces, Telegram bots, even Physical TCG); `/overview/fees` spans **86**. Summing all of them and calling it "DEX volume" or "fees" is wrong:
+**Failure 1 — the aggregate over-counts.** DefiLlama's `/overview/dexs` feed spans **30+ categories** (34 when last measured — the count drifts as protocols are reclassified: derivatives, prediction markets, NFT marketplaces, Telegram bots, even Physical TCG); `/overview/fees` spans **80+** (86 when last measured). Summing all of them and calling it "DEX volume" or "fees" is wrong:
 
 - **Injective** volume overstated **16×** — a single derivatives protocol was 91% of its figure.
 - **Provenance** fees **145×** over; **Canton 66,253×**, which produced a published **309,007% fee yield**.

@@ -4,7 +4,7 @@
 // Two real defects motivated this module, both found by measuring the live feed
 // against DefiLlama's own authoritative per-chain numbers:
 //
-// 1. OVER-COUNTING. /overview/dexs carries 1245 protocols across 33 categories —
+// 1. OVER-COUNTING. /overview/dexs carries ~1245 protocols across 30+ categories —
 //    Derivatives, Prediction Market, NFT Marketplace, Telegram Bot, Crypto Card
 //    Issuer, even Physical TCG. Summing all of them and labelling the result
 //    "24h DEX volume" is false. On Injective a single Derivatives protocol
