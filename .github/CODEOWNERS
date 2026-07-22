@@ -1,0 +1,15 @@
+# Code ownership for review routing. The whole repo is owned by the maintainer;
+# GitHub will auto-request review on every PR. High-sensitivity paths are called
+# out so a future team can add specialist owners without restructuring.
+
+*                       @carson-see
+
+# Published-content & scoring logic — the accuracy-critical surface (CLAUDE.md §1.5).
+/src/lib/scoring.js     @carson-see
+/src/lib/data-quality.js @carson-see
+/migrations/            @carson-see
+
+# CI/CD, governance, and release plumbing.
+/.github/               @carson-see
+/scripts/               @carson-see
+/wrangler.jsonc         @carson-see

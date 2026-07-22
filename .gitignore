@@ -8,3 +8,7 @@ node_modules/
 .generated-machines/
 *_TTrace_*.tla
 *.dot
+
+# generated / local artifacts
+board.json
+.playwright-mcp/
