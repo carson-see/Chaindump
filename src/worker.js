@@ -4,6 +4,7 @@ import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './li
 import { prefersMarkdown } from './lib/negotiate.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { annotateDataQuality, assessChainDataQuality } from './lib/data-quality.js';
+import { promotionPlan } from './lib/desk-promote.js';
 import { USDC_DP, monthKeyFromDate, isLiveMode, decodePaymentHeader, paymentRequirements, structuralCheck, pruneStaleQuota } from './lib/x402.js';
 import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 // Aliased deliberately: causes.js above exports TAG_LABELS/canonTags into this
@@ -1185,6 +1186,63 @@ app.get('/api/desk/pending', wrap(async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 }));
 
+// Human-in-the-loop: promote a reviewed proposal into its live table. INJECTION-SAFE —
+// table + column names come only from the PROMOTABLE whitelist (never the proposal);
+// every value is bound. Marks the proposal status='promoted'.
+app.post('/api/desk/promote', wrap(async (req, res) => {
+  if (!deskAuth(req, res)) return;
+  if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
+  let b; try { b = await req.raw.json(); } catch (e) { return res.status(400).json({ error: 'invalid JSON body' }); }
+  const dataset = String(b.dataset || '').trim();
+  const slug = String(b.slug || '').trim();
+  if (!dataset || !slug) return res.status(400).json({ error: 'dataset and slug are required' });
+  try {
+    const row = await ENV.DB.prepare(
+      `SELECT dataset, slug, payload, sources, status FROM desk_proposals WHERE dataset = ? AND slug = ?`
+    ).bind(dataset, slug).first();
+    if (!row) return res.status(404).json({ error: 'proposal not found' });
+    if (row.status === 'promoted') return res.status(409).json({ error: 'proposal already promoted' });
+    let payload = {}, sources = null;
+    try { payload = row.payload ? JSON.parse(row.payload) : {}; } catch (e) {}
+    try { sources = row.sources ? JSON.parse(row.sources) : null; } catch (e) {}
+    // The desk's stored payload is free-form research and rarely matches the target
+    // columns 1:1. The reviewer curates the finding into the live schema and sends it
+    // as `record`; fall back to the raw payload only if no curated record is given.
+    const curated = (b.record && typeof b.record === 'object') ? b.record : payload;
+    const plan = promotionPlan(dataset, slug, curated, sources); // throws on bad dataset / missing PK / empty
+    const placeholders = plan.columns.map(() => '?').join(', ');
+    // ON CONFLICT DO UPDATE, not INSERT OR REPLACE: REPLACE deletes the whole
+    // existing row before re-inserting, so a partial curated record (a reviewer
+    // correcting just one field) would null out every column it didn't include.
+    const updateSet = plan.columns.filter((c) => c !== plan.pk).map((c) => `${c}=excluded.${c}`).join(', ');
+    await ENV.DB.prepare(
+      `INSERT INTO ${plan.table} (${plan.columns.join(', ')}) VALUES (${placeholders})
+       ON CONFLICT(${plan.pk}) DO UPDATE SET ${updateSet}`
+    ).bind(...plan.values).run();
+    await ENV.DB.prepare(
+      `UPDATE desk_proposals SET status='promoted', reviewer_note=?, reviewed_at=datetime('now') WHERE dataset=? AND slug=?`
+    ).bind(b.reviewer_note || null, dataset, slug).run();
+    res.json({ ok: true, promoted: { dataset, slug, table: plan.table, columns: plan.columns.length } });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+}));
+
+// Human-in-the-loop: reject a proposal (won't touch live tables).
+app.post('/api/desk/reject', wrap(async (req, res) => {
+  if (!deskAuth(req, res)) return;
+  if (!ENV.DB) return res.status(503).json({ error: 'no DB' });
+  let b; try { b = await req.raw.json(); } catch (e) { return res.status(400).json({ error: 'invalid JSON body' }); }
+  const dataset = String(b.dataset || '').trim();
+  const slug = String(b.slug || '').trim();
+  if (!dataset || !slug) return res.status(400).json({ error: 'dataset and slug are required' });
+  try {
+    const r = await ENV.DB.prepare(
+      `UPDATE desk_proposals SET status='rejected', reviewer_note=?, reviewed_at=datetime('now')
+       WHERE dataset=? AND slug=? AND status != 'promoted'`
+    ).bind(b.reviewer_note || null, dataset, slug).run();
+    res.json({ ok: true, rejected: { dataset, slug }, changed: r.meta?.changes ?? null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+}));
+
 // Read the research desk's per-dimension rows for one chain (identity, capital,
 // team, narrative, risk, token, onchain, synthesis, links...).
 //
@@ -1422,7 +1480,17 @@ let tiersBuilding = false;
 const TIERS_TTL = 45 * 60 * 1000;
 const toISO = (unix) => new Date(unix * 1000).toISOString().slice(0, 10);
 
-async function classifyChains() {
+// Flatten a previous classifyChains() result into a { chainName: metric } map,
+// so a later cycle can recover a chain's known peak/drawdown when this
+// cycle's own historicalChainTvl fetch fails for it.
+export function priorMetricsByChain(tierData) {
+  const map = {};
+  if (!tierData) return map;
+  for (const t of TIERS) for (const m of (tierData[t] || [])) map[m.chain] = m;
+  return map;
+}
+
+export async function classifyChains(priorMetrics = {}) {
   const all = await fetchJson(CHAINS_URL);
   if (!Array.isArray(all)) throw new Error('chains feed unavailable');
   if (!cache.data) cache = await loadSnapshot();
@@ -1433,9 +1501,27 @@ async function classifyChains() {
 
   const metrics = await pool(universe, async (c) => {
     let hist = null;
-    try { hist = await fetchJson(`https://api.llama.fi/v2/historicalChainTvl/${encodeURIComponent(c.name)}`, 12000); } catch (e) {}
+    try { hist = await fetchJson(`https://api.llama.fi/v2/historicalChainTvl/${encodeURIComponent(c.name)}`, 12000); }
+    catch (e) { console.error('[classifyChains] historicalChainTvl fetch failed for', c.name, ':', e.message); }
     const series = Array.isArray(hist) ? hist.filter((p) => p && p.date).map((p) => ({ d: Number(p.date), v: Number(p.tvl) || 0 })) : [];
     const cur = Number(c.tvl) || 0;
+    // An empty series (fetch failed, timed out, or came back malformed) would
+    // otherwise fall through to `peak = cur` below — silently reporting "at its
+    // all-time peak, 0% drawdown" for a chain we may have PREVIOUSLY measured
+    // as collapsed. A transient DefiLlama hiccup must never overwrite a known
+    // peak with "no decline"; if we have prior data for this chain, keep its
+    // peak/history and only refresh drawdown against today's (independently
+    // fetched, always-live) TVL.
+    const prior = priorMetrics[c.name];
+    if (!series.length && prior && prior.peak_tvl > 0) {
+      const drawdown = ((prior.peak_tvl - cur) / prior.peak_tvl) * 100;
+      return {
+        chain: c.name, symbol: c.tokenSymbol || prior.symbol || null, tvl: cur, spanDays: prior.spanDays,
+        peak_tvl: prior.peak_tvl, peak_date: prior.peak_date, current_tvl: cur,
+        drawdown_pct: +drawdown.toFixed(1), change_90d: prior.change_90d, launched: prior.launched,
+        stale: true,
+      };
+    }
     let peak = cur, peakDate = null, launched = null, ago90 = null, spanDays = 0;
     if (series.length) {
       launched = series[0].d;
@@ -1487,10 +1573,13 @@ async function curatedTierMap() {
 
 async function getTiers() {
   const now = Date.now();
-  if (!tiersCache.data) tiersCache = { ts: now, data: await classifyChains() };
+  // Pass the last cycle's own output back in as `priorMetrics` — this is what
+  // lets a failed historicalChainTvl fetch recover a chain's known peak
+  // instead of manufacturing a 0% drawdown (see classifyChains above).
+  if (!tiersCache.data) tiersCache = { ts: now, data: await classifyChains(priorMetricsByChain(tiersCache.data)) };
   else if (now - tiersCache.ts > TIERS_TTL && !tiersBuilding) {
     tiersBuilding = true;
-    classifyChains().then((d) => { tiersCache = { ts: Date.now(), data: d }; })
+    classifyChains(priorMetricsByChain(tiersCache.data)).then((d) => { tiersCache = { ts: Date.now(), data: d }; })
       .catch((e) => console.error('tiers refresh:', e.message)).finally(() => { tiersBuilding = false; });
   }
   return tiersCache.data;
