@@ -4,13 +4,16 @@ name: CI
 # Branch protection requires the `ci-success` aggregate job below, so a red run
 # cannot merge. Complements the SonarCloud + CodeRabbit GitHub Apps, which review
 # but do not execute the code (CLAUDE.md §1.1 TDD, §1.2 review).
+#
+# Actions are pinned to immutable commit SHAs (supply-chain hardening); the
+# trailing comment records the human-readable tag. Dependabot (github-actions
+# ecosystem) keeps the pins current. Node 22 matches wrangler's engines (>=22).
 on:
   pull_request:
   push:
     branches: [main]
 
-# Least privilege by default. `npm ci` runs dependency lifecycle scripts, so the
-# token stays read-only. Jobs that need more request it explicitly.
+# Least privilege by default; checkouts do not persist the token.
 permissions:
   contents: read
 
@@ -22,18 +25,20 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm run lint
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm test
 
@@ -43,9 +48,10 @@ jobs:
       run:
         working-directory: agent-desk
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm, cache-dependency-path: agent-desk/package-lock.json }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 22, cache: npm, cache-dependency-path: agent-desk/package-lock.json }
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
@@ -56,9 +62,10 @@ jobs:
       run:
         working-directory: mcp-server
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm, cache-dependency-path: mcp-server/package-lock.json }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 22, cache: npm, cache-dependency-path: mcp-server/package-lock.json }
       - run: npm ci
       - run: npm run typecheck
 
@@ -67,9 +74,10 @@ jobs:
     # rules (sequential numbering, no explicit transactions).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 22 }
       - run: node --input-type=module --check < src/worker.js
       - run: node scripts/check-migrations.mjs
 
@@ -78,9 +86,10 @@ jobs:
     # so a transient devDep issue does not block a merge.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
 

@@ -12,9 +12,10 @@
 - [ ] N/A — this PR touches no published content.
 
 ## Verification (CLAUDE.md §1.4)
+
 - [ ] New pure functions ship with tests (`npm test` green).
 - [ ] Behavior verified live or via `wrangler dev` — describe how below.
-- [ ] Migrations (if any) pass `node scripts/check-migrations.mjs` and are transaction-free.
+- [ ] New migrations (0010+) pass `node scripts/check-migrations.mjs` and are transaction-free (0001–0009 are grandfathered).
 
 <!-- How you verified: -->
 

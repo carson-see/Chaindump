@@ -7,14 +7,17 @@ name: Deploy
 # Flow: push to main -> re-run the test suite -> WAIT for a human to approve the
 # `production` environment -> apply D1 migrations -> wrangler deploy.
 # The human gate lives in the GitHub `production` environment (required reviewer),
-# so nothing reaches chaindump.xyz without a click.
+# which additionally only permits deploys from protected branches.
 #
 # Requires one repo secret: CLOUDFLARE_API_TOKEN (Workers + D1 edit). Use the GCP
 # secret `Chaindump_Cloudflare` — the older cloudflare-api-token lacks D1 and fails.
+#
+# Node 22: wrangler's package engines require >=22, so the deploy runtime must be
+# 22 or `npx wrangler` fails after the approval gate. Actions pinned to SHAs.
 on:
   push:
     branches: [main]
-  workflow_dispatch: # allow a manual redeploy of main from the Actions tab
+  workflow_dispatch: # manual redeploy of main from the Actions tab
 
 permissions:
   contents: read
@@ -26,27 +29,32 @@ concurrency:
 
 jobs:
   verify:
-    # Gate: prod only deploys code whose tests pass on main.
+    # Gate: prod only deploys code whose tests pass on main. Also a belt-and-braces
+    # guard so a manual (workflow_dispatch) run can never target a non-main ref.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm test
       - run: node scripts/check-migrations.mjs
 
   deploy:
     needs: verify
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # The required-reviewer gate. GitHub pauses here until a reviewer approves.
     environment:
       name: production
       url: https://chaindump.xyz
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with: { node-version: 22, cache: npm }
       - run: npm ci
       # Apply any new D1 migrations BEFORE the Worker that depends on them ships.
       # Idempotent: already-applied migrations are skipped.
