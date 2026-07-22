@@ -13,15 +13,15 @@
     "check:worker": "node --input-type=module --check < src/worker.js"
   },
   "dependencies": {
-    "express": "^4.21.0",
-    "hono": "^4.6.14"
+    "express": "^5.2.1",
+    "hono": "^4.12.31"
   },
   "devDependencies": {
-    "@eslint/js": "9.39.5",
-    "eslint": "9.39.5",
+    "@eslint/js": "10.0.1",
+    "eslint": "10.7.0",
     "tla-precheck": "0.1.7",
-    "vitest": "2.1.9",
-    "wrangler": "^4.4.0"
+    "vitest": "4.1.10",
+    "wrangler": "^4.113.0"
   },
   "emblem_build": {
     "tables": [
