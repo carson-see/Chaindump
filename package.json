@@ -8,7 +8,9 @@
     "start": "node server.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src/lib test"
+    "lint": "eslint src/lib test",
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "check:worker": "node --input-type=module --check < src/worker.js"
   },
   "dependencies": {
     "express": "^4.21.0",
