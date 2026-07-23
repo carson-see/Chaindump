@@ -2316,7 +2316,10 @@ async function spaShell(env, req) {
       // and keeps serving the first snapshot it ever loaded, indefinitely.
       if (!cache.data || Date.now() - cache.ts > TTL) cache = await loadSnapshot();
       const ssr = renderSsrRows(cache.data && cache.data.chains, SSR_ROWS_LIMIT);
-      if (ssr) html = html.replace(SSR_ROWS_MARKER, ssr);
+      // Replacer callback, not a bare string: a chain name/symbol containing a
+      // literal "$" (e.g. "$&") would otherwise be reinterpreted by
+      // String.replace()'s special replacement-pattern syntax ($&, $$, $`, $').
+      if (ssr) html = html.replace(SSR_ROWS_MARKER, () => ssr);
     } catch (e) { console.error('[spaShell ssr] skipped:', e && e.message); }
     return html;
   } catch (e) { console.error('[spaShell] failed:', e && e.message); throw e; }

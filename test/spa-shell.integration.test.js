@@ -45,6 +45,17 @@ describe('spaShell SSR row injection (via GET /)', () => {
     expect(html).not.toContain('ssr-rows-start');
   });
 
+  it('inserts a chain name containing "$&" literally, not as a String.replace() pattern', async () => {
+    const worker = await freshWorker();
+    // "$&" is special to String.replace(pattern, string) — it re-inserts the
+    // whole match. A bare-string replace would corrupt this into the marker's
+    // own matched content instead of the literal chain name.
+    const env = envWithChains([{ rank: 1, name: 'Dollar$&Chain', tvl: 100 }]);
+    const res = await worker.fetch(new Request('http://localhost/'), env, ctx());
+    const html = await res.text();
+    expect(html).toContain('data-name="Dollar$&amp;Chain"');
+  });
+
   it('leaves the original skeleton untouched when the snapshot has no chains', async () => {
     const worker = await freshWorker();
     const env = envWithChains([]);
