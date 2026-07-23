@@ -13,6 +13,7 @@ import { TAG_LABELS, canonTags, isFraudy, causeVocab } from './lib/causes.js';
 import { cohortFor, tagVocab, parseLaunch, canonTags as canonChainTags, isTheme as isChainTheme, isCohort as isChainCohort, themesForCategory } from './lib/tags.js';
 import { SCORE_META, TIER_CRITERIA, TIERS, BOARD_SIZE, CHANGE_90D_MIN_SPAN_DAYS, scoreRows, classifyTier, baselineOk, activityIndex } from './lib/scoring.js';
 import { DEX_CATEGORIES, aggregateBreakdown, feedIsDegenerate, selectCandidates, dedupeChains } from './lib/llama.js';
+import { renderSsrRows } from './lib/ssr-rows.js';
 
 const ENV = {};
 const app = new Hono();
@@ -2293,11 +2294,25 @@ function ogHtml(html, { title, desc, url, ld }) {
 <script type="application/ld+json">${structured}</script>`;
   return html.replace(/<title>[\s\S]*?<\/title>/, tags);
 }
+// Crawlability: the exact skeleton markup public/index.html ships for the live
+// board (see the `<tbody id="rows">` literal there). Swapped for real rows
+// server-side so non-JS clients (crawlers, social-card scrapers) see data
+// instead of "Fetching…". If that literal ever changes, replace() below is a
+// silent no-op — the shell still renders correctly, just without SSR rows.
+const SSR_ROWS_PLACEHOLDER = '<tbody id="rows"><tr><td colspan="8" class="skel">Fetching live chain data…</td></tr></tbody>';
+const SSR_ROWS_LIMIT = 20;
+
 async function spaShell(env, req) {
   try {
     if (!env || !env.ASSETS) throw new Error('no ASSETS binding');
     const r = await env.ASSETS.fetch(new Request(new URL('/index.html', req.url)));
-    return await r.text();
+    let html = await r.text();
+    try {
+      if (!cache.data) cache = await loadSnapshot();
+      const ssr = renderSsrRows(cache.data && cache.data.chains, SSR_ROWS_LIMIT);
+      if (ssr) html = html.replace(SSR_ROWS_PLACEHOLDER, `<tbody id="rows">${ssr}</tbody>`);
+    } catch (e) { console.error('[spaShell ssr] skipped:', e && e.message); }
+    return html;
   } catch (e) { console.error('[spaShell] failed:', e && e.message); throw e; }
 }
 // BreadcrumbList for entity deep-links: Home › {section} › {entity}.
