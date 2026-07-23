@@ -2308,7 +2308,10 @@ async function spaShell(env, req) {
     const r = await env.ASSETS.fetch(new Request(new URL('/index.html', req.url)));
     let html = await r.text();
     try {
-      if (!cache.data) cache = await loadSnapshot();
+      // Same staleness check /api/chains uses — otherwise a warm isolate hit
+      // only by no-JS clients (crawlers, social scrapers) never re-reads D1
+      // and keeps serving the first snapshot it ever loaded, indefinitely.
+      if (!cache.data || Date.now() - cache.ts > TTL) cache = await loadSnapshot();
       const ssr = renderSsrRows(cache.data && cache.data.chains, SSR_ROWS_LIMIT);
       if (ssr) html = html.replace(SSR_ROWS_PLACEHOLDER, `<tbody id="rows">${ssr}</tbody>`);
     } catch (e) { console.error('[spaShell ssr] skipped:', e && e.message); }
