@@ -18,8 +18,10 @@ export function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-const fmtUsd = (n) => (n == null ? '—' : (n < 0 ? '-' : '') + '$' + Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(Math.abs(n)));
-const fmtNum = (n) => (n == null ? '—' : Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(n));
+const USD_FMT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 });
+const NUM_FMT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+const fmtUsd = (n) => (n == null ? '—' : (n < 0 ? '-' : '') + '$' + USD_FMT.format(Math.abs(n)));
+const fmtNum = (n) => (n == null ? '—' : NUM_FMT.format(n));
 
 function deltaHtml(v) {
   if (v == null || Number.isNaN(v)) return '';
@@ -31,7 +33,8 @@ function deltaHtml(v) {
 // snapshot_cache/'chains' (each row already carries `rank`, set at build
 // time — see worker.js `ranked = top.map((r,i)=>({rank:i+1,...}))`).
 export function renderSsrRows(chains, limit = 20) {
-  const rows = Array.isArray(chains) ? chains.slice(0, limit) : [];
+  const n = Math.max(0, Math.trunc(Number(limit) || 0));
+  const rows = Array.isArray(chains) ? chains.slice(0, n) : [];
   if (!rows.length) return null;
   return rows.map((c) => {
     const name = escapeHtml(c.name || '');

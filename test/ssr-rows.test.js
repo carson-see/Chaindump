@@ -44,6 +44,12 @@ describe('renderSsrRows', () => {
     expect(html).toContain('&lt;script&gt;');
   });
 
+  it('escapes quotes/ampersands in the data-name attribute specifically (attribute-breakout regression)', () => {
+    const html = renderSsrRows([{ rank: 1, name: `Weird" & 'Chain' Co` }]);
+    expect(html).toContain('data-name="Weird&quot; &amp; &#39;Chain&#39; Co"');
+    expect(html).not.toContain('data-name="Weird" &');
+  });
+
   it('renders "—" placeholders for null/missing numeric fields instead of "null" or NaN', () => {
     const html = renderSsrRows([{ rank: 1, name: 'Obscura', tvl: null, volume24h: null, activeAddresses: null }]);
     expect(html).not.toMatch(/null|NaN/);

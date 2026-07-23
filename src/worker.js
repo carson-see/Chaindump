@@ -2294,12 +2294,15 @@ function ogHtml(html, { title, desc, url, ld }) {
 <script type="application/ld+json">${structured}</script>`;
   return html.replace(/<title>[\s\S]*?<\/title>/, tags);
 }
-// Crawlability: the exact skeleton markup public/index.html ships for the live
-// board (see the `<tbody id="rows">` literal there). Swapped for real rows
-// server-side so non-JS clients (crawlers, social-card scrapers) see data
-// instead of "Fetching…". If that literal ever changes, replace() below is a
-// silent no-op — the shell still renders correctly, just without SSR rows.
-const SSR_ROWS_PLACEHOLDER = '<tbody id="rows"><tr><td colspan="8" class="skel">Fetching live chain data…</td></tr></tbody>';
+// Crawlability: public/index.html brackets the live board's placeholder row
+// with <!--ssr-rows-start-->/<!--ssr-rows-end--> markers (inside <tbody
+// id="rows">) specifically so this replace doesn't depend on the skeleton's
+// exact wording/whitespace — only the marker pair has to survive. Swapped for
+// real rows server-side so non-JS clients (crawlers, social-card scrapers)
+// see data instead of "Fetching…". If the markers are ever removed from
+// index.html, the regex simply finds no match — a silent no-op, the shell
+// still renders correctly, just without SSR rows.
+const SSR_ROWS_MARKER = /<!--ssr-rows-start-->[\s\S]*?<!--ssr-rows-end-->/;
 const SSR_ROWS_LIMIT = 20;
 
 async function spaShell(env, req) {
@@ -2313,7 +2316,7 @@ async function spaShell(env, req) {
       // and keeps serving the first snapshot it ever loaded, indefinitely.
       if (!cache.data || Date.now() - cache.ts > TTL) cache = await loadSnapshot();
       const ssr = renderSsrRows(cache.data && cache.data.chains, SSR_ROWS_LIMIT);
-      if (ssr) html = html.replace(SSR_ROWS_PLACEHOLDER, `<tbody id="rows">${ssr}</tbody>`);
+      if (ssr) html = html.replace(SSR_ROWS_MARKER, ssr);
     } catch (e) { console.error('[spaShell ssr] skipped:', e && e.message); }
     return html;
   } catch (e) { console.error('[spaShell] failed:', e && e.message); throw e; }
