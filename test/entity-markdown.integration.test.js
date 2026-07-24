@@ -85,6 +85,15 @@ describe('markdown-for-agents on entity/view deep-links', () => {
     expect(body).toContain('<title>Ethereum — Chaindump');
   });
 
+  it('/chain/:name sets Vary: Accept on the HTML branch too, so a shared cache never serves stale HTML to a markdown request', async () => {
+    stubFeed();
+    const worker = await freshWorker();
+    const env = { DB: makeDB(), ASSETS };
+    await worker.fetch(new Request('http://localhost/api/chains'), env, ctx());
+    const res = await worker.fetch(new Request('http://localhost/chain/Ethereum'), env, ctx());
+    expect(res.headers.get('vary')).toBe('Accept');
+  });
+
   it('/live serves markdown with the top-chains ItemList when negotiated', async () => {
     stubFeed();
     const worker = await freshWorker();

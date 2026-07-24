@@ -2308,7 +2308,11 @@ function breadcrumb(section, sectionUrl, entity, entityUrl) {
   if (entity) el.push({ '@type': 'ListItem', position: el.length + 1, name: entity, item: entityUrl });
   return { '@type': 'BreadcrumbList', itemListElement: el };
 }
-function sendHtml(res, html) { res.setHeader('Link', DISCOVERY_LINK); res.status(200).html(html); }
+// Vary: Accept matters here even though this is the HTML branch — a client
+// negotiating on Accept (markdown vs HTML) means any shared cache must key on
+// it, or a cached HTML response could be served to a later text/markdown
+// request. Set on every response, not just the markdown branch.
+function sendHtml(res, html) { res.setHeader('Link', DISCOVERY_LINK); res.setHeader('Vary', 'Accept'); res.status(200).html(html); }
 // Serves either the SPA shell (HTML, with OG/JSON-LD tags injected) or a plain
 // markdown rendering of the same title/desc/JSON-LD, chosen by content
 // negotiation (see negotiate.js). Used by every entity/view deep-link so
