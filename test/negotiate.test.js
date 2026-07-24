@@ -31,4 +31,17 @@ describe('prefersMarkdown', () => {
   it('false for unrelated Accept types', () => {
     expect(prefersMarkdown('application/json')).toBe(false);
   });
+
+  it('honors q=0 on markdown as "not acceptable" (RFC 7231), even with no competing html', () => {
+    expect(prefersMarkdown('text/markdown;q=0')).toBe(false);
+  });
+
+  it('prefers markdown when html is explicitly de-prioritized to q=0', () => {
+    expect(prefersMarkdown('text/html;q=0, text/markdown;q=1')).toBe(true);
+  });
+
+  it('picks the higher-quality type when both are weighted and neither is q=0', () => {
+    expect(prefersMarkdown('text/html;q=0.5, text/markdown;q=0.9')).toBe(true);
+    expect(prefersMarkdown('text/html;q=0.9, text/markdown;q=0.5')).toBe(false);
+  });
 });
