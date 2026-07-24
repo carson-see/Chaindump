@@ -44,9 +44,24 @@ content-type before UAT.
    - Skill: https://isitagentready.com/.well-known/agent-skills/api-catalog/SKILL.md
    - RFC 9727: https://www.rfc-editor.org/rfc/rfc9727
 
-7. **Markdown-for-agents** — requests with `Accept: text/markdown` return a
-   markdown version (Content-Type: text/markdown) while HTML stays default for
-   browsers. Cloudflare has native support.
+7. ✅ **Markdown-for-agents** — DONE (2026-07-24). `prefersMarkdown()` (`src/lib/negotiate.js`)
+   serves `Content-Type: text/markdown` only when `Accept` explicitly asks for
+   markdown and does not also accept HTML (so real browsers always get HTML).
+   Was previously homepage-only (served the site-wide `llms.txt` overview);
+   now also covers every entity/view deep-link — `/chain/:name`, `/scam/:slug`,
+   `/collection/:id`, and all of `/live`, `/mid`, `/grave`, `/nft`, `/stables`,
+   `/rwa`, `/infra`, `/markets`, `/geo`, `/uspolicy`, `/power`, `/news`,
+   `/traces`, `/api` — via a shared `sendPage()` helper + pure renderer
+   `renderEntityMarkdown()` (`src/lib/entity-markdown.js`) that reuses the same
+   title/description/JSON-LD already computed for each page's Open Graph tags
+   (Metrics from `Dataset.variableMeasured`, ranked links from `ItemList`,
+   Sources from `Dataset.citation`, plus a `Structured JSON:` link to the
+   matching `/api/*` route where one exists). 340 tests passing (13 new:
+   `test/entity-markdown.test.js` unit + `test/entity-markdown.integration.test.js`
+   route-level). **Not yet verified against a real browser / chaindump.xyz** —
+   this session's sandbox blocks direct network egress to the live domain;
+   verify with `curl -s -H 'Accept: text/markdown' https://chaindump.xyz/chain/Solana`
+   once deployed.
    - Skill: https://isitagentready.com/.well-known/agent-skills/markdown-negotiation/SKILL.md
    - https://developers.cloudflare.com/fundamentals/reference/markdown-for-agents/
 

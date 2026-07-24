@@ -213,9 +213,10 @@ Complete UAT run on chaindump.xyz via the browser. Results:
   `html,body{overflow-x:clip}` contains it — verified `couldScrollRight:false`;
   NOT a bug, no fix made).
 
-**Only open gap:** Phase D item 7 — markdown-for-agents negotiation
-(`Accept: text/markdown` still returns `text/html`). Minor for a JS-rendered SPA
-(llms.txt already serves the markdown overview). Optional to close.
+**Phase D item 7 closed (2026-07-24):** markdown-for-agents negotiation now
+covers every entity/view deep-link, not just the homepage — see
+`agent-readiness.md` item 7 and PR (session 2026-07-24). Awaiting a live
+verify once deployed (this session's sandbox can't reach chaindump.xyz).
 
 **Two founder ratifications (both already live):** (1) the **Neo** entry names
 co-founders in an attributed, sourced treasury dispute — Carson to confirm

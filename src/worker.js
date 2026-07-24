@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { OFAC_FILES, ofacFileUrl, parseSanctionedFile, buildSanctionedRows } from './lib/ofac.js';
 import { NFT_LIST_URL, NFT_PER_PAGE, nftRowsFromPage, dedupeNftRows } from './lib/nft.js';
 import { prefersMarkdown } from './lib/negotiate.js';
+import { renderEntityMarkdown } from './lib/entity-markdown.js';
 import { norm, resolveCategory, categoryLabel, coverageTier, relatedBlock, deriveCategory } from './lib/chainkit.js';
 import { annotateDataQuality, assessChainDataQuality } from './lib/data-quality.js';
 import { promotionPlan } from './lib/desk-promote.js';
@@ -2308,6 +2309,20 @@ function breadcrumb(section, sectionUrl, entity, entityUrl) {
   return { '@type': 'BreadcrumbList', itemListElement: el };
 }
 function sendHtml(res, html) { res.setHeader('Link', DISCOVERY_LINK); res.status(200).html(html); }
+// Serves either the SPA shell (HTML, with OG/JSON-LD tags injected) or a plain
+// markdown rendering of the same title/desc/JSON-LD, chosen by content
+// negotiation (see negotiate.js). Used by every entity/view deep-link so
+// agents that ask for text/markdown get real page content instead of an
+// unrendered SPA shell.
+async function sendPage(req, res, { title, desc, url, ld, apiUrl }) {
+  if (prefersMarkdown(req.headers.accept)) {
+    res.setHeader('content-type', 'text/markdown; charset=utf-8');
+    res.setHeader('vary', 'Accept');
+    res.setHeader('link', DISCOVERY_LINK);
+    return res.status(200).html(renderEntityMarkdown({ title, desc, url, ld, apiUrl }));
+  }
+  return sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+}
 
 // Views that are valid single-segment deep-links → their share copy.
 const VIEW_OG = {
@@ -2343,7 +2358,7 @@ Object.keys(VIEW_OG).forEach((v) => {
         if (items.length) ld = { '@type': 'ItemList', '@id': url + '#list', name: 'Top chains by on-chain activity', itemListOrder: 'https://schema.org/ItemListOrderDescending', numberOfItems: items.length, itemListElement: items };
       } catch (e) { console.error('[live itemlist] skipped:', e && e.message); }
     }
-    sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+    await sendPage(req, res, { title, desc, url, ld });
   }));
 });
 app.get('/chain/:name', wrap(async (req, res) => {
@@ -2415,7 +2430,8 @@ app.get('/chain/:name', wrap(async (req, res) => {
       breadcrumb('Live · Top 50', `${ORIGIN}/live`, row.name, url),
     ];
   }
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+  const apiUrl = row ? `${ORIGIN}/api/chain/${encodeURIComponent(key)}` : undefined;
+  await sendPage(req, res, { title, desc, url, ld, apiUrl });
 }));
 app.get('/scam/:slug', wrap(async (req, res) => {
   const slug = String(req.params.slug || '');
@@ -2430,7 +2446,7 @@ app.get('/scam/:slug', wrap(async (req, res) => {
     { '@type': 'Article', '@id': url + '#article', headline: `${row.name} — traced fund-flow`, description: desc, url, mainEntityOfPage: url, isPartOf: { '@id': ORIGIN + '/#site' }, author: { '@id': ORIGIN + '/#org' }, publisher: { '@id': ORIGIN + '/#org' } },
     breadcrumb('Scam Tracker', `${ORIGIN}/traces`, row.name, url),
   ] : undefined;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+  await sendPage(req, res, { title, desc, url, ld });
 }));
 app.get('/collection/:id', wrap(async (req, res) => {
   const id = String(req.params.id || '');
@@ -2443,7 +2459,8 @@ app.get('/collection/:id', wrap(async (req, res) => {
     { '@type': 'Dataset', '@id': url + '#dataset', name: `${row.name} NFT market metrics`, description: desc, url, isPartOf: { '@id': ORIGIN + '/#site' }, publisher: { '@id': ORIGIN + '/#org' }, citation: ['https://www.coingecko.com/'] },
     breadcrumb('NFTs & Ordinals', `${ORIGIN}/nft`, row.name, url),
   ] : undefined;
-  sendHtml(res, ogHtml(await spaShell(ENV, req.raw), { title, desc, url, ld }));
+  const apiUrl = row ? `${ORIGIN}/api/nft-collection/${encodeURIComponent(id)}` : undefined;
+  await sendPage(req, res, { title, desc, url, ld, apiUrl });
 }));
 
 // ---------------------------------------------------------------------------
