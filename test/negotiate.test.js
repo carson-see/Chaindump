@@ -31,4 +31,35 @@ describe('prefersMarkdown', () => {
   it('false for unrelated Accept types', () => {
     expect(prefersMarkdown('application/json')).toBe(false);
   });
+
+  it('honors q=0 on markdown as "not acceptable" (RFC 7231), even with no competing html', () => {
+    expect(prefersMarkdown('text/markdown;q=0')).toBe(false);
+  });
+
+  it('prefers markdown when html is explicitly de-prioritized to q=0', () => {
+    expect(prefersMarkdown('text/html;q=0, text/markdown;q=1')).toBe(true);
+  });
+
+  it('picks the higher-quality type when both are weighted and neither is q=0', () => {
+    expect(prefersMarkdown('text/html;q=0.5, text/markdown;q=0.9')).toBe(true);
+    expect(prefersMarkdown('text/html;q=0.9, text/markdown;q=0.5')).toBe(false);
+  });
+
+  it('accounts for a wildcard HTML preference, not just an exact text/html entry', () => {
+    expect(prefersMarkdown('text/markdown;q=0.5, text/*;q=1')).toBe(false);
+    expect(prefersMarkdown('text/markdown;q=0.5, */*;q=1')).toBe(false);
+    // markdown still wins if no entry implies HTML at all, wildcard or otherwise
+    expect(prefersMarkdown('text/markdown;q=0.5')).toBe(true);
+  });
+
+  it('rejects malformed/out-of-range q-values, falling back to the default q=1', () => {
+    // q=2 is out of RFC 7231's 0..1 range — ignored, so markdown (default q=1)
+    // ties with html's explicit q=1 and html wins (the "both accepted" default).
+    expect(prefersMarkdown('text/markdown;q=2, text/html;q=1')).toBe(false);
+    // q=0.5.5 is not a valid qvalue token — ignored the same way.
+    expect(prefersMarkdown('text/markdown;q=0.5.5, text/html;q=1')).toBe(false);
+    // With no competing html entry, an ignored malformed q still means markdown
+    // is requested (falls back to q=1) and there's nothing to lose to.
+    expect(prefersMarkdown('text/markdown;q=2')).toBe(true);
+  });
 });
